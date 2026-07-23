@@ -1,0 +1,16 @@
+services:
+  pgbot:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # site-local timezone so /today and /tomorrow resolve the right date
+      - TZ=${TZ:-Asia/Tbilisi}
+    volumes:
+      # edit launches on the host and restart — no rebuild needed
+      - ./sites.json:/app/sites.json:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

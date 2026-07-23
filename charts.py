@@ -19,11 +19,27 @@ WARN  = (194, 94, 18)
 RAIN  = (194, 58, 82)
 BEST  = (47, 143, 82)
 
+# Font candidates, in priority order, covering macOS (dev) and Linux/Docker (deploy).
+# DejaVu / Liberation ship Cyrillic glyphs and are installed in the container.
+_FONT_PATHS = {
+    False: [
+        "/System/Library/Fonts/Supplemental/Arial.ttf",              # macOS
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",           # Debian/Ubuntu
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        "/usr/share/fonts/dejavu/DejaVuSans.ttf",                    # Alpine/other
+        "/System/Library/Fonts/Helvetica.ttc",
+    ],
+    True: [
+        "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+        "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
+        "/System/Library/Fonts/Helvetica.ttc",
+    ],
+}
+
 def _font(sz, bold=False):
-    cands = (["/System/Library/Fonts/Supplemental/Arial Bold.ttf", "/System/Library/Fonts/Helvetica.ttc"]
-             if bold else
-             ["/System/Library/Fonts/Supplemental/Arial.ttf", "/System/Library/Fonts/Helvetica.ttc"])
-    for p in cands:
+    for p in _FONT_PATHS[bold]:
         if os.path.exists(p):
             try: return ImageFont.truetype(p, sz * SS)
             except Exception: pass

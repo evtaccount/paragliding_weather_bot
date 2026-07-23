@@ -17,6 +17,7 @@ import asyncio
 import datetime as dt
 import logging
 import os
+import shutil
 
 from aiogram import Bot, Dispatcher
 from aiogram.filters import Command, CommandObject, CommandStart
@@ -85,11 +86,15 @@ async def send_forecast(message: Message, site: str, rng: str, date: str | None 
         return
 
     await message.answer(text)
-    if len(pngs) == 1:
-        await message.answer_photo(FSInputFile(pngs[0]))
-    elif pngs:
-        media = [InputMediaPhoto(media=FSInputFile(p)) for p in pngs]
-        await message.answer_media_group(media)
+    try:
+        if len(pngs) == 1:
+            await message.answer_photo(FSInputFile(pngs[0]))
+        elif pngs:
+            media = [InputMediaPhoto(media=FSInputFile(p)) for p in pngs]
+            await message.answer_media_group(media)
+    finally:
+        if pngs:  # PNGs live in a per-request temp dir — drop it after sending
+            shutil.rmtree(os.path.dirname(pngs[0]), ignore_errors=True)
 
 
 async def _shortcut(message: Message, command: CommandObject, rng: str, date: str | None):
