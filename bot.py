@@ -17,20 +17,23 @@ import asyncio
 import datetime as dt
 import logging
 import os
-import shutil
 
 from aiogram import Bot, Dispatcher
 from aiogram.filters import Command, CommandObject, CommandStart
-from aiogram.types import BotCommand, FSInputFile, InputMediaPhoto, Message
+from aiogram.types import BotCommand, BufferedInputFile, InputMediaPhoto, Message
 from dotenv import load_dotenv
 
-import forecast
+load_dotenv()  # before guards/forecast read their env vars
 
-load_dotenv()
+import forecast  # noqa: E402
+import guards  # noqa: E402
+
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("pgbot")
 
 dp = Dispatcher()
+dp.message.outer_middleware(guards.WhitelistMiddleware())
+dp.message.middleware(guards.ThrottleMiddleware())
 
 RANGE_ALIASES = {
     "1d": "1d", "day": "1d", "день": "1d",
@@ -93,15 +96,11 @@ async def send_forecast(message: Message, site: str, rng: str, date: str | None 
 
     for chunk in _chunks(text):
         await message.answer(chunk)
-    try:
-        if len(pngs) == 1:
-            await message.answer_photo(FSInputFile(pngs[0]))
-        elif pngs:
-            media = [InputMediaPhoto(media=FSInputFile(p)) for p in pngs]
-            await message.answer_media_group(media)
-    finally:
-        if pngs:  # PNGs live in a per-request temp dir — drop it after sending
-            shutil.rmtree(os.path.dirname(pngs[0]), ignore_errors=True)
+    files = [BufferedInputFile(p, filename=f"chart{i}.png") for i, p in enumerate(pngs, 1)]
+    if len(files) == 1:
+        await message.answer_photo(files[0])
+    elif files:
+        await message.answer_media_group([InputMediaPhoto(media=f) for f in files])
 
 
 async def _shortcut(message: Message, command: CommandObject, rng: str, date: str | None):
@@ -124,32 +123,32 @@ async def cmd_sites(message: Message):
     await message.answer("Сохранённые старты:\n" + "\n".join(f"• {n}" for n in names))
 
 
-@dp.message(Command("today"))
+@dp.message(Command("today"), flags={"forecast": True})
 async def cmd_today(message: Message, command: CommandObject):
     await _shortcut(message, command, "1d", dt.date.today().isoformat())
 
 
-@dp.message(Command("tomorrow"))
+@dp.message(Command("tomorrow"), flags={"forecast": True})
 async def cmd_tomorrow(message: Message, command: CommandObject):
     await _shortcut(message, command, "1d", (dt.date.today() + dt.timedelta(days=1)).isoformat())
 
 
-@dp.message(Command("threedays"))
+@dp.message(Command("threedays"), flags={"forecast": True})
 async def cmd_threedays(message: Message, command: CommandObject):
     await _shortcut(message, command, "3d", None)
 
 
-@dp.message(Command("week"))
+@dp.message(Command("week"), flags={"forecast": True})
 async def cmd_week(message: Message, command: CommandObject):
     await _shortcut(message, command, "week", None)
 
 
-@dp.message(Command("twoweeks"))
+@dp.message(Command("twoweeks"), flags={"forecast": True})
 async def cmd_twoweeks(message: Message, command: CommandObject):
     await _shortcut(message, command, "2weeks", None)
 
 
-@dp.message(Command("forecast"))
+@dp.message(Command("forecast"), flags={"forecast": True})
 async def cmd_forecast(message: Message, command: CommandObject):
     parts = (command.args or "").split()
     if not parts:
