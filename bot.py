@@ -65,6 +65,12 @@ BOT_COMMANDS = [
 ]
 
 
+def _chunks(text: str, size: int = 4096):
+    """Split into Telegram-sized pieces (LLM output can exceed the 4096 limit)."""
+    for i in range(0, len(text), size):
+        yield text[i:i + size]
+
+
 def resolve_site(arg: str | None) -> str | None:
     """Return the site name to use: the given arg, or the sole saved site, else None."""
     if arg and arg.strip():
@@ -85,7 +91,8 @@ async def send_forecast(message: Message, site: str, rng: str, date: str | None 
         await message.answer(f"⚠️ Ошибка: {e}")
         return
 
-    await message.answer(text)
+    for chunk in _chunks(text):
+        await message.answer(chunk)
     try:
         if len(pngs) == 1:
             await message.answer_photo(FSInputFile(pngs[0]))

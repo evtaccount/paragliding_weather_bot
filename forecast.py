@@ -1,15 +1,27 @@
 """Forecast layer — resolves a saved site, fetches open-meteo, returns (text, png_paths).
 
-Reuses the skill engine (engine.py / charts.py) unchanged. The only new piece vs the
-CLI skill is the network fetch, which here runs on the server (no sandbox restriction).
+Pipeline:
+  open-meteo (real numbers)
+    ├── charts (Pillow) — visualisation of the facts
+    ├── engine.facts_*  — real numbers extracted for the LLM
+    └── analysis.analyze (Gemini) — INTERPRETS the facts into a flying assessment
+                                     ↳ on failure, falls back to the deterministic
+                                       rule-based text from engine.report_*
+
+Gemini only reasons over real data; it never invents numbers. Without a
+GEMINI_API_KEY the bot still works, using the rule-based text.
 """
+import asyncio
 import datetime as dt
-import os
+import logging
 import tempfile
 
 import httpx
 
-import engine  # find_site, build_url, report_1day, report_overview, RANGE_DAYS
+import analysis
+import engine  # find_site, build_url, report_*, facts_*, RANGE_DAYS
+
+log = logging.getLogger("pgbot.forecast")
 
 
 class ForecastError(Exception):
@@ -47,9 +59,21 @@ async def get_forecast(site_name: str, rng: str, date: str | None = None):
     if data.get("error"):
         raise ForecastError(f"open-meteo: {data.get('reason', 'ошибка запроса')}")
 
+    # Charts + deterministic (fallback) text + facts — all from the same real data.
     out = tempfile.mkdtemp(prefix="pgfc_")
     if rng == "1d":
-        text, pngs = engine.report_1day(data, site, out)
+        fallback_text, pngs = engine.report_1day(data, site, out)
+        facts = engine.facts_1day(data, site)
     else:
-        text, pngs = engine.report_overview(data, site, rng, out)
+        fallback_text, pngs = engine.report_overview(data, site, rng, out)
+        facts = engine.facts_overview(data, site, rng)
+
+    # LLM analysis over the real facts; fall back to rules if Gemini is unavailable.
+    text = fallback_text
+    if analysis.available():
+        try:
+            text = await asyncio.to_thread(analysis.analyze, facts, rng)
+        except Exception as e:  # noqa: BLE001 — any Gemini failure → rule-based text
+            log.warning("LLM analysis failed (%s); using rule-based text", e)
+
     return text, pngs

@@ -206,7 +206,7 @@ def report_1day(data, site, out):
     if top_agl < 900: cav.append("низкий потолок — XC слабый")
     if dc == "tail": cav.append("ветер в спину в рабочее окно — опасно, сверь экспозицию")
     elif dc == "cross": cav.append("боковой ветер к склону — сверь экспозицию")
-    cav.append("высота старта взята по гриду (686 м); прогноз далеко вперёд — пересними за 1–2 суток")
+    cav.append(f"высота старта по гриду ({elev} м); прогноз далеко вперёд — пересними за 1–2 суток")
     if cav:
         L.append("")
         L.append("⚠️ " + "; ".join(cav) + ".")
@@ -263,6 +263,88 @@ def report_overview(data, site, rng, out):
     from charts import overview_png
     png = overview_png(rows, site, rng, out)
     return "\n".join(L), [png]
+
+# ---------------------------------------------------------------- facts (for LLM analysis)
+# These extract the REAL numbers from the open-meteo response into a compact,
+# unit-labelled dict. The LLM interprets these facts; it never invents them.
+def facts_1day(data, site):
+    H, D = data["hourly"], data["daily"]
+    t = H["time"]; sr, ss = D["sunrise"][0], D["sunset"][0]
+    day = daylight_idx(t, sr, ss)
+    elev = site["elevation_m"]; aspect = site["aspect_deg"]
+    temp = H["temperature_2m"]; wind = H["wind_speed_10m"]; gust = H["wind_gusts_10m"]
+    wdir = H["wind_direction_10m"]; precip = H["precipitation"]; cape = H["cape"]
+    clow = H["cloud_cover_low"]; dew = H["dew_point_2m"]; blh = H["boundary_layer_height"]
+    tmax_i = max(day, key=lambda i: temp[i])  # peak-heating hour
+    top_agl = round(max(blh[i] for i in day))
+    lcl_agl = round(122 * (temp[tmax_i] - dew[tmax_i]))
+    blue = clow[tmax_i] < 15 and (elev + lcl_agl) > (elev + top_agl)
+
+    levels = [("10m", elev + 10, "wind_speed_10m", "wind_direction_10m"),
+              ("925hPa", "geopotential_height_925hPa", "wind_speed_925hPa", "wind_direction_925hPa"),
+              ("850hPa", "geopotential_height_850hPa", "wind_speed_850hPa", "wind_direction_850hPa"),
+              ("700hPa", "geopotential_height_700hPa", "wind_speed_700hPa", "wind_direction_700hPa"),
+              ("600hPa", "geopotential_height_600hPa", "wind_speed_600hPa", None),
+              ("500hPa", "geopotential_height_500hPa", "wind_speed_500hPa", None)]
+    profile = []
+    for name, h, spd, dr in levels:
+        alt = h if isinstance(h, (int, float)) else round(H[h][tmax_i])
+        row = {"level": name, "alt_m_msl": alt, "wind_ms": round(H[spd][tmax_i], 1)}
+        if dr:
+            row["dir_deg"] = round(H[dr][tmax_i])
+        profile.append(row)
+
+    return {
+        "site": {"name": site["name"], "aspect": card(aspect), "aspect_deg": aspect,
+                 "elevation_m": elev, "timezone": data.get("timezone")},
+        "date": t[0][:10],
+        "daylight_hours": f"{hour_of(sr):02d}-{hour_of(ss):02d}",
+        "precip_sum_mm": round(D["precipitation_sum"][0], 1),
+        "cape_max": round(max(cape[i] for i in day)),
+        "freezing_level_m": round(H["freezing_level_height"][tmax_i]),
+        "thermal_ceiling_m_agl": top_agl,
+        "thermal_ceiling_m_msl": elev + top_agl,
+        "lcl_m_agl": lcl_agl,
+        "blue_thermals": bool(blue),
+        "hourly_daytime": [
+            {"time": t[i][11:16], "temp_c": round(temp[i], 1), "wind_ms": round(wind[i], 1),
+             "gust_ms": round(gust[i], 1), "dir_deg": round(wdir[i]),
+             "cloud_low_pct": round(clow[i]), "precip_mm": round(precip[i], 2), "cape": round(cape[i])}
+            for i in day],
+        "wind_profile_peak_hour": profile,
+    }
+
+
+def facts_overview(data, site, rng):
+    D = data["daily"]; H = data["hourly"]
+    t = H["time"]; aspect = site["aspect_deg"]
+    days = []
+    for k, dcode in enumerate(D["time"]):
+        sr, ss = D["sunrise"][k], D["sunset"][k]
+        idx = [i for i, tt in enumerate(t) if ymd(tt) == dcode and hour_of(sr) <= hour_of(tt) <= hour_of(ss)]
+        dt_temp = [H["temperature_2m"][i] for i in idx] or [D["temperature_2m_max"][k]]
+        dt_wind = [H["wind_speed_10m"][i] for i in idx] or [D["wind_speed_10m_max"][k]]
+        dt_gust = [H["wind_gusts_10m"][i] for i in idx] or [D["wind_gusts_10m_max"][k]]
+        core = [i for i in idx if 11 <= hour_of(t[i]) <= 16] or idx
+        hdir = H.get("wind_direction_10m")
+        if hdir and core:
+            dom = wind_from_avg([hdir[i] for i in core], [max(H["wind_speed_10m"][i], 0.3) for i in core])
+        else:
+            dom = D["wind_direction_10m_dominant"][k]
+        days.append({
+            "date": dcode, "weather": WMO.get(D["weather_code"][k], ""),
+            "temp_max_c": round(max(dt_temp)), "temp_min_c": round(D["temperature_2m_min"][k]),
+            "wind_max_ms": round(max(dt_wind), 1), "gust_max_ms": round(max(dt_gust), 1),
+            "wind_dir_window": f"{card(dom)} ({round(dom)}°)",
+            "precip_mm": round(D["precipitation_sum"][k], 1),
+            "sunshine_h": round(D["sunshine_duration"][k] / 3600.0, 1),
+        })
+    return {
+        "site": {"name": site["name"], "aspect": card(aspect), "aspect_deg": aspect,
+                 "elevation_m": site["elevation_m"], "timezone": data.get("timezone")},
+        "range": rng,
+        "days_daytime": days,
+    }
 
 # ---------------------------------------------------------------- main
 def main():

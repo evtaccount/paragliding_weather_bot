@@ -1,12 +1,15 @@
 # Paragliding forecast Telegram bot
 
 Командный Telegram-бот: лётный прогноз для параплана по сохранённым стартам —
-компактный эмодзи-текст + PNG-графики. Всё считает детерминированный движок
-(`engine.py` / `charts.py`, из скилла `paragliding-forecast`). **Без LLM** —
-пользователь шлёт команды, бот знает что делать.
+разбор текстом + PNG-графики. Данные берутся из **open-meteo** (факты), а
+**разбор — вердикт, лётное окно, риски, лучший день — делает Gemini** по этим
+реальным числам, не выдумывая их. Без ключа Gemini бот работает на встроенных
+детерминированных правилах (`engine.py`).
 
 ```
-Telegram → bot.py (aiogram) → forecast.py → engine.py (open-meteo) → текст + PNG
+Telegram → bot.py → forecast.py → open-meteo (факты)
+                                    ├── Pillow  → графики (визуализация фактов)
+                                    └── Gemini  → анализ   (fallback: правила engine.py)
 ```
 
 ## Команды
@@ -27,6 +30,8 @@ Telegram → bot.py (aiogram) → forecast.py → engine.py (open-meteo) → т�
 ## Что нужно
 
 - **Токен бота** — у [@BotFather](https://t.me/BotFather): `/newbot`.
+- **Ключ Gemini** (бесплатный) — https://aistudio.google.com/apikey. Нужен для
+  анализа; без него включается встроенный разбор на правилах.
 - Docker **или** Python 3.10+.
 
 ---
@@ -35,7 +40,7 @@ Telegram → bot.py (aiogram) → forecast.py → engine.py (open-meteo) → т�
 
 ```bash
 cd paragliding-bot
-cp .env.example .env          # впиши BOT_TOKEN
+cp .env.example .env          # впиши BOT_TOKEN и GEMINI_API_KEY
 docker compose up -d --build
 docker compose logs -f
 ```
@@ -73,7 +78,7 @@ journalctl -u pgbot -f
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env          # BOT_TOKEN
+cp .env.example .env          # BOT_TOKEN (+ GEMINI_API_KEY)
 python bot.py
 ```
 
@@ -89,8 +94,9 @@ python bot.py
 
 ```
 bot.py            aiogram-обработчики команд + меню, чистка временных PNG
-forecast.py       резолв старта → запрос open-meteo (httpx) → текст + PNG
-engine.py         оценка лётности + текст (общий со скиллом)
+forecast.py       резолв старта → open-meteo → факты + графики → анализ (Gemini/правила)
+analysis.py       Gemini: разбор реальных данных в лётную оценку (текст для Telegram)
+engine.py         факты (facts_*), правила-фолбэк (report_*), графики; общий со скиллом
 charts.py         PNG, светлая тема, м/с, кроссплатформенные шрифты
 sites.json        сохранённые старты
 Dockerfile · docker-compose.yml · .dockerignore
@@ -100,7 +106,11 @@ requirements.txt · .env.example
 
 ## Заметки
 
-- Сеть нужна только для open-meteo; на сервере она открыта (ограничение `curl`
+- **LLM анализирует факты, а не сочиняет числа.** Данные всегда из open-meteo;
+  Gemini лишь интерпретирует их (можно спросить у него нюансы, комбинации
+  факторов). Если Gemini недоступен — включается разбор на правилах `engine.py`.
+- Windy **не** используется — его бесплатный ключ отдаёт перемешанный demo-шум
+  (вот это и есть пример «LLM/сервис выдумывает числа» — так нельзя).
+- Сеть нужна для open-meteo и Gemini; на сервере она открыта (ограничение `curl`
   было лишь в песочнице Claude Code).
-- Windy **не** используется — его бесплатный ключ отдаёт перемешанный demo-шум.
 - Движок общий со скиллом; при желании — вынести в отдельный пакет.
