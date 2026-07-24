@@ -175,13 +175,15 @@ async def _fetch_build(site: dict, rng: str, date: str | None):
         if rng == "1d":
             fallback, png_paths, card = engine.report_1day(data, site, out)
             facts = engine.facts_1day(data, site)
+            rows = []
         else:
             fallback, png_paths, card = engine.report_overview(data, site, rng, out)
             facts = engine.facts_overview(data, site, rng)
+            rows = engine.overview_rows(data, site)
         pngs = [pathlib.Path(p).read_bytes() for p in png_paths]
     finally:
         shutil.rmtree(out, ignore_errors=True)
-    return card, pngs, facts, fallback
+    return card, pngs, facts, fallback, rows
 
 
 async def _ensure(site: dict, rng: str, date: str | None, key: tuple):
@@ -190,15 +192,15 @@ async def _ensure(site: dict, rng: str, date: str | None, key: tuple):
     _purge(now)
     if key in _fcache:
         return _fcache[key][1:]
-    card, pngs, facts, fallback = await _fetch_build(site, rng, date)
-    _fcache[key] = (now + _TTL, card, pngs, facts, fallback)
-    return card, pngs, facts, fallback
+    card, pngs, facts, fallback, rows = await _fetch_build(site, rng, date)
+    _fcache[key] = (now + _TTL, card, pngs, facts, fallback, rows)
+    return card, pngs, facts, fallback, rows
 
 
 async def get_forecast(site_name: str, rng: str, date: str | None = None):
     """Factual card + charts. No LLM. rng: 1d | 3d | week | 2weeks."""
     site, date, key = _resolve(site_name, rng, date)
-    card, pngs, _facts, _fallback = await _ensure(site, rng, date, key)
+    card, pngs, _facts, _fallback, _rows = await _ensure(site, rng, date, key)
     return card, pngs
 
 
@@ -221,7 +223,7 @@ async def get_analysis(site_name: str, rng: str, date: str | None = None, deep: 
         log.info("analysis cache hit: %s", acache_key)
         return _acache[acache_key][1]
 
-    card, _pngs, facts, fallback = await _ensure(site, rng, date, base_key)
+    card, _pngs, facts, fallback, _rows = await _ensure(site, rng, date, base_key)
     rules_tail = fallback[len(card):].strip() or fallback  # deterministic verdict tail
 
     if not analysis.available():
