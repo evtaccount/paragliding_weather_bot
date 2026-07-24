@@ -48,3 +48,28 @@ def test_build_url_includes_current_model():
     engine.set_model_key("icon")
     assert "models=icon_seamless" in engine.build_url(_site(), "1d", "2026-07-25")
     _clear()
+
+
+def test_cache_key_includes_model(monkeypatch):
+    _clear()
+    import asyncio
+
+    import forecast
+
+    calls = []
+
+    async def fake_build(site, rng, date):
+        calls.append((engine.get_model_key(), rng))
+        return "card", [], {}, "fb", [], None  # 6-tuple _fetch_build contract
+
+    monkeypatch.setattr(forecast, "_fetch_build", fake_build)
+
+    site = engine.find_site("Гудаури")
+    _s, _d, key1 = forecast._resolve("Гудаури", "week", None)
+    asyncio.run(forecast._ensure(site, "week", None, key1))  # warm under ecmwf
+    engine.set_model_key("gfs")
+    _s, _d, key2 = forecast._resolve("Гудаури", "week", None)
+    assert key1 != key2                       # model is part of the key
+    asyncio.run(forecast._ensure(site, "week", None, key2))  # must rebuild, not reuse
+    assert [c[0] for c in calls] == ["ecmwf", "gfs"]
+    _clear()

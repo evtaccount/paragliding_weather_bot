@@ -59,7 +59,7 @@ async def scan_week() -> dict:
     sites = engine.load_sites()
 
     async def fetch(site):
-        key = (site["name"], "week", None)
+        key = (site["name"], "week", None, engine.get_model_key())
         _c, _p, _f, _fb, rows, _grid = await _ensure(site, "week", None, key)
         return rows
 
@@ -169,7 +169,7 @@ def _resolve(site_name: str, rng: str, date: str | None):
             raise ForecastError(f"Старт не найден: {site_name}. /sites — список.")
     if rng == "1d" and not date:
         date = dt.date.today().isoformat()
-    return site, date, (site["name"], rng, date)
+    return site, date, (site["name"], rng, date, engine.get_model_key())
 
 
 def cached_dates(site_name: str, rng: str, date: str | None = None) -> list[str] | None:
