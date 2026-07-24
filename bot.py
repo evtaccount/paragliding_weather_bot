@@ -202,6 +202,15 @@ async def _finish_add(message: Message, name: str, lat: float, lon: float,
     except ValueError as e:
         await message.answer(f"⚠️ {e}")
         return
+    except OSError as e:  # e.g. read-only sites.json in the container — don't fail silently
+        log.exception("add_site: write failed")
+        await message.answer("⚠️ Не удалось сохранить старт — нет доступа к файлу на запись.\n"
+                             f"({e.strerror or e})\nПроверь, что каталог данных примонтирован с правами на запись.")
+        return
+    except Exception as e:  # noqa: BLE001 — any other failure must reach the user, not just the log
+        log.exception("add_site: unexpected failure")
+        await message.answer(f"⚠️ Не удалось сохранить старт: {e}")
+        return
     await message.answer(
         f"✅ Старт добавлен: {name}\n"
         f"📍 {lat}, {lon} · {elev} м · экспозиция {engine.card(aspect_deg)} ({round(aspect_deg)}°)\n"
@@ -436,9 +445,10 @@ async def main():
     token = os.environ.get("BOT_TOKEN")
     if not token:
         raise SystemExit("BOT_TOKEN не задан (см. .env.example)")
+    engine.ensure_sites_file()  # seed a fresh data volume from the packaged default
     bot = Bot(token=token)
     await bot.set_my_commands(BOT_COMMANDS)
-    log.info("bot started, sites: %s", forecast.known_sites())
+    log.info("bot started, sites file: %s, sites: %s", engine.SITES, forecast.known_sites())
     await dp.start_polling(bot)
 
 

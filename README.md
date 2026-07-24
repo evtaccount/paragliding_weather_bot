@@ -58,8 +58,11 @@ docker compose logs -f
 ```
 
 - Шрифты (кириллица для графиков) и `tzdata` ставятся в образ автоматически.
-- `sites.json` смонтирован с хоста (`:ro`) — правишь старты и делаешь
-  `docker compose restart`, пересборка не нужна.
+- Старты хранятся в именованном volume `pgbot-data` (`/app/data/sites.json`),
+  которым владеет пользователь контейнера — поэтому `/add` и `/removesite` могут
+  писать. При первом запуске файл сидируется из встроенного `sites.json`.
+  Правка вручную: `docker compose exec pgbot vi /app/data/sites.json` (или
+  через сам бот командами `/add` · `/removesite`).
 - Часовой пояс — переменная `TZ` (по умолчанию `Asia/Tbilisi`), от неё зависит,
   какой день считается «сегодня/завтра». Задать: `TZ=Europe/Moscow` в `.env`.
 - Логи ротируются (10 МБ × 3).
@@ -98,9 +101,13 @@ python bot.py
 
 ## Добавить старт
 
-Отредактируй `sites.json` (формат как в скилле): `name`, `aliases`, `lat`, `lon`,
-`elevation_m`, `aspect_deg` (куда смотрит склон). Перезапусти бот
-(`docker compose restart` или `systemctl restart pgbot`).
+Прямо из Telegram: `/add <Имя> <lat> <lon> <экспозиция>` (или `/add` — бот
+спросит по шагам) · удалить: `/removesite <Имя>`. Правки сохраняются в
+`/app/data/sites.json` (volume `pgbot-data`) и переживают перезапуск/пересборку.
+
+Вручную (bare-metal / dev): отредактируй `sites.json` — `name`, `aliases`,
+`lat`, `lon`, `elevation_m`, `aspect_deg`. В Docker путь можно переопределить
+переменной `SITES_FILE`.
 
 ## Структура
 

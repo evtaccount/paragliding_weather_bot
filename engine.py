@@ -17,11 +17,24 @@ Usage:
   python3 engine.py report --site Laliskuri --range 1d --date 2026-07-29 \
                            --json forecast.json --out /tmp/pgfc
 """
-import argparse, json, os, sys, math, datetime as dt
+import argparse, json, os, shutil, sys, math, datetime as dt
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SITES = os.path.join(HERE, "sites.json")
+# The packaged default (baked into the image). SITES may be redirected via
+# SITES_FILE to a writable location (a mounted data volume) so /add and
+# /removesite can persist as a non-root container user.
+DEFAULT_SITES = os.path.join(HERE, "sites.json")
+SITES = os.environ.get("SITES_FILE") or DEFAULT_SITES
 sys.path.insert(0, HERE)  # so `from charts import ...` works from any cwd
+
+
+def ensure_sites_file():
+    """Seed SITES from the packaged default on first run (e.g. an empty volume)."""
+    if os.path.abspath(SITES) == os.path.abspath(DEFAULT_SITES):
+        return
+    if not os.path.exists(SITES):
+        os.makedirs(os.path.dirname(SITES) or ".", exist_ok=True)
+        shutil.copy(DEFAULT_SITES, SITES)
 
 # ---- paragliding thresholds (m/s) — tune here ----
 WIND_GOOD   = 5.0    # <= calm/comfortable
