@@ -79,6 +79,7 @@ HELP = (
     "/twoweeks [старт] — обзор на 2 недели\n"
     "/scan — лётные дни на неделю по всем стартам\n"
     "/forecast <старт> <диапазон> — вручную (1d · 3d · week · 2weeks)\n"
+    "/model — метеомодель (auto · ecmwf · gfs · icon)\n"
     "/sites — список стартов\n\n"
     "Если старт не указан, а он один — берётся автоматически.\n"
     "Источник: open-meteo. Прогноз далеко вперёд — пересними за 1–2 суток."
@@ -92,6 +93,7 @@ BOT_COMMANDS = [
     BotCommand(command="twoweeks", description="Обзор на 2 недели"),
     BotCommand(command="scan", description="Лётные дни на неделю по всем стартам"),
     BotCommand(command="forecast", description="Прогноз: <старт> <диапазон>"),
+    BotCommand(command="model", description="Метеомодель: /model <auto|ecmwf|gfs|icon>"),
     BotCommand(command="sites", description="Список стартов"),
     BotCommand(command="add", description="Добавить старт: <имя> <lat> <lon> <эксп>"),
     BotCommand(command="removesite", description="Удалить старт: <имя>"),
@@ -280,6 +282,34 @@ async def cmd_sites(message: Message):
         await message.answer("Сохранённых стартов нет. Добавить: /add")
         return
     await message.answer("Сохранённые старты:\n" + "\n".join(f"• {n}" for n in names))
+
+
+def _model_options() -> str:
+    return " · ".join(f"{k} ({engine.model_label(k)})" for k in engine.MODELS)
+
+
+@dp.message(Command("model"))
+async def cmd_model(message: Message, command: CommandObject):
+    """Show or set the global meteo model. Not a forecast request → no cooldown flag."""
+    key = (command.args or "").strip().lower()
+    if not key:
+        cur = engine.get_model_key()
+        await message.answer(
+            f"Текущая модель: {engine.model_label(cur)} ({cur}).\n"
+            f"Сменить: /model <ключ>\nДоступно: {_model_options()}")
+        return
+    try:
+        engine.set_model_key(key)
+    except ValueError:
+        await message.answer(f"⚠️ Неизвестная модель «{key}».\nДоступно: {_model_options()}")
+        return
+    except OSError as e:  # read-only model.json in the container — don't fail silently
+        log.exception("set_model_key: write failed")
+        await message.answer("⚠️ Не удалось сохранить выбор модели — нет доступа к файлу на запись.\n"
+                             f"({e.strerror or e})")
+        return
+    await message.answer(f"✅ Модель: {engine.model_label(key)} ({key}). "
+                         f"Кэш обновится при следующем запросе.")
 
 
 async def _finish_add(message: Message, name: str, lat: float, lon: float,

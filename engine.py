@@ -27,6 +27,44 @@ DEFAULT_SITES = os.path.join(HERE, "sites.json")
 SITES = os.environ.get("SITES_FILE") or DEFAULT_SITES
 sys.path.insert(0, HERE)  # so `from charts import ...` works from any cwd
 
+# Meteo model — a global setting persisted next to sites.json (writable volume in
+# the container). Requesting a variable a model lacks is not an error: open-meteo
+# returns it as a null series (handled by the degradation in report_1day).
+MODEL_FILE = os.environ.get("MODEL_FILE") or os.path.join(os.path.dirname(SITES) or ".", "model.json")
+MODELS = {  # key → (UI label, open-meteo id)
+    "auto":  ("Auto (best_match)", "best_match"),
+    "ecmwf": ("ECMWF",             "ecmwf_ifs025"),
+    "gfs":   ("GFS",               "gfs_seamless"),
+    "icon":  ("ICON",              "icon_seamless"),
+}
+DEFAULT_MODEL_KEY = "ecmwf"
+
+
+def model_id(key):
+    return MODELS[key][1]
+
+
+def model_label(key):
+    return MODELS[key][0]
+
+
+def get_model_key():
+    """Current global model key; DEFAULT_MODEL_KEY when unset/invalid/corrupt."""
+    try:
+        with open(MODEL_FILE, encoding="utf-8") as f:
+            key = json.load(f).get("model")
+        return key if key in MODELS else DEFAULT_MODEL_KEY
+    except (OSError, ValueError):
+        return DEFAULT_MODEL_KEY
+
+
+def set_model_key(key):
+    """Persist the chosen model. Raises ValueError on an unknown key."""
+    if key not in MODELS:
+        raise ValueError(f"неизвестная модель: {key}. Доступно: {', '.join(MODELS)}")
+    with open(MODEL_FILE, "w", encoding="utf-8") as f:
+        json.dump({"model": key}, f, ensure_ascii=False)
+
 
 def ensure_sites_file():
     """Seed SITES from the packaged default on first run (e.g. an empty volume)."""
@@ -140,7 +178,7 @@ D_OV = ("sunrise,sunset,weather_code,temperature_2m_max,temperature_2m_min,wind_
 
 def build_url(site, rng, date=None):
     base = (f"https://api.open-meteo.com/v1/forecast?latitude={site['lat']}&longitude={site['lon']}"
-            "&wind_speed_unit=ms&timezone=auto")
+            f"&wind_speed_unit=ms&timezone=auto&models={model_id(get_model_key())}")
     if rng == "1d":
         if not date:
             raise SystemExit("для --range 1d нужен --date YYYY-MM-DD")
@@ -206,6 +244,13 @@ def day_score(precip, wind_max, gust_max, dom_dir, aspect_deg, sunshine_s):
     s += min(sunshine_s / 3600.0, 12) * 1.5  # reward sun (thermals)
     return s
 
+def _series_available(H, key):
+    """True if the hourly variable actually came back (present and not all-null).
+    ECMWF, for instance, returns boundary_layer_height / freezing_level_height as null."""
+    v = H.get(key)
+    return bool(v) and any(x is not None for x in v)
+
+
 # ---------------------------------------------------------------- report: 1 day
 def report_1day(data, site, out):
     H, D = data["hourly"], data["daily"]
@@ -216,6 +261,7 @@ def report_1day(data, site, out):
     temp = H["temperature_2m"]; wind = H["wind_speed_10m"]; gust = H["wind_gusts_10m"]
     wdir = H["wind_direction_10m"]; precip = H["precipitation"]; cape = H["cape"]
     clow = H["cloud_cover_low"]; dew = H["dew_point_2m"]; blh = H["boundary_layer_height"]
+    has_blh = _series_available(H, "boundary_layer_height")
 
     dt_temp = [temp[i] for i in day]
     dt_wind = [wind[i] for i in day]
@@ -234,10 +280,14 @@ def report_1day(data, site, out):
     peak_hi = hour_of(t[tmax_i]) + 1
     # ceiling
     midday = min(day, key=lambda i: abs(hour_of(t[i]) - hour_of(t[tmax_i])))
-    top_agl = round(max(blh[i] for i in day))
-    top_msl = elev + top_agl
     lcl_agl = 122 * (temp[midday] - dew[midday])
-    blue = (clow[midday] < 15 and lcl_agl > blh[midday])
+    if has_blh:
+        top_agl = round(max(blh[i] for i in day))
+        top_msl = elev + top_agl
+        blue = (clow[midday] < 15 and lcl_agl > blh[midday])
+    else:  # model without a boundary-layer series (e.g. ECMWF) — no ceiling
+        top_agl = top_msl = None
+        blue = False
     # flying-window direction (11–16, speed-weighted) — NOT the 24h dominant,
     # which light morning/evening drainage skews away from the thermal wind.
     core = [i for i in day if 11 <= hour_of(t[i]) <= 16] or [tmax_i]
@@ -249,7 +299,7 @@ def report_1day(data, site, out):
     # ---- text: factual card (always shown) + tail (window/caveats) ----
     card_lines = [
         f"🪂 {site['name']}{(' (' + card(aspect) + ')') if aspect is not None else ''} — прогноз на {fmt_date(t[0])}",
-        f"📍 {site['lat']:.3f}, {site['lon']:.3f} · {elev} м · {data.get('timezone','')}",
+        f"📍 {site['lat']:.3f}, {site['lon']:.3f} · {elev} м · {data.get('timezone','')} · {model_label(get_model_key())}",
         "",
         f"Вердикт: {st_emoji} {st_label}",
         "",
@@ -257,15 +307,16 @@ def report_1day(data, site, out):
         f"💨 Ветер (днём): {rng_str(dt_wind,' м/с',1)}, порывы до {max(dt_gust):.0f}",
         f"🧭 Направление (в окно): {card(fly_dir)} ~{round(fly_dir)}° → {dv}",
         f"🌧️ Осадки: {'нет' if precip_sum < RAIN_DAY else f'{precip_sum:.1f} мм'}",
-        f"🔆 Термичка: {'рабочая' if max(cape[i] for i in day) > 20 or top_agl > 500 else 'слабая'}, пик {peak_lo:02d}–{peak_hi:02d}",
-        f"🧗 Потолок: ~{top_agl} м над стартом (~{top_msl} MSL){' · голубой' if blue else ''}",
+        f"🔆 Термичка: {'рабочая' if max(cape[i] for i in day) > 20 or (top_agl or 0) > 500 else 'слабая'}, пик {peak_lo:02d}–{peak_hi:02d}",
+        (f"🧗 Потолок: ~{top_agl} м над стартом (~{top_msl} MSL){' · голубой' if blue else ''}"
+         if has_blh else "🧗 Потолок: н/д (модель не даёт)"),
     ]
     card_text = "\n".join(card_lines)
 
     tail = [f"⏱️ Лётное окно: {window}" + (f" (пик {peak_lo:02d}–{peak_hi:02d})" if fly_hours else "")]
     cav = []
     if blue: cav.append("голубая термичка (без облаков-маркеров)")
-    if top_agl < 900: cav.append("низкий потолок — XC слабый")
+    if has_blh and top_agl < 900: cav.append("низкий потолок — XC слабый")
     if dc == "tail": cav.append("ветер в спину в рабочее окно — опасно, сверь экспозицию")
     elif dc == "cross": cav.append("боковой ветер к склону — сверь экспозицию")
     cav.append(f"высота старта по гриду ({elev} м); прогноз далеко вперёд — пересними за 1–2 суток")
@@ -278,7 +329,8 @@ def report_1day(data, site, out):
     pngs = []
     from charts import meteogram_png, ceiling_png, profile_png
     pngs.append(meteogram_png(data, site, out))
-    pngs.append(ceiling_png(data, site, out))
+    if has_blh:  # ceiling chart needs the boundary-layer series
+        pngs.append(ceiling_png(data, site, out))
     pngs.append(profile_png(data, site, out))
     return text, pngs, card_text
 
@@ -389,10 +441,16 @@ def facts_1day(data, site):
     temp = H["temperature_2m"]; wind = H["wind_speed_10m"]; gust = H["wind_gusts_10m"]
     wdir = H["wind_direction_10m"]; precip = H["precipitation"]; cape = H["cape"]
     clow = H["cloud_cover_low"]; dew = H["dew_point_2m"]; blh = H["boundary_layer_height"]
+    has_blh = _series_available(H, "boundary_layer_height")
+    has_frz = _series_available(H, "freezing_level_height")
     tmax_i = max(day, key=lambda i: temp[i])  # peak-heating hour
-    top_agl = round(max(blh[i] for i in day))
     lcl_agl = round(122 * (temp[tmax_i] - dew[tmax_i]))
-    blue = clow[tmax_i] < 15 and (elev + lcl_agl) > (elev + top_agl)
+    if has_blh:
+        top_agl = round(max(blh[i] for i in day))
+        blue = clow[tmax_i] < 15 and (elev + lcl_agl) > (elev + top_agl)
+    else:  # model without a boundary-layer series (e.g. ECMWF)
+        top_agl = None
+        blue = False
 
     levels = [("10m", elev + 10, "wind_speed_10m", "wind_direction_10m"),
               ("925hPa", "geopotential_height_925hPa", "wind_speed_925hPa", "wind_direction_925hPa"),
@@ -410,14 +468,14 @@ def facts_1day(data, site):
 
     return {
         "site": {"name": site["name"], "aspect": card(aspect) if aspect is not None else None, "aspect_deg": aspect,
-                 "elevation_m": elev, "timezone": data.get("timezone")},
+                 "elevation_m": elev, "timezone": data.get("timezone"), "model": model_label(get_model_key())},
         "date": t[0][:10],
         "daylight_hours": f"{hour_of(sr):02d}-{hour_of(ss):02d}",
         "precip_sum_mm": round(D["precipitation_sum"][0], 1),
         "cape_max": round(max(cape[i] for i in day)),
-        "freezing_level_m": round(H["freezing_level_height"][tmax_i]),
+        "freezing_level_m": round(H["freezing_level_height"][tmax_i]) if has_frz else None,
         "thermal_ceiling_m_agl": top_agl,
-        "thermal_ceiling_m_msl": elev + top_agl,
+        "thermal_ceiling_m_msl": (elev + top_agl) if top_agl is not None else None,
         "lcl_m_agl": lcl_agl,
         "blue_thermals": bool(blue),
         "hourly_daytime": [
