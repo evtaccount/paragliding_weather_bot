@@ -130,7 +130,8 @@ H_1D = ("temperature_2m,wind_speed_10m,wind_gusts_10m,wind_direction_10m,cloud_c
         "wind_speed_925hPa,wind_direction_925hPa,geopotential_height_925hPa,"
         "wind_speed_850hPa,wind_direction_850hPa,geopotential_height_850hPa,"
         "wind_speed_700hPa,wind_direction_700hPa,geopotential_height_700hPa,"
-        "wind_speed_600hPa,geopotential_height_600hPa,wind_speed_500hPa,geopotential_height_500hPa")
+        "wind_speed_600hPa,wind_direction_600hPa,geopotential_height_600hPa,"
+        "wind_speed_500hPa,wind_direction_500hPa,geopotential_height_500hPa")
 D_1D = "sunrise,sunset,weather_code,temperature_2m_max,temperature_2m_min,wind_speed_10m_max,wind_gusts_10m_max,wind_direction_10m_dominant,precipitation_sum,sunshine_duration"
 H_OV = "temperature_2m,wind_speed_10m,wind_gusts_10m,wind_direction_10m"
 D_OV = ("sunrise,sunset,weather_code,temperature_2m_max,temperature_2m_min,wind_speed_10m_max,"
@@ -280,6 +281,50 @@ def report_1day(data, site, out):
     pngs.append(ceiling_png(data, site, out))
     pngs.append(profile_png(data, site, out))
     return text, pngs, card_text
+
+# ---------------------------------------------------------------- wind grid (altitude × hour)
+# Levels available in the 1d response, low → high. dir key present for all six after
+# H_1D was extended. Height is a fixed elevation for 10m, else a geopotential-height key.
+_GRID_LEVELS = [
+    ("10 м", "elev+10", "wind_speed_10m", "wind_direction_10m"),
+    ("925", "geopotential_height_925hPa", "wind_speed_925hPa", "wind_direction_925hPa"),
+    ("850", "geopotential_height_850hPa", "wind_speed_850hPa", "wind_direction_850hPa"),
+    ("700", "geopotential_height_700hPa", "wind_speed_700hPa", "wind_direction_700hPa"),
+    ("600", "geopotential_height_600hPa", "wind_speed_600hPa", "wind_direction_600hPa"),
+    ("500", "geopotential_height_500hPa", "wind_speed_500hPa", "wind_direction_500hPa"),
+]
+
+
+def wind_grid(data, site):
+    """Altitude × hour wind table from the 1d open-meteo response.
+
+    Rows are pressure/height levels, columns are daylight hours (hourly). Only levels
+    at/above launch are kept, plus the single nearest level below launch (context);
+    10 m is the launch surface and always kept. Heights come from the midday reference
+    hour (levels' geopotential heights drift hour-to-hour). Pure local compute."""
+    H, D = data["hourly"], data["daily"]
+    t = H["time"]
+    sr, ss = D["sunrise"][0], D["sunset"][0]
+    day = daylight_idx(t, sr, ss)
+    launch = site["elevation_m"]
+    ref = day[len(day) // 2]  # midday reference for level altitudes
+
+    built = []
+    for label, hkey, spd_key, dir_key in _GRID_LEVELS:
+        alt = launch + 10 if hkey == "elev+10" else round(H[hkey][ref])
+        hourly = [{"hour": hour_of(t[i]), "wind_ms": round(H[spd_key][i], 1),
+                   "dir_deg": round(H[dir_key][i])} for i in day]
+        built.append({"label": label, "alt_m_msl": alt, "is_launch": hkey == "elev+10",
+                      "hourly": hourly})
+
+    # keep levels at/above launch + the single nearest below-launch level for context
+    above = [lv for lv in built if lv["alt_m_msl"] >= launch]
+    below = [lv for lv in built if lv["alt_m_msl"] < launch]
+    context = [max(below, key=lambda lv: lv["alt_m_msl"])] if below else []
+    levels = sorted(above + context, key=lambda lv: lv["alt_m_msl"])
+
+    return {"date": t[0][:10], "timezone": data.get("timezone"), "launch_m": launch,
+            "hours": [hour_of(t[i]) for i in day], "levels": levels}
 
 # ---------------------------------------------------------------- report: overview
 def overview_rows(data, site):
