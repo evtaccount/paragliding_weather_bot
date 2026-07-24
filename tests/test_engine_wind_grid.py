@@ -85,3 +85,23 @@ def test_wind_grid_png_writes_file(tmp_path):
     path = charts.wind_grid_png(g, _high_site(), str(tmp_path))
     assert os.path.exists(path) and path.endswith(".png")
     assert os.path.getsize(path) > 1000  # a real image, not an empty stub
+
+
+import asyncio
+
+import forecast
+
+
+def test_get_wind_grid_uses_cache_and_returns_png(monkeypatch):
+    # warm cache: a 7-tuple whose grid is a real engine.wind_grid dict
+    g = engine.wind_grid(_day_data(), _high_site())
+    _site, _date, key = forecast._resolve("Гудаури", "1d", "2026-07-25")
+    import time
+    forecast._fcache[key] = (time.monotonic() + 999, "card", [], {}, "fb", [], g)
+
+    async def boom(*a, **k):  # must NOT re-fetch when the cache is warm
+        raise AssertionError("re-fetched despite warm cache")
+
+    monkeypatch.setattr(forecast, "_fetch_build", boom)
+    png = asyncio.run(forecast.get_wind_grid("Гудаури", "2026-07-25"))
+    assert isinstance(png, (bytes, bytearray)) and len(png) > 1000

@@ -60,7 +60,7 @@ async def scan_week() -> dict:
 
     async def fetch(site):
         key = (site["name"], "week", None)
-        _c, _p, _f, _fb, rows = await _ensure(site, "week", None, key)
+        _c, _p, _f, _fb, rows, _grid = await _ensure(site, "week", None, key)
         return rows
 
     gathered = await asyncio.gather(*(fetch(s) for s in sites), return_exceptions=True)
@@ -192,7 +192,7 @@ def _purge(now: float):
 
 
 async def _fetch_build(site: dict, rng: str, date: str | None):
-    """Fetch open-meteo once and build (card, png_bytes, facts, fallback_text)."""
+    """Fetch open-meteo once and build (card, png_bytes, facts, fallback_text, rows, grid)."""
     url = engine.build_url(site, rng, date)
     try:
         async with httpx.AsyncClient(timeout=30) as client:
@@ -210,32 +210,50 @@ async def _fetch_build(site: dict, rng: str, date: str | None):
             fallback, png_paths, card = engine.report_1day(data, site, out)
             facts = engine.facts_1day(data, site)
             rows = []
+            grid = engine.wind_grid(data, site)
         else:
             fallback, png_paths, card = engine.report_overview(data, site, rng, out)
             facts = engine.facts_overview(data, site, rng)
             rows = engine.overview_rows(data, site)
+            grid = None
         pngs = [pathlib.Path(p).read_bytes() for p in png_paths]
     finally:
         shutil.rmtree(out, ignore_errors=True)
-    return card, pngs, facts, fallback, rows
+    return card, pngs, facts, fallback, rows, grid
 
 
 async def _ensure(site: dict, rng: str, date: str | None, key: tuple):
-    """Return (card, pngs, facts, fallback), fetching only on a cold cache."""
+    """Return (card, pngs, facts, fallback, rows, grid), fetching only on a cold cache."""
     now = time.monotonic()
     _purge(now)
     if key in _fcache:
         return _fcache[key][1:]
-    card, pngs, facts, fallback, rows = await _fetch_build(site, rng, date)
-    _fcache[key] = (now + _TTL, card, pngs, facts, fallback, rows)
-    return card, pngs, facts, fallback, rows
+    card, pngs, facts, fallback, rows, grid = await _fetch_build(site, rng, date)
+    _fcache[key] = (now + _TTL, card, pngs, facts, fallback, rows, grid)
+    return card, pngs, facts, fallback, rows, grid
 
 
 async def get_forecast(site_name: str, rng: str, date: str | None = None):
     """Factual card + charts. No LLM. rng: 1d | 3d | week | 2weeks."""
     site, date, key = _resolve(site_name, rng, date)
-    card, pngs, _facts, _fallback, _rows = await _ensure(site, rng, date, key)
+    card, pngs, _facts, _fallback, _rows, _grid = await _ensure(site, rng, date, key)
     return card, pngs
+
+
+async def get_wind_grid(site_name: str, date: str) -> bytes:
+    """PNG of the altitude × hour wind grid for a single day. Reuses the warm 1d cache
+    (no re-fetch) and builds the image on demand — /today never pays for it unused."""
+    site, date, key = _resolve(site_name, "1d", date)
+    _card, _pngs, _facts, _fallback, _rows, grid = await _ensure(site, "1d", date, key)
+    if not grid:
+        raise ForecastError("Данные по высотам недоступны для этого дня.")
+    out = tempfile.mkdtemp(prefix="pgwg_")
+    try:
+        import charts
+        path = charts.wind_grid_png(grid, site, out)
+        return pathlib.Path(path).read_bytes()
+    finally:
+        shutil.rmtree(out, ignore_errors=True)
 
 
 async def get_analysis(site_name: str, rng: str, date: str | None = None, deep: bool = False) -> str:
@@ -257,7 +275,7 @@ async def get_analysis(site_name: str, rng: str, date: str | None = None, deep: 
         log.info("analysis cache hit: %s", acache_key)
         return _acache[acache_key][1]
 
-    card, _pngs, facts, fallback, _rows = await _ensure(site, rng, date, base_key)
+    card, _pngs, facts, fallback, _rows, _grid = await _ensure(site, rng, date, base_key)
     rules_tail = fallback[len(card):].strip() or fallback  # deterministic verdict tail
 
     if not analysis.available():

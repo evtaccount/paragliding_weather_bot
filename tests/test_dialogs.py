@@ -216,7 +216,7 @@ async def test_day_picker_uses_cached_site_local_dates(feed, session, fc_calls):
     dates = [(start + dt.timedelta(days=i)).isoformat() for i in range(3)]
     _site, _date, key = forecast._resolve("Гудаури", "3d", None)
     forecast._fcache[key] = (time.monotonic() + 999, "c", [],
-                             {"days_daytime": [{"date": d} for d in dates]}, "f", [])
+                             {"days_daytime": [{"date": d} for d in dates]}, "f", [], None)
     await feed(text_update("/threedays Гудаури"))
     picker = kb_for(session, "📅 Подробно по дню:")
     assert [b.callback_data for b in buttons(picker)] == [f"pd|Гудаури|{d}" for d in dates]
