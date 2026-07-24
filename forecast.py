@@ -14,6 +14,7 @@ import datetime as dt
 import logging
 import os
 import pathlib
+import re
 import shutil
 import tempfile
 import time
@@ -109,6 +110,9 @@ async def _detail_context(site: dict, date: str) -> dict:
     return ctx
 
 
+_ADHOC_NAME_RE = re.compile(r"^-?\d+\.\d{4}, -?\d+\.\d{4}$")  # register_adhoc's name format
+
+
 def register_adhoc(lat: float, lon: float, elev: int) -> str:
     """Register an ad-hoc point (unknown aspect) and return its lookup name."""
     name = f"{lat:.4f}, {lon:.4f}"
@@ -125,10 +129,26 @@ def _resolve(site_name: str, rng: str, date: str | None):
     except SystemExit:
         site = _adhoc.get(site_name)
         if site is None:
+            if _ADHOC_NAME_RE.match(site_name):  # ad-hoc points don't survive a restart
+                raise ForecastError("Эта точка по координатам больше не в памяти (бот перезапускался). "
+                                    "Запроси её заново через «📍 По координатам».")
             raise ForecastError(f"Старт не найден: {site_name}. /sites — список.")
     if rng == "1d" and not date:
         date = dt.date.today().isoformat()
     return site, date, (site["name"], rng, date)
+
+
+def cached_dates(site_name: str, rng: str, date: str | None = None) -> list[str] | None:
+    """Dates (site-local) of a cached overview — for the day-picker. None on a cold cache."""
+    try:
+        _site, _date, key = _resolve(site_name, rng, date)
+    except ForecastError:
+        return None
+    entry = _fcache.get(key)
+    if entry is None:
+        return None
+    days = entry[3].get("days_daytime") or []  # entry: (expires, card, pngs, facts, fallback)
+    return [d["date"] for d in days] or None
 
 
 def _purge(now: float):

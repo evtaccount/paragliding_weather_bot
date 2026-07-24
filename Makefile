@@ -8,7 +8,7 @@ COMPOSE     ?= docker compose
 RSYNC_EXCL   = --exclude .git --exclude .venv --exclude .env --exclude __pycache__
 
 .DEFAULT_GOAL := help
-.PHONY: help install run check secrets clean \
+.PHONY: help install run check test secrets clean \
         docker-build docker-up docker-down docker-restart docker-logs docker-ps \
         deploy deploy-restart deploy-logs
 
@@ -25,6 +25,9 @@ run:                ## run the bot locally (needs .env)
 
 check:              ## byte-compile all modules (quick syntax check)
 	python3 -m py_compile bot.py forecast.py engine.py charts.py && echo "SYNTAX OK"
+
+test:               ## run the dialog test suite (needs requirements-dev.txt installed)
+	.venv/bin/python -m pytest -q
 
 secrets:            ## create .env from example and lock it down (chmod 600)
 	@test -f .env || cp .env.example .env

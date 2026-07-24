@@ -12,3 +12,6 @@ deploy/pgbot.service
 
 # os
 .DS_Store
+
+# pytest
+.pytest_cache/

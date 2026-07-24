@@ -1,0 +1,413 @@
+"""Dialog-branch tests: every command, FSM step, and inline-button route of the bot,
+including the dead-end guards (stale buttons, lost state, bad input re-asks).
+Network and LLM are patched out; routing/FSM/middleware are the real thing.
+"""
+import datetime as dt
+import time
+
+import engine
+import forecast
+import bot as botmod
+from conftest import write_sites, DEFAULT_SITES
+from tg import (buttons, callback_update, cb_answers, dice_update, kb_for,
+                keyboards, location_update, markup_edits, media_groups, photos,
+                text_update, texts)
+
+TODAY = dt.date.today().isoformat()
+
+
+# ---------------------------------------------------------------- basics
+
+async def test_help_and_start(feed, session):
+    await feed(text_update("/help"))
+    await feed(text_update("/start"))
+    assert texts(session) == [botmod.HELP, botmod.HELP]
+
+
+async def test_sites_list(feed, session):
+    await feed(text_update("/sites"))
+    out = texts(session)[0]
+    assert "Гудаури" in out and "Лалискури" in out
+
+
+async def test_sites_empty_hints_add(feed, session):
+    write_sites([])
+    await feed(text_update("/sites"))
+    assert "Сохранённых стартов нет" in texts(session)[0]
+    assert "/add" in texts(session)[0]
+
+
+async def test_unknown_text_and_nontext_get_catchall(feed, session):
+    await feed(text_update("привет"))
+    await feed(text_update("/foobar"))
+    await feed(dice_update())
+    assert texts(session) == ["Не понял. Список команд: /help"] * 3
+
+
+# ---------------------------------------------------------------- /add one-shot
+
+async def test_add_oneshot_ok(feed, session, elevation):
+    await feed(text_update("/add Тест 42.5 44.5 Ю"))
+    assert any("✅ Старт добавлен: Тест" in t for t in texts(session))
+    assert engine.find_site("Тест")["aspect_deg"] == 180
+
+
+async def test_add_oneshot_bad_coords(feed, session):
+    await feed(text_update("/add Тест 95 44.5 Ю"))
+    assert "Координаты неверные" in texts(session)[0]
+
+
+async def test_add_oneshot_bad_aspect(feed, session):
+    await feed(text_update("/add Тест 42.5 44.5 ЮЮЮ"))
+    assert "экспозиция" in texts(session)[0]
+
+
+async def test_add_oneshot_name_too_long(feed, session):
+    await feed(text_update(f"/add {'Д' * 25} 42.5 44.5 Ю"))
+    assert "Слишком длинное имя" in texts(session)[0]
+
+
+async def test_add_oneshot_name_with_pipe(feed, session):
+    await feed(text_update("/add А|Б 42.5 44.5 Ю"))
+    assert "«|»" in texts(session)[0]
+
+
+async def test_add_oneshot_duplicate_name(feed, session):
+    await feed(text_update("/add ГУДАУРИ 42.5 44.5 Ю"))
+    assert "уже есть" in texts(session)[0]
+
+
+async def test_add_oneshot_name_shadowed_by_alias(feed, session):
+    await feed(text_update("/add гуда 42.5 44.5 Ю"))
+    assert "псевдоним" in texts(session)[0]
+
+
+# ---------------------------------------------------------------- /add interactive
+
+async def test_add_interactive_happy_path_decimal_comma(feed, session, elevation):
+    await feed(text_update("/add"))
+    assert "Пришли координаты" in texts(session)[0]
+    await feed(text_update("42,47, 44,48"))  # decimal commas → 42.47, 44.48
+    assert "Название старта?" in texts(session)[-1]
+    await feed(text_update("Новый"))
+    assert "Экспозиция" in texts(session)[-1]
+    await feed(text_update("Ю"))
+    assert "Заметка" in texts(session)[-1]
+    await feed(text_update("-"))
+    assert any("✅ Старт добавлен: Новый" in t for t in texts(session))
+    site = engine.find_site("Новый")
+    assert site["lat"] == 42.47 and site["lon"] == 44.48 and site["notes"] == ""
+
+
+async def test_add_interactive_location_pin_and_notes(feed, session, elevation):
+    await feed(text_update("/add"))
+    await feed(location_update(41.0, 43.0))
+    assert "Название старта?" in texts(session)[-1]
+    await feed(text_update("Пин"))
+    await feed(text_update("180"))
+    await feed(text_update("юг, лучше утром"))
+    site = engine.find_site("Пин")
+    assert site["lat"] == 41.0 and site["notes"] == "юг, лучше утром"
+
+
+async def test_add_interactive_bad_coords_reask(feed, session, elevation):
+    await feed(text_update("/add"))
+    await feed(text_update("тут красиво"))
+    assert "Не понял координаты" in texts(session)[-1]
+    await feed(text_update("42 47 44 48"))  # 4 числа — переспросить, не брать первые два
+    assert "Не понял координаты" in texts(session)[-1]
+    await feed(text_update("42.47 44.48"))  # диалог жив, валидный ввод продолжает его
+    assert "Название старта?" in texts(session)[-1]
+
+
+async def test_add_interactive_long_name_reask(feed, session, elevation):
+    await feed(text_update("/add"))
+    await feed(text_update("42.47 44.48"))
+    await feed(text_update("Д" * 25))
+    assert "Слишком длинное имя" in texts(session)[-1]
+    await feed(text_update("Коротко"))
+    assert "Экспозиция" in texts(session)[-1]
+
+
+async def test_add_interactive_bad_aspect_reask(feed, session, elevation):
+    await feed(text_update("/add"))
+    await feed(text_update("42.47 44.48"))
+    await feed(text_update("Старт"))
+    await feed(text_update("вбок"))
+    assert "Попробуй ещё раз" in texts(session)[-1]
+    await feed(text_update("225"))
+    assert "Заметка" in texts(session)[-1]
+
+
+async def test_add_interactive_commands_still_work_mid_dialog(feed, session):
+    await feed(text_update("/add"))
+    await feed(text_update("/sites"))  # команда не должна съедаться шагом координат
+    assert any("Гудаури" in t for t in texts(session))
+
+
+async def test_cancel_mid_dialog_and_idle(feed, session):
+    await feed(text_update("/add"))
+    await feed(text_update("/cancel"))
+    assert "Отменено." in texts(session)[-1]
+    await feed(text_update("42.47 44.48"))  # состояние сброшено — это уже не координаты
+    assert texts(session)[-1] == "Не понял. Список команд: /help"
+    await feed(text_update("/cancel"))  # вне диалога
+    assert "Нечего отменять." in texts(session)[-1]
+
+
+# ---------------------------------------------------------------- /removesite
+
+async def test_removesite_branches(feed, session):
+    await feed(text_update("/removesite"))
+    assert "Формат:" in texts(session)[-1]
+    await feed(text_update("/removesite Нету"))
+    assert "не найден" in texts(session)[-1]
+    await feed(text_update("/removesite Лалискури"))
+    assert "удалён" in texts(session)[-1]
+    assert [s["name"] for s in engine.load_sites()] == ["Гудаури"]
+
+
+# ---------------------------------------------------------------- forecast commands
+
+async def test_today_with_site_sends_card_and_two_analysis_buttons(feed, session, fc_calls):
+    await feed(text_update("/today Гудаури"))
+    assert fc_calls == [("Гудаури", "1d", TODAY)]
+    assert f"CARD Гудаури 1d {TODAY}" in texts(session)
+    kb = kb_for(session, "Нужен разбор от ИИ?")
+    datas = [b.callback_data for b in buttons(kb)]
+    assert datas == [f"llm|Гудаури|1d|{TODAY}", f"deep|Гудаури|1d|{TODAY}"]
+    assert kb_for(session, "📅 Подробно по дню:") is None  # day picker — только для обзоров
+
+
+async def test_single_png_goes_as_photo(feed, session, fc_calls):
+    await feed(text_update("/today Гудаури"))
+    assert len(photos(session)) == 1 and not media_groups(session)
+
+
+async def test_many_pngs_go_as_media_group(feed, session, monkeypatch):
+    async def fake(site, rng, date=None):
+        return "CARD", [b"a", b"b", b"c"]
+    monkeypatch.setattr(forecast, "get_forecast", fake)
+    await feed(text_update("/tomorrow Гудаури"))
+    assert len(media_groups(session)) == 1 and not photos(session)
+
+
+async def test_no_pngs_no_photo_messages(feed, session, monkeypatch):
+    async def fake(site, rng, date=None):
+        return "CARD", []
+    monkeypatch.setattr(forecast, "get_forecast", fake)
+    await feed(text_update("/today Гудаури"))
+    assert not photos(session) and not media_groups(session)
+
+
+async def test_overview_has_single_analysis_button_and_day_picker(feed, session, fc_calls):
+    await feed(text_update("/week Гудаури"))
+    assert fc_calls == [("Гудаури", "week", None)]
+    kb = kb_for(session, "Нужен разбор от ИИ?")
+    assert [b.callback_data for b in buttons(kb)] == ["llm|Гудаури|week|"]  # без deep
+    picker = kb_for(session, "📅 Подробно по дню:")
+    assert len(buttons(picker)) == 7  # холодный кэш → фолбэк на серверные даты
+
+
+async def test_day_picker_uses_cached_site_local_dates(feed, session, fc_calls):
+    start = dt.date.today() + dt.timedelta(days=1)  # смещённые даты, как из чужой таймзоны
+    dates = [(start + dt.timedelta(days=i)).isoformat() for i in range(3)]
+    _site, _date, key = forecast._resolve("Гудаури", "3d", None)
+    forecast._fcache[key] = (time.monotonic() + 999, "c", [],
+                             {"days_daytime": [{"date": d} for d in dates]}, "f")
+    await feed(text_update("/threedays Гудаури"))
+    picker = kb_for(session, "📅 Подробно по дню:")
+    assert [b.callback_data for b in buttons(picker)] == [f"pd|Гудаури|{d}" for d in dates]
+
+
+async def test_forecast_command_parsing(feed, session, fc_calls):
+    await feed(text_update("/forecast Гудаури 3дня"))
+    assert fc_calls[-1] == ("Гудаури", "3d", None)
+    await feed(text_update("/forecast Гудаури"))  # без диапазона → week
+    assert fc_calls[-1] == ("Гудаури", "week", None)
+    await feed(text_update("/forecast week"))  # только диапазон → выбор точки
+    await feed(text_update("/forecast"))
+    assert texts(session).count("Для какой точки?") == 2
+
+
+async def test_shortcut_without_site_offers_sites_and_coords(feed, session):
+    await feed(text_update("/today"))
+    kb = kb_for(session, "Для какой точки?")
+    datas = [b.callback_data for b in buttons(kb)]
+    assert datas == [f"pk|1d|{TODAY}|Гудаури", f"pk|1d|{TODAY}|Лалискури", f"pc|1d|{TODAY}"]
+
+
+async def test_forecast_error_reaches_user(feed, session, monkeypatch):
+    async def fake(site, rng, date=None):
+        raise forecast.ForecastError("Старт не найден: Х. /sites — список.")
+    monkeypatch.setattr(forecast, "get_forecast", fake)
+    await feed(text_update("/week Х"))
+    assert "⚠️ Старт не найден: Х" in texts(session)[0]
+    assert "/sites" in texts(session)[0]
+
+
+async def test_unexpected_error_reaches_user(feed, session, monkeypatch):
+    async def fake(site, rng, date=None):
+        raise RuntimeError("boom")
+    monkeypatch.setattr(forecast, "get_forecast", fake)
+    await feed(text_update("/week Гудаури"))
+    assert "⚠️ Ошибка: boom" in texts(session)[0]
+
+
+# ---------------------------------------------------------------- legacy long site names
+
+async def test_existing_long_name_drops_buttons_but_sends_card(feed, session, fc_calls):
+    long_name = "Д" * 30  # 60 байт UTF-8 — callback_data не влезает
+    write_sites(DEFAULT_SITES["sites"] + [
+        {"name": long_name, "aliases": [], "lat": 41.0, "lon": 43.0,
+         "elevation_m": 100, "aspect": "Ю", "aspect_deg": 180.0, "notes": ""}])
+    await feed(text_update(f"/week {long_name}"))
+    assert f"CARD {long_name} week None" in texts(session)  # карточка дошла
+    assert kb_for(session, "Нужен разбор от ИИ?") is None  # кнопка молча пропущена
+    assert kb_for(session, "📅 Подробно по дню:") is None
+    # и пикер точек не ломается целиком — длинное имя просто выпадает из списка
+    session.requests.clear()
+    await feed(text_update("/today"))
+    labels = [b.text for b in buttons(kb_for(session, "Для какой точки?"))]
+    assert long_name not in labels and "Гудаури" in labels and "📍 По координатам" in labels
+
+
+# ---------------------------------------------------------------- analysis callbacks
+
+async def test_llm_button_runs_fast_analysis(feed, session, an_calls):
+    await feed(callback_update(f"llm|Гудаури|1d|{TODAY}"))
+    assert an_calls == [("Гудаури", "1d", TODAY, False)]
+    assert "АНАЛИЗ ГОТОВ" in texts(session)
+    assert any(a.text and "Считаю разбор" in a.text for a in cb_answers(session))
+
+
+async def test_deep_button_runs_deep_analysis(feed, session, an_calls):
+    await feed(callback_update(f"deep|Гудаури|1d|{TODAY}"))
+    assert an_calls == [("Гудаури", "1d", TODAY, True)]
+    assert any(a.text and "глубокий" in a.text for a in cb_answers(session))
+
+
+async def test_overview_llm_button_passes_no_date(feed, session, an_calls):
+    await feed(callback_update("llm|Гудаури|week|"))
+    assert an_calls == [("Гудаури", "week", None, False)]
+
+
+async def test_analysis_forecast_error_reaches_user(feed, session, monkeypatch):
+    async def fake(site, rng, date=None, deep=False):
+        raise forecast.ForecastError("нет данных")
+    monkeypatch.setattr(forecast, "get_analysis", fake)
+    await feed(callback_update("llm|Гудаури|week|"))
+    assert "⚠️ нет данных" in texts(session)
+
+
+async def test_analysis_unexpected_error_reaches_user(feed, session, monkeypatch):
+    async def fake(site, rng, date=None, deep=False):
+        raise RuntimeError("llm down")
+    monkeypatch.setattr(forecast, "get_analysis", fake)
+    await feed(callback_update("llm|Гудаури|week|"))
+    assert "⚠️ Ошибка: llm down" in texts(session)
+
+
+async def test_malformed_callback_is_acked_silently(feed, session, an_calls):
+    await feed(callback_update("llm|обрывок"))
+    assert not texts(session) and not an_calls
+    assert len(cb_answers(session)) == 1
+
+
+async def test_adhoc_point_after_restart_gets_clear_message(feed, session):
+    # _adhoc пуст (как после рестарта) — get_analysis НЕ патчим: _resolve падает до сети
+    await feed(callback_update("llm|42.4700, 44.4800|week|"))
+    assert any("перезапускался" in t for t in texts(session))
+
+
+# ---------------------------------------------------------------- day picker callbacks
+
+async def test_pick_day_sends_1d_forecast(feed, session, fc_calls):
+    await feed(callback_update(f"pd|Гудаури|{TODAY}"))
+    assert fc_calls == [("Гудаури", "1d", TODAY)]
+    assert any(a.text and "Прогноз на" in a.text for a in cb_answers(session))
+
+
+async def test_pick_day_past_date_is_rejected(feed, session, fc_calls):
+    old = (dt.date.today() - dt.timedelta(days=3)).isoformat()
+    await feed(callback_update(f"pd|Гудаури|{old}"))
+    assert not fc_calls
+    alert = cb_answers(session)[0]
+    assert "уже прошла" in alert.text and alert.show_alert
+
+
+async def test_pick_day_yesterday_allowed_for_timezone_slack(feed, session, fc_calls):
+    yesterday = (dt.date.today() - dt.timedelta(days=1)).isoformat()
+    await feed(callback_update(f"pd|Гудаури|{yesterday}"))
+    assert fc_calls == [("Гудаури", "1d", yesterday)]
+
+
+async def test_pick_day_malformed_date_is_acked_silently(feed, session, fc_calls):
+    await feed(callback_update("pd|Гудаури|не-дата"))
+    assert not fc_calls and not texts(session)
+
+
+# ---------------------------------------------------------------- site picker callbacks
+
+async def test_pick_site_collapses_picker_and_sends_forecast(feed, session, fc_calls):
+    await feed(callback_update("pk|week||Гудаури"))
+    assert fc_calls == [("Гудаури", "week", None)]
+    assert len(markup_edits(session)) == 1  # пикер свёрнут
+
+
+async def test_pick_site_with_date(feed, session, fc_calls):
+    await feed(callback_update(f"pk|1d|{TODAY}|Лалискури"))
+    assert fc_calls == [("Лалискури", "1d", TODAY)]
+
+
+# ---------------------------------------------------------------- ad-hoc coordinates flow
+
+async def test_adhoc_flow_text_coords(feed, session, fc_calls, elevation):
+    await feed(callback_update("pc|week|"))
+    assert "Пришли координаты" in texts(session)[-1]
+    await feed(text_update("41,1234 43,9876"))  # decimal commas
+    assert fc_calls == [("41.1234, 43.9876", "week", None)]
+    assert forecast._adhoc["41.1234, 43.9876"]["elevation_m"] == 1234
+
+
+async def test_adhoc_flow_location_pin(feed, session, fc_calls, elevation):
+    await feed(callback_update(f"pc|1d|{TODAY}"))
+    await feed(location_update(41.5, 43.5))
+    assert fc_calls == [("41.5000, 43.5000", "1d", TODAY)]
+
+
+async def test_adhoc_bad_coords_reask_then_ok(feed, session, fc_calls, elevation):
+    await feed(callback_update("pc|week|"))
+    await feed(text_update("тут"))
+    assert "Не понял координаты" in texts(session)[-1]
+    assert "/cancel" in texts(session)[-1]
+    await feed(text_update("41.5 43.5"))
+    assert fc_calls == [("41.5000, 43.5000", "week", None)]
+
+
+async def test_adhoc_state_cleared_by_site_pick(feed, session, fc_calls):
+    await feed(callback_update("pc|week|"))  # вошёл в режим координат…
+    await feed(callback_update("pk|week||Гудаури"))  # …но передумал и выбрал старт
+    assert fc_calls == [("Гудаури", "week", None)]
+    await feed(text_update("какой-то текст"))  # состояние сброшено — не парсится как координаты
+    assert texts(session)[-1] == "Не понял. Список команд: /help"
+
+
+async def test_adhoc_state_cleared_by_day_pick(feed, session, fc_calls):
+    await feed(callback_update("pc|week|"))
+    await feed(callback_update(f"pd|Гудаури|{TODAY}"))
+    assert fc_calls == [("Гудаури", "1d", TODAY)]
+    await feed(text_update("42 43"))
+    assert texts(session)[-1] == "Не понял. Список команд: /help"
+
+
+# ---------------------------------------------------------------- stale buttons
+
+async def test_stale_buttons_answered_with_alert(feed, session, fc_calls, an_calls):
+    for data in (f"llm|Гудаури|1d|{TODAY}", f"pd|Гудаури|{TODAY}",
+                 "pk|week||Гудаури", "pc|week|"):
+        await feed(callback_update(data, accessible=False))
+    assert not fc_calls and not an_calls and not texts(session)
+    alerts = cb_answers(session)
+    assert len(alerts) == 4
+    assert all("Кнопка устарела" in a.text and a.show_alert for a in alerts)
