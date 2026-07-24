@@ -44,6 +44,40 @@ def known_sites():
     return [s["name"] for s in engine.load_sites()]
 
 
+# A "suitable" day for the scan: flyable, or flyable-with-caveats. NOT маргинальный
+# (which shares the ⚠️ emoji) and NOT нелётный — so filter on the label, not the emoji.
+FLYABLE_LABELS = {"лётный", "с оговорками"}
+
+
+async def scan_week() -> dict:
+    """Week overview across ALL saved sites, keeping only flyable days.
+
+    Returns {"sites": [{"name", "aspect", "days": [row, ...]}], "empty": [name...],
+    "failed": [name...]}. Each row is an engine.overview_rows() dict. Fetches run
+    concurrently and reuse (warm) the same week cache /week uses.
+    """
+    sites = engine.load_sites()
+
+    async def fetch(site):
+        key = (site["name"], "week", None)
+        _c, _p, _f, _fb, rows = await _ensure(site, "week", None, key)
+        return rows
+
+    gathered = await asyncio.gather(*(fetch(s) for s in sites), return_exceptions=True)
+    out: dict = {"sites": [], "empty": [], "failed": []}
+    for site, res in zip(sites, gathered):
+        if isinstance(res, Exception):
+            log.warning("scan: %s failed: %s", site["name"], res)
+            out["failed"].append(site["name"])
+            continue
+        fly = [r for r in res if r["label"] in FLYABLE_LABELS]
+        if fly:
+            out["sites"].append({"name": site["name"], "aspect": site.get("aspect_deg"), "days": fly})
+        else:
+            out["empty"].append(site["name"])
+    return out
+
+
 async def fetch_elevation(lat: float, lon: float) -> int:
     """Grid-cell elevation (m) for coordinates, from open-meteo. 0 on failure."""
     url = (f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}"
@@ -175,13 +209,15 @@ async def _fetch_build(site: dict, rng: str, date: str | None):
         if rng == "1d":
             fallback, png_paths, card = engine.report_1day(data, site, out)
             facts = engine.facts_1day(data, site)
+            rows = []
         else:
             fallback, png_paths, card = engine.report_overview(data, site, rng, out)
             facts = engine.facts_overview(data, site, rng)
+            rows = engine.overview_rows(data, site)
         pngs = [pathlib.Path(p).read_bytes() for p in png_paths]
     finally:
         shutil.rmtree(out, ignore_errors=True)
-    return card, pngs, facts, fallback
+    return card, pngs, facts, fallback, rows
 
 
 async def _ensure(site: dict, rng: str, date: str | None, key: tuple):
@@ -190,15 +226,15 @@ async def _ensure(site: dict, rng: str, date: str | None, key: tuple):
     _purge(now)
     if key in _fcache:
         return _fcache[key][1:]
-    card, pngs, facts, fallback = await _fetch_build(site, rng, date)
-    _fcache[key] = (now + _TTL, card, pngs, facts, fallback)
-    return card, pngs, facts, fallback
+    card, pngs, facts, fallback, rows = await _fetch_build(site, rng, date)
+    _fcache[key] = (now + _TTL, card, pngs, facts, fallback, rows)
+    return card, pngs, facts, fallback, rows
 
 
 async def get_forecast(site_name: str, rng: str, date: str | None = None):
     """Factual card + charts. No LLM. rng: 1d | 3d | week | 2weeks."""
     site, date, key = _resolve(site_name, rng, date)
-    card, pngs, _facts, _fallback = await _ensure(site, rng, date, key)
+    card, pngs, _facts, _fallback, _rows = await _ensure(site, rng, date, key)
     return card, pngs
 
 
@@ -221,7 +257,7 @@ async def get_analysis(site_name: str, rng: str, date: str | None = None, deep: 
         log.info("analysis cache hit: %s", acache_key)
         return _acache[acache_key][1]
 
-    card, _pngs, facts, fallback = await _ensure(site, rng, date, base_key)
+    card, _pngs, facts, fallback, _rows = await _ensure(site, rng, date, base_key)
     rules_tail = fallback[len(card):].strip() or fallback  # deterministic verdict tail
 
     if not analysis.available():

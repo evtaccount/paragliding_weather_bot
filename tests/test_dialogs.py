@@ -5,6 +5,8 @@ Network and LLM are patched out; routing/FSM/middleware are the real thing.
 import datetime as dt
 import time
 
+import pytest
+
 import engine
 import forecast
 import bot as botmod
@@ -214,10 +216,75 @@ async def test_day_picker_uses_cached_site_local_dates(feed, session, fc_calls):
     dates = [(start + dt.timedelta(days=i)).isoformat() for i in range(3)]
     _site, _date, key = forecast._resolve("Гудаури", "3d", None)
     forecast._fcache[key] = (time.monotonic() + 999, "c", [],
-                             {"days_daytime": [{"date": d} for d in dates]}, "f")
+                             {"days_daytime": [{"date": d} for d in dates]}, "f", [])
     await feed(text_update("/threedays Гудаури"))
     picker = kb_for(session, "📅 Подробно по дню:")
     assert [b.callback_data for b in buttons(picker)] == [f"pd|Гудаури|{d}" for d in dates]
+
+
+# ---------------------------------------------------------------- /scan
+
+
+@pytest.fixture()
+def fake_scan(monkeypatch):
+    """Patch forecast.scan_week; set holder['result'] to the structure to return."""
+    holder = {}
+
+    async def fake():
+        return holder["result"]
+
+    monkeypatch.setattr(forecast, "scan_week", fake)
+    return holder
+
+
+async def test_scan_lists_sites_with_day_buttons(feed, session, fake_scan):
+    d0, d1 = TODAY, (dt.date.today() + dt.timedelta(days=1)).isoformat()
+    fake_scan["result"] = {
+        "sites": [
+            {"name": "Гудаури", "aspect": 180.0, "days": [
+                {"date": d0, "emoji": "✅", "label": "лётный", "score": 90,
+                 "wmax": 5, "gmax": 8, "dom": 180, "precip": 0.0, "wc": 0, "tmax": 20}]},
+            {"name": "Лалискури", "aspect": 225.0, "days": [
+                {"date": d1, "emoji": "⚠️", "label": "с оговорками", "score": 60,
+                 "wmax": 7, "gmax": 10, "dom": 200, "precip": 0.0, "wc": 3, "tmax": 18}]},
+        ],
+        "empty": [], "failed": [],
+    }
+    await feed(text_update("/scan"))
+    body = "\n".join(texts(session))
+    assert "Гудаури" in body and "Лалискури" in body
+    kb = keyboards(session)[-1]
+    assert [b.callback_data for b in buttons(kb)] == [f"pd|Гудаури|{d0}", f"pd|Лалискури|{d1}"]
+
+
+async def test_scan_button_routes_to_pick_day(feed, session, fc_calls):
+    # a scan day button IS a pd| callback → the existing cb_pick_day handler
+    await feed(callback_update(f"pd|Гудаури|{TODAY}"))
+    assert fc_calls == [("Гудаури", "1d", TODAY)]
+
+
+async def test_scan_no_flyable_days_message(feed, session, fake_scan):
+    fake_scan["result"] = {"sites": [], "empty": ["Гудаури", "Лалискури"], "failed": []}
+    await feed(text_update("/scan"))
+    assert any("лётных окон нет" in t for t in texts(session))
+    assert keyboards(session) == []  # no buttons when nothing is flyable
+
+
+async def test_scan_no_sites_hints_add(feed, session):
+    write_sites([])
+    await feed(text_update("/scan"))
+    assert any("/add" in t for t in texts(session))
+
+
+async def test_scan_reports_failed_sites(feed, session, fake_scan):
+    fake_scan["result"] = {
+        "sites": [{"name": "Гудаури", "aspect": 180.0, "days": [
+            {"date": TODAY, "emoji": "✅", "label": "лётный", "score": 90,
+             "wmax": 5, "gmax": 8, "dom": 180, "precip": 0.0, "wc": 0, "tmax": 20}]}],
+        "empty": [], "failed": ["Лалискури"],
+    }
+    await feed(text_update("/scan"))
+    assert any("Не удалось получить" in t and "Лалискури" in t for t in texts(session))
 
 
 async def test_forecast_command_parsing(feed, session, fc_calls):

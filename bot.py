@@ -77,6 +77,7 @@ HELP = (
     "/threedays [старт] — обзор на 3 дня\n"
     "/week [старт] — обзор на неделю\n"
     "/twoweeks [старт] — обзор на 2 недели\n"
+    "/scan — лётные дни на неделю по всем стартам\n"
     "/forecast <старт> <диапазон> — вручную (1d · 3d · week · 2weeks)\n"
     "/sites — список стартов\n\n"
     "Если старт не указан, а он один — берётся автоматически.\n"
@@ -89,6 +90,7 @@ BOT_COMMANDS = [
     BotCommand(command="threedays", description="Обзор на 3 дня"),
     BotCommand(command="week", description="Обзор на неделю"),
     BotCommand(command="twoweeks", description="Обзор на 2 недели"),
+    BotCommand(command="scan", description="Лётные дни на неделю по всем стартам"),
     BotCommand(command="forecast", description="Прогноз: <старт> <диапазон>"),
     BotCommand(command="sites", description="Список стартов"),
     BotCommand(command="add", description="Добавить старт: <имя> <lat> <lon> <эксп>"),
@@ -178,6 +180,36 @@ def _day_picker_kb(site: str, rng: str) -> InlineKeyboardMarkup | None:
     if row:
         rows.append(row)
     return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
+
+
+def _scan_message(result: dict) -> tuple[str, InlineKeyboardMarkup | None]:
+    """Render scan_week() output → (text, keyboard). One pd|-button per (site, day)."""
+    if not result["sites"]:
+        lines = ["🔎 На этой неделе лётных окон нет по всем стартам."]
+        if result["failed"]:
+            lines.append(f"⚠️ Не удалось получить: {', '.join(result['failed'])}.")
+        return "\n".join(lines), None
+    lines = ["🔎 Лётные дни на неделю — по стартам", ""]
+    rows: list[list[InlineKeyboardButton]] = []
+    for s in result["sites"]:
+        head = f"🪂 {s['name']}" + (f" ({engine.card(s['aspect'])})" if s["aspect"] is not None else "")
+        lines.append(head)
+        for r in s["days"]:
+            d = dt.date.fromisoformat(r["date"])
+            day = f"{_WD[d.weekday()]} {d.day:02d}.{d.month:02d}"
+            lines.append(f"  {r['emoji']} {day} · до {r['wmax']:.0f}, порыв {r['gmax']:.0f} м/с · "
+                         f"{engine.card(r['dom'])} · {engine.WMO.get(r['wc'], '')}"
+                         + (f" {r['precip']:.1f}мм" if r["precip"] > engine.RAIN_DAY else ""))
+            btn = _btn(f"{r['emoji']} {day} · {s['name']}", f"pd|{s['name']}|{r['date']}")
+            if btn is not None:
+                rows.append([btn])
+        lines.append("")
+    if result["empty"]:
+        lines.append("Без лётных дней: " + ", ".join(result["empty"]) + ".")
+    if result["failed"]:
+        lines.append(f"⚠️ Не удалось получить: {', '.join(result['failed'])}.")
+    kb = InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
+    return "\n".join(lines).rstrip(), kb
 
 
 async def send_forecast(message: Message, site: str, rng: str, date: str | None = None):
@@ -419,6 +451,24 @@ async def cmd_forecast(message: Message, command: CommandObject):
         await ask_location(message, rng, None)
         return
     await send_forecast(message, site, rng)
+
+
+@dp.message(Command("scan"), flags={"forecast": True})
+async def cmd_scan(message: Message):
+    if not forecast.known_sites():
+        await message.answer("Сохранённых стартов нет. Добавить: /add")
+        return
+    try:
+        async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
+            result = await forecast.scan_week()
+    except Exception as e:  # noqa: BLE001 — surface any unexpected failure to the user
+        log.exception("scan failed")
+        await message.answer(f"⚠️ Ошибка: {e}")
+        return
+    text, kb = _scan_message(result)
+    chunks = list(_chunks(text))
+    for i, chunk in enumerate(chunks):  # keyboard rides the last chunk
+        await message.answer(chunk, reply_markup=kb if i == len(chunks) - 1 else None)
 
 
 @dp.callback_query(F.data.startswith(("llm|", "deep|")), flags={"forecast": True})

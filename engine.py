@@ -282,10 +282,11 @@ def report_1day(data, site, out):
     return text, pngs, card_text
 
 # ---------------------------------------------------------------- report: overview
-def report_overview(data, site, rng, out):
-    D = data["daily"]; H = data["hourly"]
-    t = H["time"]; aspect = site["aspect_deg"]; elev = site["elevation_m"]
-    days = D["time"]
+def overview_rows(data, site):
+    """Per-day daytime assessment for an overview response: one dict per day with
+    date, status (emoji/label/score) and the headline numbers. Shared by
+    report_overview (card + chart) and the multi-site scan."""
+    D = data["daily"]; H = data["hourly"]; t = H["time"]; aspect = site["aspect_deg"]
     rows = []
     for k, dcode in enumerate(D["time"]):
         sr, ss = D["sunrise"][k], D["sunset"][k]
@@ -306,6 +307,12 @@ def report_overview(data, site, rng, out):
         rows.append(dict(date=dcode, emoji=emoji, label=label, score=score,
                          tmax=max(dt_temp), wmax=max(dt_wind), gmax=max(dt_gust),
                          dom=dom, precip=precip, wc=wc))
+    return rows
+
+
+def report_overview(data, site, rng, out):
+    aspect = site["aspect_deg"]; elev = site["elevation_m"]
+    rows = overview_rows(data, site)
     best = max(rows, key=lambda r: r["score"])
     names = {"3d": "3 дня", "week": "неделю", "2weeks": "2 недели"}
     card_lines = [f"🪂 {site['name']}{(' (' + card(aspect) + ')') if aspect is not None else ''} — обзор на {names[rng]}",
