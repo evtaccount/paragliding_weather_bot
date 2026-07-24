@@ -287,7 +287,7 @@ def wind_grid_png(grid, site, out):
     hours = grid["hours"]
     levels = list(reversed(grid["levels"]))  # high altitude on top
     nrows, ncols = len(levels), len(hours)
-    LabW, RowH, ColW = 76, 52, 64
+    LabW, RowH, ColW = 120, 52, 64
     Wc = LabW + ColW * ncols + 24
     Hc = 104 + RowH * nrows + 64
     img, d = _canvas(Wc, Hc)
@@ -306,7 +306,7 @@ def wind_grid_png(grid, site, out):
     # rows
     for r, lv in enumerate(levels):
         ry0, ry1 = yf(r), yf(r + 1)
-        lab = f"{lv['alt_m_msl']} м" + ("  ⟵ старт" if lv["is_launch"] else "")
+        lab = f"{lv['alt_m_msl']} м" + (" (старт)" if lv["is_launch"] else "")
         if lv["is_launch"]:
             d.rectangle([x0, ry0, xf(ncols), ry1], fill=GUST + (18,))
         d.text((x0 - S(8), (ry0 + ry1) / 2), lab, font=_font(12, lv["is_launch"]),
