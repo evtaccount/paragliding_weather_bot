@@ -348,6 +348,27 @@ def facts_overview(data, site, rng):
         "days_daytime": days,
     }
 
+def brief_1day(data, site):
+    """Compact daytime summary of a single-day open-meteo response (surface only).
+    Used for the 'previous day' context in the detailed analysis."""
+    H, D = data["hourly"], data["daily"]
+    t = H["time"]
+    sr, ss = D["sunrise"][0], D["sunset"][0]
+    day = daylight_idx(t, sr, ss)
+    w = [H["wind_speed_10m"][i] for i in day]
+    g = [H["wind_gusts_10m"][i] for i in day]
+    tp = [H["temperature_2m"][i] for i in day]
+    core = [i for i in day if 11 <= hour_of(t[i]) <= 16] or day
+    dom = wind_from_avg([H["wind_direction_10m"][i] for i in core],
+                        [max(H["wind_speed_10m"][i], 0.3) for i in core])
+    return {
+        "date": t[0][:10], "weather": WMO.get(D["weather_code"][0], ""),
+        "temp_c": f"{round(min(tp))}–{round(max(tp))}",
+        "wind_ms": f"{min(w):.1f}–{max(w):.1f}", "gust_max_ms": round(max(g), 1),
+        "wind_dir_window": f"{card(dom)} ({round(dom)}°)",
+        "precip_mm": round(D["precipitation_sum"][0], 1),
+    }
+
 # ---------------------------------------------------------------- main
 def main():
     ap = argparse.ArgumentParser()

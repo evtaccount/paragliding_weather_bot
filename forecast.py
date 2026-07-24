@@ -42,6 +42,60 @@ def known_sites():
     return [s["name"] for s in engine.load_sites()]
 
 
+def _daytime_summary(hourly: dict, lo: int = 9, hi: int = 18) -> dict:
+    """Compact daytime wind summary from a light hourly block (no sunrise/sunset)."""
+    t = hourly["time"]
+    idx = [i for i, tt in enumerate(t) if lo <= int(tt[11:13]) <= hi] or list(range(len(t)))
+    w = [hourly["wind_speed_10m"][i] for i in idx]
+    g = [hourly["wind_gusts_10m"][i] for i in idx]
+    p = hourly.get("precipitation", [0] * len(t))
+    core = [i for i in idx if 11 <= int(t[i][11:13]) <= 16] or idx
+    dom = engine.wind_from_avg([hourly["wind_direction_10m"][i] for i in core],
+                               [max(hourly["wind_speed_10m"][i], 0.3) for i in core])
+    return {"wind_ms": f"{min(w):.1f}–{max(w):.1f}", "gust_max_ms": round(max(g), 1),
+            "wind_dir": f"{engine.card(dom)} ({round(dom)}°)",
+            "precip_mm": round(sum(p[i] for i in idx), 1)}
+
+
+async def _detail_context(site: dict, date: str) -> dict:
+    """Extra data for the detailed analysis: a 4-point ring around the launch (one
+    multi-location request) + the previous day at the launch. Best-effort — a failed
+    sub-fetch just omits that piece."""
+    lat, lon, off = site["lat"], site["lon"], 0.05
+    pts = [("старт", lat, lon), ("С", lat + off, lon), ("Ю", lat - off, lon),
+           ("В", lat, lon + off), ("З", lat, lon - off)]
+    ctx: dict = {}
+    async with httpx.AsyncClient(timeout=30) as client:
+        # surrounding points — one multi-location call (comma-separated lat/lon)
+        lats = ",".join(f"{p[1]:.4f}" for p in pts)
+        lons = ",".join(f"{p[2]:.4f}" for p in pts)
+        url = (f"https://api.open-meteo.com/v1/forecast?latitude={lats}&longitude={lons}"
+               "&hourly=wind_speed_10m,wind_gusts_10m,wind_direction_10m,precipitation"
+               f"&wind_speed_unit=ms&timezone=auto&start_date={date}&end_date={date}")
+        try:
+            r = await client.get(url)
+            r.raise_for_status()
+            arr = r.json()
+            if isinstance(arr, dict):  # single location comes back as an object
+                arr = [arr]
+            ctx["surrounding_points_daytime"] = {
+                name: _daytime_summary(obj["hourly"]) for (name, _, _), obj in zip(pts, arr)
+            }
+        except Exception as e:  # noqa: BLE001
+            log.warning("detail context: surrounding points failed: %s", e)
+
+        # previous day at the launch
+        try:
+            prev = (dt.date.fromisoformat(date) - dt.timedelta(days=1)).isoformat()
+            r = await client.get(engine.build_url(site, "1d", prev))
+            r.raise_for_status()
+            ctx["previous_day"] = engine.brief_1day(r.json(), site)
+        except Exception as e:  # noqa: BLE001
+            log.warning("detail context: previous day failed: %s", e)
+
+    return ctx
+
+
 async def get_forecast(site_name: str, rng: str, date: str | None = None, detail: bool = False):
     """Return (telegram_text, [png_bytes, ...]) for a site + range.
 
@@ -91,6 +145,10 @@ async def get_forecast(site_name: str, rng: str, date: str | None = None, detail
         pngs = [pathlib.Path(p).read_bytes() for p in png_paths]
     finally:
         shutil.rmtree(out, ignore_errors=True)
+
+    # For the detailed view, enrich the facts with surrounding points + previous day.
+    if detail and rng == "1d" and analysis.available():
+        facts["context"] = await _detail_context(site, date)
 
     # LLM analysis over the real facts; fall back to the deterministic text otherwise.
     text = fallback_text
