@@ -149,6 +149,8 @@ def rng_str(vals, unit="", dec=0):
 
 # ---------------------------------------------------------------- assessment
 def dir_verdict(deg, aspect_deg):
+    if aspect_deg is None:  # ad-hoc point — slope orientation unknown
+        return "экспозиция неизвестна", "unknown"
     a = ang(deg, aspect_deg)
     if a <= DIR_IN:  return "в лоб склону ✅", "in"
     if a >= DIR_TAIL: return "в спину ❌", "tail"
@@ -178,9 +180,10 @@ def day_score(precip, wind_max, gust_max, dom_dir, aspect_deg, sunshine_s):
     s -= precip * 3
     s -= max(0, wind_max - 3) * 7
     s -= max(0, gust_max - 5) * 5
-    a = ang(dom_dir, aspect_deg)
-    if a >= DIR_TAIL: s -= 30
-    elif a > DIR_IN: s -= 12
+    if aspect_deg is not None:
+        a = ang(dom_dir, aspect_deg)
+        if a >= DIR_TAIL: s -= 30
+        elif a > DIR_IN: s -= 12
     s += min(sunshine_s / 3600.0, 12) * 1.5  # reward sun (thermals)
     return s
 
@@ -202,7 +205,7 @@ def report_1day(data, site, out):
     fly = []
     for i in day:
         ok = (wind[i] <= WIND_MAX and gust[i] <= GUST_MAX and precip[i] < RAIN_HR
-              and ang(wdir[i], aspect) < DIR_TAIL)
+              and (aspect is None or ang(wdir[i], aspect) < DIR_TAIL))
         fly.append((hour_of(t[i]), ok))
     fly_hours = [h for h, ok in fly if ok]
     window = f"{min(fly_hours):02d}:00–{max(fly_hours):02d}:00" if fly_hours else "нет"
@@ -226,7 +229,7 @@ def report_1day(data, site, out):
 
     # ---- text: factual card (always shown) + tail (window/caveats) ----
     card_lines = [
-        f"🪂 {site['name']} ({card(aspect)}) — прогноз на {fmt_date(t[0])}",
+        f"🪂 {site['name']}{(' (' + card(aspect) + ')') if aspect is not None else ''} — прогноз на {fmt_date(t[0])}",
         f"📍 {site['lat']:.3f}, {site['lon']:.3f} · {elev} м · {data.get('timezone','')}",
         "",
         f"Вердикт: {st_emoji} {st_label}",
@@ -287,7 +290,7 @@ def report_overview(data, site, rng, out):
                          dom=dom, precip=precip, wc=wc))
     best = max(rows, key=lambda r: r["score"])
     names = {"3d": "3 дня", "week": "неделю", "2weeks": "2 недели"}
-    card_lines = [f"🪂 {site['name']} ({card(aspect)}) — обзор на {names[rng]}",
+    card_lines = [f"🪂 {site['name']}{(' (' + card(aspect) + ')') if aspect is not None else ''} — обзор на {names[rng]}",
                   f"📍 {site['lat']:.3f}, {site['lon']:.3f} · {elev} м · {data.get('timezone','')}",
                   "",
                   f"🏆 Лучший день: {best['emoji']} {fmt_date(best['date'])} — {WMO.get(best['wc'],'')}, "
@@ -336,7 +339,7 @@ def facts_1day(data, site):
         profile.append(row)
 
     return {
-        "site": {"name": site["name"], "aspect": card(aspect), "aspect_deg": aspect,
+        "site": {"name": site["name"], "aspect": card(aspect) if aspect is not None else None, "aspect_deg": aspect,
                  "elevation_m": elev, "timezone": data.get("timezone")},
         "date": t[0][:10],
         "daylight_hours": f"{hour_of(sr):02d}-{hour_of(ss):02d}",
@@ -381,7 +384,7 @@ def facts_overview(data, site, rng):
             "sunshine_h": round(D["sunshine_duration"][k] / 3600.0, 1),
         })
     return {
-        "site": {"name": site["name"], "aspect": card(aspect), "aspect_deg": aspect,
+        "site": {"name": site["name"], "aspect": card(aspect) if aspect is not None else None, "aspect_deg": aspect,
                  "elevation_m": site["elevation_m"], "timezone": data.get("timezone")},
         "range": rng,
         "days_daytime": days,

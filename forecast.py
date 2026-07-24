@@ -30,6 +30,9 @@ _TTL = float(os.environ.get("CACHE_TTL_MIN", "15")) * 60
 # analysis cache: key -> (expires, text)   — so a repeat button press is free
 _fcache: dict[tuple, tuple] = {}
 _acache: dict[tuple, tuple[float, str]] = {}
+# ad-hoc points from "по координатам" — resolved by name like saved sites, but not
+# persisted; aspect is unknown (None), so the direction verdict is skipped.
+_adhoc: dict[str, dict] = {}
 
 
 class ForecastError(Exception):
@@ -106,13 +109,23 @@ async def _detail_context(site: dict, date: str) -> dict:
     return ctx
 
 
+def register_adhoc(lat: float, lon: float, elev: int) -> str:
+    """Register an ad-hoc point (unknown aspect) and return its lookup name."""
+    name = f"{lat:.4f}, {lon:.4f}"
+    _adhoc[name] = {"name": name, "aliases": [], "lat": lat, "lon": lon,
+                    "elevation_m": elev, "aspect": None, "aspect_deg": None, "notes": ""}
+    return name
+
+
 def _resolve(site_name: str, rng: str, date: str | None):
     if rng not in engine.RANGE_DAYS:
         raise ForecastError(f"Неизвестный диапазон: {rng}")
     try:
         site = engine.find_site(site_name)
-    except SystemExit as e:
-        raise ForecastError(str(e))
+    except SystemExit:
+        site = _adhoc.get(site_name)
+        if site is None:
+            raise ForecastError(f"Старт не найден: {site_name}. /sites — список.")
     if rng == "1d" and not date:
         date = dt.date.today().isoformat()
     return site, date, (site["name"], rng, date)
