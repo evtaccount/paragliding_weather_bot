@@ -544,3 +544,27 @@ async def test_wind_grid_error_reaches_user(feed, session, monkeypatch):
     monkeypatch.setattr(forecast, "get_wind_grid", fake)
     await feed(callback_update(f"wg|Гудаури|{TODAY}"))
     assert any("нет данных по высотам" in t for t in texts(session))
+
+
+# ---------------------------------------------------------------- /model
+
+
+async def test_model_shows_current_and_options(feed, session):
+    await feed(text_update("/model"))
+    out = texts(session)[-1]
+    assert "ECMWF" in out  # default current model label
+    assert "gfs" in out and "icon" in out and "auto" in out  # option keys listed
+
+
+async def test_model_switch_persists(feed, session):
+    await feed(text_update("/model gfs"))
+    assert any("GFS" in t for t in texts(session))
+    assert engine.get_model_key() == "gfs"
+
+
+async def test_model_invalid_key_lists_options(feed, session):
+    await feed(text_update("/model plasma"))
+    out = texts(session)[-1]
+    assert "plasma" not in engine.MODELS
+    assert "ecmwf" in out and "gfs" in out  # error lists valid keys
+    assert engine.get_model_key() == "ecmwf"  # unchanged
