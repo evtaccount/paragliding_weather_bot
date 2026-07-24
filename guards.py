@@ -6,8 +6,12 @@ to add them). If ALLOWED_USER_IDS is empty/unset the bot stays open, with a
 loud warning in the log.
 
 ThrottleMiddleware — applies only to handlers flagged `forecast` (the ones that
-hit open-meteo/Gemini): per-user cooldown of COOLDOWN_SEC seconds and at most
-one in-flight request per user.
+hit open-meteo/Gemini). Two guards:
+  • in-flight: at most one request per user at a time — always on.
+  • cooldown (COOLDOWN_SEC): only for typed commands. Inline-button presses
+    (day picker, "разбор от ИИ", …) are deliberate follow-ups on a result the
+    bot already delivered, not spam, so they skip the cooldown — you can pick a
+    day right after an overview, or ask for analysis right after a forecast.
 """
 import logging
 import math
@@ -16,6 +20,7 @@ import time
 
 from aiogram import BaseMiddleware
 from aiogram.dispatcher.flags import get_flag
+from aiogram.types import CallbackQuery
 
 log = logging.getLogger("pgbot.guards")
 
@@ -61,12 +66,14 @@ class ThrottleMiddleware(BaseMiddleware):
             return await handler(event, data)
         uid = event.from_user.id
         if uid in self._inflight:
-            return await event.answer("⏳ Уже готовлю прогноз — дождись ответа.")
-        now = time.monotonic()
-        wait = self._last.get(uid, -math.inf) + self.cooldown - now
-        if wait > 0:
-            return await event.answer(f"⏳ Не так часто: подожди {math.ceil(wait)} сек.")
-        self._last[uid] = now
+            return await event.answer("⏳ Уже готовлю — дождись ответа.")
+        # follow-up button presses aren't spam — only typed commands get the cooldown
+        if not isinstance(event, CallbackQuery):
+            now = time.monotonic()
+            wait = self._last.get(uid, -math.inf) + self.cooldown - now
+            if wait > 0:
+                return await event.answer(f"⏳ Не так часто: подожди {math.ceil(wait)} сек.")
+            self._last[uid] = now
         self._inflight.add(uid)
         try:
             return await handler(event, data)
