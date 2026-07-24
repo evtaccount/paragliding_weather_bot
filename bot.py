@@ -15,6 +15,7 @@ Forecast + charts come from the deterministic engine (open-meteo).
 """
 import asyncio
 import datetime as dt
+import html
 import logging
 import os
 import re
@@ -105,6 +106,14 @@ def _chunks(text: str, size: int = 4096):
     """Split into Telegram-sized pieces (LLM output can exceed the 4096 limit)."""
     for i in range(0, len(text), size):
         yield text[i:i + size]
+
+
+def _analysis_html(text: str) -> str:
+    """LLM analysis uses **bold** markdown, which Telegram renders raw unless we ask
+    it to. Escape HTML specials first (so a literal `>` in «ветер >7» is safe), then
+    turn **...** into <b>...</b>. Send the result with parse_mode="HTML"."""
+    esc = html.escape(text, quote=False)  # & < >  — leaves ** untouched
+    return re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", esc, flags=re.S)
 
 
 # worst-case callback_data around a name: "deep|" + name + "|2weeks|YYYY-MM-DD" must fit 64 bytes
@@ -529,7 +538,7 @@ async def cb_analysis(cb: CallbackQuery):
         await msg.answer(f"⚠️ Ошибка: {e}")
         return
     for chunk in _chunks(text):
-        await msg.answer(chunk)
+        await msg.answer(_analysis_html(chunk), parse_mode="HTML")
     # keep the buttons — the user may want the other mode too
 
 
