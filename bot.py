@@ -110,10 +110,11 @@ async def send_forecast(message: Message, site: str, rng: str, date: str | None 
         await message.answer_photo(files[0])
     elif files:
         await message.answer_media_group([InputMediaPhoto(media=f) for f in files])
-    # LLM analysis is off by default — offer it on demand (reuses the fetched data).
-    kb = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="🧠 Разбор от ИИ", callback_data=f"llm|{site}|{rng}|{date or ''}")]])
-    await message.answer("Нужен разбор от ИИ?", reply_markup=kb)
+    # LLM analysis is off by default — offer it on demand.
+    row = [InlineKeyboardButton(text="🧠 Разбор от ИИ", callback_data=f"llm|{site}|{rng}|{date or ''}")]
+    if rng == "1d":  # deep analysis (surrounding points + previous day) — 1-day only
+        row.append(InlineKeyboardButton(text="📊 Глубокий разбор", callback_data=f"deep|{site}|{rng}|{date or ''}"))
+    await message.answer("Нужен разбор от ИИ?", reply_markup=InlineKeyboardMarkup(inline_keyboard=[row]))
 
 
 async def _shortcut(message: Message, command: CommandObject, rng: str, date: str | None):
@@ -180,17 +181,18 @@ async def cmd_forecast(message: Message, command: CommandObject):
     await send_forecast(message, site, rng)
 
 
-@dp.callback_query(F.data.startswith("llm|"), flags={"forecast": True})
+@dp.callback_query(F.data.startswith(("llm|", "deep|")), flags={"forecast": True})
 async def cb_analysis(cb: CallbackQuery):
     try:
-        _, site, rng, date = cb.data.split("|", 3)
+        kind, site, rng, date = cb.data.split("|", 3)
     except ValueError:
         await cb.answer()
         return
-    await cb.answer("Считаю разбор…")
+    deep = kind == "deep"
+    await cb.answer("Считаю глубокий разбор…" if deep else "Считаю разбор…")
     await cb.message.bot.send_chat_action(chat_id=cb.message.chat.id, action="typing")
     try:
-        text = await forecast.get_analysis(site, rng, date or None)
+        text = await forecast.get_analysis(site, rng, date or None, deep=deep)
     except forecast.ForecastError as e:
         await cb.message.answer(f"⚠️ {e}")
         return
@@ -200,10 +202,7 @@ async def cb_analysis(cb: CallbackQuery):
         return
     for chunk in _chunks(text):
         await cb.message.answer(chunk)
-    try:
-        await cb.message.edit_reply_markup(reply_markup=None)  # consume the button
-    except Exception:  # noqa: BLE001 — editing markup is best-effort
-        pass
+    # keep the buttons — the user may want the other mode too
 
 
 async def main():
