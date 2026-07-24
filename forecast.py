@@ -93,10 +93,16 @@ async def get_forecast(site_name: str, rng: str, date: str | None = None):
     # LLM analysis over the real facts; fall back to rules if Gemini is unavailable.
     text = fallback_text
     if analysis.available():
+        t0 = time.monotonic()
         try:
             text = await asyncio.to_thread(analysis.analyze, facts, rng)
+            log.info("analysis: llm (gemini %s, %.1fs) — %s %s",
+                     analysis.model_name(), time.monotonic() - t0, site["name"], rng)
         except Exception as e:  # noqa: BLE001 — any Gemini failure → rule-based text
-            log.warning("LLM analysis failed (%s); using rule-based text", e)
+            log.warning("analysis: rules (fallback — gemini failed: %s) — %s %s",
+                        e, site["name"], rng)
+    else:
+        log.info("analysis: rules (no GEMINI_API_KEY) — %s %s", site["name"], rng)
 
     _cache[key] = (time.monotonic() + _CACHE_TTL, text, pngs)
     return text, pngs
