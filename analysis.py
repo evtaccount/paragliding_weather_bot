@@ -15,13 +15,32 @@ deterministic rule-based text from engine.report_*.
 Free tier: Gemini Flash. Key: https://aistudio.google.com/apikey
 """
 import json
+import logging
 import os
 
 from google import genai
 from google.genai import types
 
-_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+log = logging.getLogger("pgbot.analysis")
+
+# Model chain — tried in order; the first that returns non-empty text wins. Any model
+# failure (API error or empty response) falls through to the next; only when all fail
+# does the caller fall back to the deterministic rules text.
+_DEFAULT_MODELS = ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite"]
 _client = None
+
+
+def _model_chain():
+    """Models to try, in order. GEMINI_MODELS (comma list) overrides the whole chain;
+    a legacy single GEMINI_MODEL (from .env) is tried first, then the defaults as fallback."""
+    env = os.getenv("GEMINI_MODELS")
+    if env:
+        return [m.strip() for m in env.split(",") if m.strip()]
+    chain = list(_DEFAULT_MODELS)
+    single = os.getenv("GEMINI_MODEL")
+    if single:
+        chain = [single] + [m for m in chain if m != single]
+    return chain
 
 
 def available() -> bool:
@@ -29,7 +48,7 @@ def available() -> bool:
 
 
 def model_name() -> str:
-    return _MODEL
+    return ",".join(_model_chain())
 
 
 def _get_client():
@@ -92,12 +111,18 @@ def analyze(facts: dict, rng: str, detail: bool = False) -> str:
         f"Тип запроса: {'один день' if rng == '1d' else 'обзор нескольких дней'}.\n"
         f"Данные (JSON):\n{json.dumps(facts, ensure_ascii=False)}"
     )
-    resp = _get_client().models.generate_content(
-        model=_MODEL,
-        contents=prompt,
-        config=types.GenerateContentConfig(temperature=0.3),
-    )
-    text = (resp.text or "").strip()
-    if not text:
-        raise RuntimeError("пустой ответ Gemini")
-    return text
+    client = _get_client()
+    config = types.GenerateContentConfig(temperature=0.3)
+    errors = []
+    for model in _model_chain():
+        try:
+            resp = client.models.generate_content(model=model, contents=prompt, config=config)
+            text = (resp.text or "").strip()
+            if not text:
+                raise RuntimeError("пустой ответ")
+            log.info("gemini ok: %s", model)
+            return text
+        except Exception as e:  # noqa: BLE001 — any failure → try the next model
+            log.warning("gemini model %s failed: %s", model, e)
+            errors.append(f"{model}: {e}")
+    raise RuntimeError("все модели Gemini недоступны: " + " | ".join(errors))
