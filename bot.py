@@ -39,9 +39,10 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("pgbot")
 
 dp = Dispatcher(storage=MemoryStorage())  # in-memory FSM for the interactive /add
-# guards on both messages and inline-button callbacks. Separate throttle instances
-# so pressing the analysis button right after a command isn't blocked by the command
-# cooldown, while button spam is still throttled on its own.
+# guards on both messages and inline-button callbacks. Separate throttle instances;
+# the cooldown applies to typed commands only — button presses are follow-ups on an
+# already-delivered result and skip it (see ThrottleMiddleware), keeping the in-flight
+# guard so one request runs at a time.
 dp.message.outer_middleware(guards.WhitelistMiddleware())
 dp.message.middleware(guards.ThrottleMiddleware())
 dp.callback_query.outer_middleware(guards.WhitelistMiddleware())
