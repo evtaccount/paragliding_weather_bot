@@ -26,6 +26,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (BotCommand, BufferedInputFile, CallbackQuery,
                            InlineKeyboardButton, InlineKeyboardMarkup,
                            InputMediaPhoto, Message)
+from aiogram.utils.chat_action import ChatActionSender
 from dotenv import load_dotenv
 
 load_dotenv()  # before guards/forecast read their env vars
@@ -111,9 +112,10 @@ def resolve_site(arg: str | None) -> str | None:
 async def send_forecast(message: Message, site: str, rng: str, date: str | None = None):
     if rng == "1d" and not date:
         date = dt.date.today().isoformat()
-    await message.bot.send_chat_action(chat_id=message.chat.id, action="typing")
     try:
-        card, pngs = await forecast.get_forecast(site, rng, date)
+        # keeps the "typing…" status alive while forecast/analysis runs (>5 s)
+        async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
+            card, pngs = await forecast.get_forecast(site, rng, date)
     except forecast.ForecastError as e:
         await message.answer(f"⚠️ {e}\n\nСписок стартов: /sites")
         return
@@ -326,9 +328,9 @@ async def cb_analysis(cb: CallbackQuery):
         return
     deep = kind == "deep"
     await cb.answer("Считаю глубокий разбор…" if deep else "Считаю разбор…")
-    await cb.message.bot.send_chat_action(chat_id=cb.message.chat.id, action="typing")
     try:
-        text = await forecast.get_analysis(site, rng, date or None, deep=deep)
+        async with ChatActionSender.typing(bot=cb.message.bot, chat_id=cb.message.chat.id):
+            text = await forecast.get_analysis(site, rng, date or None, deep=deep)
     except forecast.ForecastError as e:
         await cb.message.answer(f"⚠️ {e}")
         return
