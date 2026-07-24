@@ -549,11 +549,46 @@ async def test_wind_grid_error_reaches_user(feed, session, monkeypatch):
 # ---------------------------------------------------------------- /model
 
 
-async def test_model_shows_current_and_options(feed, session):
+async def test_model_no_arg_shows_picker_buttons(feed, session):
     await feed(text_update("/model"))
-    out = texts(session)[-1]
-    assert "ECMWF" in out  # default current model label
-    assert "gfs" in out and "icon" in out and "auto" in out  # option keys listed
+    kb = keyboards(session)[-1]
+    datas = [b.callback_data for b in buttons(kb)]
+    assert datas == ["md|auto", "md|ecmwf", "md|gfs", "md|icon"]
+    labels = [b.text for b in buttons(kb)]
+    assert any("ECMWF" in l and "✓" in l for l in labels)  # current model marked
+
+
+async def test_model_button_sets_and_confirms(feed, session):
+    await feed(callback_update("md|gfs"))
+    assert engine.get_model_key() == "gfs"
+    assert any(a.text and "GFS" in a.text for a in cb_answers(session))  # answered
+
+
+async def test_model_button_unknown_key_alerts(feed, session):
+    await feed(callback_update("md|bogus"))
+    assert engine.get_model_key() == "ecmwf"  # unchanged
+    alert = cb_answers(session)[-1]
+    assert "Неизвестная" in alert.text and alert.show_alert
+
+
+async def test_forecast_offers_model_switch_buttons(feed, session, fc_calls):
+    await feed(text_update("/today Гудаури"))
+    kb = kb_for(session, "🌐 Другая модель:")
+    datas = [b.callback_data for b in buttons(kb)]
+    assert datas == [f"mf|auto|Гудаури|1d|{TODAY}", f"mf|ecmwf|Гудаури|1d|{TODAY}",
+                     f"mf|gfs|Гудаури|1d|{TODAY}", f"mf|icon|Гудаури|1d|{TODAY}"]
+
+
+async def test_overview_model_switch_has_empty_date(feed, session, fc_calls):
+    await feed(text_update("/week Гудаури"))
+    kb = kb_for(session, "🌐 Другая модель:")
+    assert [b.callback_data for b in buttons(kb)][0] == "mf|auto|Гудаури|week|"
+
+
+async def test_model_switch_button_reruns_forecast(feed, session, fc_calls):
+    await feed(callback_update(f"mf|gfs|Гудаури|1d|{TODAY}"))
+    assert engine.get_model_key() == "gfs"          # model switched
+    assert fc_calls == [("Гудаури", "1d", TODAY)]   # same forecast re-rendered
 
 
 async def test_model_switch_persists(feed, session):
