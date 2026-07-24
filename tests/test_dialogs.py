@@ -568,3 +568,22 @@ async def test_model_invalid_key_lists_options(feed, session):
     assert "plasma" not in engine.MODELS
     assert "ecmwf" in out and "gfs" in out  # error lists valid keys
     assert engine.get_model_key() == "ecmwf"  # unchanged
+
+
+# ---------------------------------------------------------------- analysis HTML formatting
+
+
+async def test_analysis_rendered_as_html_bold(feed, session, monkeypatch):
+    from aiogram.methods import SendMessage
+
+    async def fake(site, rng, date=None, deep=False):
+        return "**Вердикт:** ок\nветер >7 м/с"
+
+    monkeypatch.setattr(forecast, "get_analysis", fake)
+    await feed(callback_update(f"llm|Гудаури|1d|{TODAY}"))
+    sent = [m for m in session.requests if isinstance(m, SendMessage)]
+    msg = sent[-1]
+    assert msg.parse_mode == "HTML"          # rendered natively, not raw
+    assert "<b>Вердикт:</b>" in msg.text     # **bold** → <b>
+    assert "**" not in msg.text              # no raw markdown left
+    assert "&gt;7" in msg.text               # literal > escaped, safe under HTML
