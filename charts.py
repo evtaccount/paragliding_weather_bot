@@ -239,12 +239,14 @@ def profile_png(data, site, out):
         yy = yf(z); d.line([x0, yy, x1, yy], fill=GRID, width=1)
         d.text((x0 - S(10), yy), f"{z}", font=_font(12), fill=FAINT, anchor="rm")
     d.text((x0 - S(10), y0 - S(2)), "м MSL", font=_font(11), fill=FAINT, anchor="rb")
-    # working layer to max blh
-    top = elev + max(H["boundary_layer_height"][hidx[h]] for h in hours)
-    cut = yf(top)
-    d.rectangle([x0, cut, x1, y1], fill=GUST + (24,))
-    d.line([x0, cut, x1, cut], fill=RAIN, width=1)
-    d.text((x0 + S(6), cut - S(8)), f"потолок рабочего слоя ~{round(top)} м", font=_font(11, True), fill=RAIN, anchor="lb")
+    # working layer to max blh — only when the model provides it (ECMWF omits blh)
+    blh_vals = [H.get("boundary_layer_height", [None] * len(t))[hidx[h]] for h in hours]
+    if any(v is not None for v in blh_vals):
+        top = elev + max(v for v in blh_vals if v is not None)
+        cut = yf(top)
+        d.rectangle([x0, cut, x1, y1], fill=GUST + (24,))
+        d.line([x0, cut, x1, cut], fill=RAIN, width=1)
+        d.text((x0 + S(6), cut - S(8)), f"потолок рабочего слоя ~{round(top)} м", font=_font(11, True), fill=RAIN, anchor="lb")
     cols = {hours[0]: MUTED, hours[-1]: GUST}
     mid = hours[len(hours)//2]; cols[mid] = WIND
     for h in hours:
