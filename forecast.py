@@ -44,6 +44,40 @@ def known_sites():
     return [s["name"] for s in engine.load_sites()]
 
 
+# A "suitable" day for the scan: flyable, or flyable-with-caveats. NOT маргинальный
+# (which shares the ⚠️ emoji) and NOT нелётный — so filter on the label, not the emoji.
+FLYABLE_LABELS = {"лётный", "с оговорками"}
+
+
+async def scan_week() -> dict:
+    """Week overview across ALL saved sites, keeping only flyable days.
+
+    Returns {"sites": [{"name", "aspect", "days": [row, ...]}], "empty": [name...],
+    "failed": [name...]}. Each row is an engine.overview_rows() dict. Fetches run
+    concurrently and reuse (warm) the same week cache /week uses.
+    """
+    sites = engine.load_sites()
+
+    async def fetch(site):
+        key = (site["name"], "week", None)
+        _c, _p, _f, _fb, rows = await _ensure(site, "week", None, key)
+        return rows
+
+    gathered = await asyncio.gather(*(fetch(s) for s in sites), return_exceptions=True)
+    out: dict = {"sites": [], "empty": [], "failed": []}
+    for site, res in zip(sites, gathered):
+        if isinstance(res, Exception):
+            log.warning("scan: %s failed: %s", site["name"], res)
+            out["failed"].append(site["name"])
+            continue
+        fly = [r for r in res if r["label"] in FLYABLE_LABELS]
+        if fly:
+            out["sites"].append({"name": site["name"], "aspect": site.get("aspect_deg"), "days": fly})
+        else:
+            out["empty"].append(site["name"])
+    return out
+
+
 async def fetch_elevation(lat: float, lon: float) -> int:
     """Grid-cell elevation (m) for coordinates, from open-meteo. 0 on failure."""
     url = (f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}"
