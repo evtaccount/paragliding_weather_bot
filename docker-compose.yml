@@ -6,11 +6,18 @@ services:
     environment:
       # site-local timezone so /today and /tomorrow resolve the right date
       - TZ=${TZ:-Asia/Tbilisi}
+      # persist sites into the data volume (writable by the non-root app user);
+      # seeded from the packaged sites.json on first run
+      - SITES_FILE=/app/data/sites.json
     volumes:
-      # writable so /add and /removesite persist to the host file (also editable by hand)
-      - ./sites.json:/app/sites.json
+      # named volume — owned by uid 10001 (app), so /add and /removesite can write.
+      # A single-file bind mount kept host ownership and broke writes for non-root.
+      - pgbot-data:/app/data
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
+
+volumes:
+  pgbot-data:

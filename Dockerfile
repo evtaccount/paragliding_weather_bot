@@ -12,8 +12,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# run as non-root
-RUN useradd -m -u 10001 app && chown -R app /app
+# run as non-root; /app/data holds the writable sites file (a named volume mounts
+# here and inherits this ownership, so the app user can persist /add and /removesite)
+RUN mkdir -p /app/data && useradd -m -u 10001 app && chown -R app /app
 USER app
 
 CMD ["python", "-u", "bot.py"]
