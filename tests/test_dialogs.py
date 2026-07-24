@@ -177,7 +177,7 @@ async def test_today_with_site_sends_card_and_two_analysis_buttons(feed, session
     assert f"CARD Гудаури 1d {TODAY}" in texts(session)
     kb = kb_for(session, "Нужен разбор от ИИ?")
     datas = [b.callback_data for b in buttons(kb)]
-    assert datas == [f"llm|Гудаури|1d|{TODAY}", f"deep|Гудаури|1d|{TODAY}"]
+    assert datas == [f"llm|Гудаури|1d|{TODAY}", f"deep|Гудаури|1d|{TODAY}", f"wg|Гудаури|{TODAY}"]
     assert kb_for(session, "📅 Подробно по дню:") is None  # day picker — только для обзоров
 
 
@@ -216,7 +216,7 @@ async def test_day_picker_uses_cached_site_local_dates(feed, session, fc_calls):
     dates = [(start + dt.timedelta(days=i)).isoformat() for i in range(3)]
     _site, _date, key = forecast._resolve("Гудаури", "3d", None)
     forecast._fcache[key] = (time.monotonic() + 999, "c", [],
-                             {"days_daytime": [{"date": d} for d in dates]}, "f", [])
+                             {"days_daytime": [{"date": d} for d in dates]}, "f", [], None)
     await feed(text_update("/threedays Гудаури"))
     picker = kb_for(session, "📅 Подробно по дню:")
     assert [b.callback_data for b in buttons(picker)] == [f"pd|Гудаури|{d}" for d in dates]
@@ -478,3 +478,69 @@ async def test_stale_buttons_answered_with_alert(feed, session, fc_calls, an_cal
     alerts = cb_answers(session)
     assert len(alerts) == 4
     assert all("Кнопка устарела" in a.text and a.show_alert for a in alerts)
+
+
+# ---------------------------------------------------------------- wind grid
+
+
+@pytest.fixture()
+def wg_calls(monkeypatch):
+    """Patch forecast.get_wind_grid; returns recorded (site, date) calls."""
+    calls = []
+
+    async def fake(site, date):
+        calls.append((site, date))
+        return b"PNGBYTES"
+
+    monkeypatch.setattr(forecast, "get_wind_grid", fake)
+    return calls
+
+
+async def test_today_offers_wind_grid_button(feed, session, fc_calls):
+    await feed(text_update("/today Гудаури"))
+    kb = kb_for(session, "Нужен разбор от ИИ?")
+    datas = [b.callback_data for b in buttons(kb)]
+    assert f"wg|Гудаури|{TODAY}" in datas
+
+
+async def test_overview_has_no_wind_grid_button(feed, session, fc_calls):
+    await feed(text_update("/week Гудаури"))
+    kb = kb_for(session, "Нужен разбор от ИИ?")
+    datas = [b.callback_data for b in buttons(kb)]
+    assert not any(d.startswith("wg|") for d in datas)
+
+
+async def test_wind_grid_button_sends_photo(feed, session, wg_calls):
+    await feed(callback_update(f"wg|Гудаури|{TODAY}"))
+    assert wg_calls == [("Гудаури", TODAY)]
+    assert len(photos(session)) == 1
+    assert any(a.text and "высот" in a.text for a in cb_answers(session))
+
+
+async def test_wind_grid_past_date_rejected(feed, session, wg_calls):
+    old = (dt.date.today() - dt.timedelta(days=3)).isoformat()
+    await feed(callback_update(f"wg|Гудаури|{old}"))
+    assert not wg_calls
+    alert = cb_answers(session)[0]
+    assert "уже прошла" in alert.text and alert.show_alert
+
+
+async def test_wind_grid_stale_button_answered(feed, session, wg_calls):
+    await feed(callback_update(f"wg|Гудаури|{TODAY}", accessible=False))
+    assert not wg_calls
+    alert = cb_answers(session)[0]
+    assert "Кнопка устарела" in alert.text and alert.show_alert
+
+
+async def test_wind_grid_malformed_callback_acked(feed, session, wg_calls):
+    await feed(callback_update("wg|обрывок"))
+    assert not wg_calls and not photos(session)
+    assert len(cb_answers(session)) == 1
+
+
+async def test_wind_grid_error_reaches_user(feed, session, monkeypatch):
+    async def fake(site, date):
+        raise forecast.ForecastError("нет данных по высотам")
+    monkeypatch.setattr(forecast, "get_wind_grid", fake)
+    await feed(callback_update(f"wg|Гудаури|{TODAY}"))
+    assert any("нет данных по высотам" in t for t in texts(session))
