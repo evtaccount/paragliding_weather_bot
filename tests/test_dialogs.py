@@ -175,7 +175,7 @@ async def test_today_with_site_sends_card_and_two_analysis_buttons(feed, session
     await feed(text_update("/today Гудаури"))
     assert fc_calls == [("Гудаури", "1d", TODAY)]
     assert f"CARD Гудаури 1d {TODAY}" in texts(session)
-    kb = kb_for(session, "Нужен разбор от ИИ?")
+    kb = kb_for(session, "Ещё:")
     datas = [b.callback_data for b in buttons(kb)]
     assert datas == [f"llm|Гудаури|1d|{TODAY}", f"deep|Гудаури|1d|{TODAY}", f"wg|Гудаури|{TODAY}"]
     assert kb_for(session, "📅 Подробно по дню:") is None  # day picker — только для обзоров
@@ -205,7 +205,7 @@ async def test_no_pngs_no_photo_messages(feed, session, monkeypatch):
 async def test_overview_has_single_analysis_button_and_day_picker(feed, session, fc_calls):
     await feed(text_update("/week Гудаури"))
     assert fc_calls == [("Гудаури", "week", None)]
-    kb = kb_for(session, "Нужен разбор от ИИ?")
+    kb = kb_for(session, "Ещё:")
     assert [b.callback_data for b in buttons(kb)] == ["llm|Гудаури|week|"]  # без deep
     picker = kb_for(session, "📅 Подробно по дню:")
     assert len(buttons(picker)) == 7  # холодный кэш → фолбэк на серверные даты
@@ -330,7 +330,7 @@ async def test_existing_long_name_drops_buttons_but_sends_card(feed, session, fc
          "elevation_m": 100, "aspect": "Ю", "aspect_deg": 180.0, "notes": ""}])
     await feed(text_update(f"/week {long_name}"))
     assert f"CARD {long_name} week None" in texts(session)  # карточка дошла
-    assert kb_for(session, "Нужен разбор от ИИ?") is None  # кнопка молча пропущена
+    assert kb_for(session, "Ещё:") is None  # кнопка молча пропущена
     assert kb_for(session, "📅 Подробно по дню:") is None
     # и пикер точек не ломается целиком — длинное имя просто выпадает из списка
     session.requests.clear()
@@ -498,14 +498,14 @@ def wg_calls(monkeypatch):
 
 async def test_today_offers_wind_grid_button(feed, session, fc_calls):
     await feed(text_update("/today Гудаури"))
-    kb = kb_for(session, "Нужен разбор от ИИ?")
+    kb = kb_for(session, "Ещё:")
     datas = [b.callback_data for b in buttons(kb)]
     assert f"wg|Гудаури|{TODAY}" in datas
 
 
 async def test_overview_has_no_wind_grid_button(feed, session, fc_calls):
     await feed(text_update("/week Гудаури"))
-    kb = kb_for(session, "Нужен разбор от ИИ?")
+    kb = kb_for(session, "Ещё:")
     datas = [b.callback_data for b in buttons(kb)]
     assert not any(d.startswith("wg|") for d in datas)
 
