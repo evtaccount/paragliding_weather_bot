@@ -4,10 +4,10 @@ The LLM's job is ANALYSIS, not fabrication: it receives REAL open-meteo numbers
 (extracted by engine.facts_*) and interprets them into a paragliding assessment.
 It must not invent numbers.
 
-Two modes:
-  detail=False (default) — SHORT interpretation (the factual card is shown
-                           separately by the bot, so no need to repeat numbers).
-  detail=True            — full, thorough analysis on request.
+Two modes — SAME length and structure, differing in DATA and depth of reasoning:
+  detail=False (fast button) — full analysis over the site's own forecast.
+  detail=True  (deep button) — same, plus a context block (surrounding points +
+                               previous day) that it reasons over. Richer, not longer.
 
 If Gemini is unavailable (no key / error), the caller falls back to the
 deterministic rule-based text from engine.report_*.
@@ -55,29 +55,38 @@ _REFERENCE = """Ты — опытный метеоролог и параплан
 - Низкий потолок над стартом → слабый набор и XC.
 - Диапазоны T и ветра уже посчитаны за светлое время."""
 
-_BRIEF = _REFERENCE + """
+# Full analysis — used by BOTH the fast and the deep button. They differ in the DATA
+# they get (deep adds surrounding points + the previous day) and in the depth of
+# reasoning that data unlocks — NOT in length.
+_ANALYSIS = _REFERENCE + """
 
-Дай КОРОТКИЙ разбор — максимум 3–4 предложения (до ~400 знаков). Только интерпретация:
-- вердикт (✅/⚠️/❌ + суть одной фразой),
-- лётное окно (часы) и главный риск.
-Числа НЕ повторяй — сводка уже показана пользователю. БЕЗ приветствий, БЕЗ подписей-прощаний, без markdown. Пиши только по делу. Для обзора нескольких дней — назови лучший день и одной строкой почему."""
-
-_DETAIL = _REFERENCE + """
-
-Дай разбор для пилота — СЖАТО и по делу, без воды. БЕЗ приветствий и прощаний. Цель ~1200 знаков.
+Дай разбор для пилота — по делу, без воды, БЕЗ приветствий и прощаний. Цель ~1100 знаков.
 Структура, короткими блоками (каждый 1–3 строки, с эмодзи):
 - Вердикт (✅/⚠️/❌ + суть).
 - Лётное окно по часам.
-- Ветер: сила у земли и как поворачивает направление днём (в лоб/в спину для экспозиции старта). По высотам — ТОЛЬКО если это меняет решение.
+- Ветер: сила у земли и как поворачивает направление днём (в лоб/в спину для экспозиции старта). По высотам — если это меняет решение.
 - Термичка и потолок — 1–2 фразы.
 - Риски с привязкой к часам (роторы при ветре в спину, рваные порывы, мокрый старт).
-Если есть контекст (предыдущий день, соседние точки) — учти одной строкой.
+Для обзора нескольких дней структура другая: лучший день и почему, нелётные дни и главная причина, по дню — 1 строка.
 Не пересказывай все числа подряд — приводи только те, что влияют на решение. Без markdown-таблиц. В конце — одна строка-оговорка (высота по гриду, пересними за 1–2 суток)."""
+
+# Appended ONLY for the deep button — this is what makes it more valuable than the
+# fast one: extra data in facts["context"] and the instruction to reason over it.
+_CONTEXT_ADDON = """
+
+В данных есть блок context — это главная ценность подробного разбора, разбери его отдельным блоком «🔄 Контекст»:
+- previous_day: тренд воздушной массы и прогрев склона (был ли вчера дождь / сплошная облачность → как это повлияет на сегодняшнюю термичку и сухость старта).
+- surrounding_points_daytime: сравни ветер/порывы/осадки в соседних точках (С/Ю/В/З) со стартом — пространственная однородность или локальные аномалии (усиление в секторе, подветренность, сходимость потоков).
+Подробный разбор должен отличаться от быстрого именно этими выводами, а не длиной."""
 
 
 def analyze(facts: dict, rng: str, detail: bool = False) -> str:
-    """Return Telegram-ready analysis text. Raises on Gemini failure (caller falls back)."""
-    guidance = _DETAIL if detail else _BRIEF
+    """Return Telegram-ready analysis text. Raises on Gemini failure (caller falls back).
+
+    Both modes produce a full analysis; detail=True additionally reasons over the
+    context block (surrounding points + previous day) that the caller merged in.
+    """
+    guidance = _ANALYSIS + (_CONTEXT_ADDON if detail else "")
     prompt = (
         f"{guidance}\n\n"
         f"Тип запроса: {'один день' if rng == '1d' else 'обзор нескольких дней'}.\n"
