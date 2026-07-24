@@ -87,10 +87,11 @@ def meteogram_png(data, site, out):
     d.text((S(40), S(56)), f"Светлое время {srh:02d}–{ssh:02d} · ветер в м/с · {data.get('timezone','')}",
            font=_font(13), fill=MUTED, anchor="lm")
     # flyable window band — same criteria as the engine (incl. direction into the slope)
-    asp = site.get("aspect_deg", 180)
+    asp = site.get("aspect_deg")
     fly = [h for h, i in zip(hrs, idx)
            if H["wind_speed_10m"][i] <= 7 and H["wind_gusts_10m"][i] <= 8
-           and H["precipitation"][i] < 0.1 and _ang(H["wind_direction_10m"][i], asp) < 110]
+           and H["precipitation"][i] < 0.1
+           and (asp is None or _ang(H["wind_direction_10m"][i], asp) < 110)]
     if fly:
         d.rectangle([xf(min(fly)), S(84), xf(max(fly)), S(Ht-34)], fill=GUST + (26,))
         d.text(((xf(min(fly))+xf(max(fly)))/2, S(96)), f"лётное окно {min(fly):02d}–{max(fly):02d}",

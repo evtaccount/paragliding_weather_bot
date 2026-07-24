@@ -54,6 +54,11 @@ class AddSite(StatesGroup):
     aspect = State()
     notes = State()
 
+
+class AdHoc(StatesGroup):
+    """"По координатам": ask coordinates for a one-off forecast."""
+    coords = State()
+
 RANGE_ALIASES = {
     "1d": "1d", "day": "1d", "день": "1d",
     "3d": "3d", "3days": "3d", "3дня": "3d",
@@ -131,12 +136,19 @@ async def send_forecast(message: Message, site: str, rng: str, date: str | None 
     await message.answer("Нужен разбор от ИИ?", reply_markup=InlineKeyboardMarkup(inline_keyboard=[row]))
 
 
+async def ask_location(message: Message, rng: str, date: str | None):
+    """No site given → offer saved sites + a "по координатам" option as inline buttons."""
+    rows = [[InlineKeyboardButton(text=n, callback_data=f"pk|{rng}|{date or ''}|{n}")]
+            for n in forecast.known_sites()]
+    rows.append([InlineKeyboardButton(text="📍 По координатам", callback_data=f"pc|{rng}|{date or ''}")])
+    await message.answer("Для какой точки?", reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+
+
 async def _shortcut(message: Message, command: CommandObject, rng: str, date: str | None):
-    site = resolve_site(command.args)
-    if not site:
-        await message.answer("Укажи старт: например /week Laliskuri\n/sites — список.")
-        return
-    await send_forecast(message, site, rng, date)
+    if command.args and command.args.strip():
+        await send_forecast(message, command.args.strip(), rng, date)
+    else:
+        await ask_location(message, rng, date)
 
 
 @dp.message(CommandStart())
@@ -293,18 +305,14 @@ async def cmd_twoweeks(message: Message, command: CommandObject):
 @dp.message(Command("forecast"), flags={"forecast": True})
 async def cmd_forecast(message: Message, command: CommandObject):
     parts = (command.args or "").split()
-    if not parts:
-        await message.answer("Формат: /forecast <старт> <диапазон>\nНапример: /forecast Laliskuri week")
-        return
-    if parts[-1].lower() in RANGE_ALIASES:
+    if parts and parts[-1].lower() in RANGE_ALIASES:
         rng = RANGE_ALIASES[parts[-1].lower()]
-        site = " ".join(parts[:-1])
+        parts = parts[:-1]
     else:
         rng = "week"
-        site = " ".join(parts)
-    site = resolve_site(site)
+    site = " ".join(parts).strip()
     if not site:
-        await message.answer("Не указан старт. /sites — список.")
+        await ask_location(message, rng, None)
         return
     await send_forecast(message, site, rng)
 
@@ -331,6 +339,57 @@ async def cb_analysis(cb: CallbackQuery):
     for chunk in _chunks(text):
         await cb.message.answer(chunk)
     # keep the buttons — the user may want the other mode too
+
+
+@dp.callback_query(F.data.startswith("pk|"), flags={"forecast": True})
+async def cb_pick_site(cb: CallbackQuery):
+    try:
+        _, rng, date, name = cb.data.split("|", 3)
+    except ValueError:
+        await cb.answer()
+        return
+    await cb.answer()
+    try:
+        await cb.message.edit_reply_markup(reply_markup=None)  # collapse the picker
+    except Exception:  # noqa: BLE001
+        pass
+    await send_forecast(cb.message, name, rng, date or None)
+
+
+@dp.callback_query(F.data.startswith("pc|"))
+async def cb_pick_coords(cb: CallbackQuery, state: FSMContext):
+    try:
+        _, rng, date = cb.data.split("|", 2)
+    except ValueError:
+        await cb.answer()
+        return
+    await cb.answer()
+    await state.set_state(AdHoc.coords)
+    await state.update_data(rng=rng, date=date)
+    try:
+        await cb.message.edit_reply_markup(reply_markup=None)
+    except Exception:  # noqa: BLE001
+        pass
+    await cb.message.answer("Пришли координаты — широта, долгота (напр. 42.47, 44.48)\n(/cancel — отмена)")
+
+
+@dp.message(AdHoc.coords, F.text, ~F.text.startswith("/"))
+async def adhoc_coords(message: Message, state: FSMContext):
+    raw = message.text.replace(",", " ").split()
+    try:
+        lat, lon = float(raw[0]), float(raw[1])
+        if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+            raise ValueError
+    except (ValueError, IndexError):
+        await message.answer("Не понял координаты. Пришли «широта, долгота», напр.: 42.47, 44.48")
+        return
+    data = await state.get_data()
+    await state.clear()
+    rng, date = data.get("rng", "week"), (data.get("date") or None)
+    await message.bot.send_chat_action(chat_id=message.chat.id, action="typing")
+    elev = await forecast.fetch_elevation(lat, lon)
+    name = forecast.register_adhoc(lat, lon, elev)
+    await send_forecast(message, name, rng, date)
 
 
 async def main():
