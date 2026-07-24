@@ -398,8 +398,8 @@ def facts_1day(data, site):
               ("925hPa", "geopotential_height_925hPa", "wind_speed_925hPa", "wind_direction_925hPa"),
               ("850hPa", "geopotential_height_850hPa", "wind_speed_850hPa", "wind_direction_850hPa"),
               ("700hPa", "geopotential_height_700hPa", "wind_speed_700hPa", "wind_direction_700hPa"),
-              ("600hPa", "geopotential_height_600hPa", "wind_speed_600hPa", None),
-              ("500hPa", "geopotential_height_500hPa", "wind_speed_500hPa", None)]
+              ("600hPa", "geopotential_height_600hPa", "wind_speed_600hPa", "wind_direction_600hPa"),
+              ("500hPa", "geopotential_height_500hPa", "wind_speed_500hPa", "wind_direction_500hPa")]
     profile = []
     for name, h, spd, dr in levels:
         alt = h if isinstance(h, (int, float)) else round(H[h][tmax_i])
