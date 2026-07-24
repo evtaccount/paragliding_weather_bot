@@ -27,6 +27,7 @@ from dotenv import load_dotenv
 
 load_dotenv()  # before guards/forecast read their env vars
 
+import engine  # noqa: E402
 import forecast  # noqa: E402
 import guards  # noqa: E402
 
@@ -71,6 +72,8 @@ BOT_COMMANDS = [
     BotCommand(command="twoweeks", description="Обзор на 2 недели"),
     BotCommand(command="forecast", description="Прогноз: <старт> <диапазон>"),
     BotCommand(command="sites", description="Список стартов"),
+    BotCommand(command="add", description="Добавить старт: <имя> <lat> <lon> <эксп>"),
+    BotCommand(command="removesite", description="Удалить старт: <имя>"),
     BotCommand(command="help", description="Справка"),
 ]
 
@@ -135,6 +138,59 @@ async def cmd_help(message: Message):
 async def cmd_sites(message: Message):
     names = forecast.known_sites()
     await message.answer("Сохранённые старты:\n" + "\n".join(f"• {n}" for n in names))
+
+
+@dp.message(Command("add"))
+async def cmd_add(message: Message, command: CommandObject):
+    parts = (command.args or "").split()
+    if len(parts) < 4:
+        await message.answer(
+            "Формат: /add <Имя> <lat> <lon> <экспозиция>\n"
+            "Напр.: /add Гудаури 42.47 44.48 С\n"
+            "Экспозиция — куда смотрит склон: С/СВ/В/ЮВ/Ю/ЮЗ/З/СЗ или градусы 0–359.")
+        return
+    *name_parts, lat_s, lon_s, aspect_s = parts
+    name = " ".join(name_parts)
+    try:
+        lat, lon = float(lat_s), float(lon_s)
+        if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+            raise ValueError
+    except ValueError:
+        await message.answer("Координаты неверные. Формат: /add <Имя> <lat> <lon> <экспозиция>")
+        return
+    try:
+        aspect_deg = engine.parse_aspect(aspect_s)
+    except ValueError as e:
+        await message.answer(f"⚠️ {e}")
+        return
+    await message.bot.send_chat_action(chat_id=message.chat.id, action="typing")
+    elev = await forecast.fetch_elevation(lat, lon)
+    site = {"name": name, "aliases": [name.lower()], "lat": lat, "lon": lon,
+            "elevation_m": elev, "aspect": engine.card(aspect_deg),
+            "aspect_deg": aspect_deg, "notes": ""}
+    try:
+        engine.add_site(site)
+    except ValueError as e:
+        await message.answer(f"⚠️ {e}")
+        return
+    await message.answer(
+        f"✅ Старт добавлен: {name}\n"
+        f"📍 {lat}, {lon} · {elev} м · экспозиция {engine.card(aspect_deg)} ({round(aspect_deg)}°)\n"
+        f"Прогноз: /forecast {name} week")
+
+
+@dp.message(Command("removesite"))
+async def cmd_removesite(message: Message, command: CommandObject):
+    name = (command.args or "").strip()
+    if not name:
+        await message.answer("Формат: /removesite <Имя>. Список: /sites")
+        return
+    try:
+        engine.remove_site(name)
+    except ValueError as e:
+        await message.answer(f"⚠️ {e}")
+        return
+    await message.answer(f"🗑️ Старт удалён: {name}")
 
 
 @dp.message(Command("today"), flags={"forecast": True})

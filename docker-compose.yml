@@ -7,8 +7,8 @@ services:
       # site-local timezone so /today and /tomorrow resolve the right date
       - TZ=${TZ:-Asia/Tbilisi}
     volumes:
-      # edit launches on the host and restart — no rebuild needed
-      - ./sites.json:/app/sites.json:ro
+      # writable so /add and /removesite persist to the host file (also editable by hand)
+      - ./sites.json:/app/sites.json
     logging:
       driver: json-file
       options:

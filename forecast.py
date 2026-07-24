@@ -40,6 +40,20 @@ def known_sites():
     return [s["name"] for s in engine.load_sites()]
 
 
+async def fetch_elevation(lat: float, lon: float) -> int:
+    """Grid-cell elevation (m) for coordinates, from open-meteo. 0 on failure."""
+    url = (f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}"
+           "&current=temperature_2m")
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            r = await client.get(url)
+            r.raise_for_status()
+            return round(float(r.json().get("elevation", 0)))
+    except Exception as e:  # noqa: BLE001 — elevation is best-effort
+        log.warning("elevation fetch failed: %s", e)
+        return 0
+
+
 def _daytime_summary(hourly: dict, lo: int = 9, hi: int = 18) -> dict:
     """Compact daytime wind summary from a light hourly block (no sunrise/sunset)."""
     t = hourly["time"]

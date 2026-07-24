@@ -67,6 +67,45 @@ def find_site(name):
             return s
     raise SystemExit(f"Сайт не найден: {name}. Есть: " + ", ".join(s["name"] for s in load_sites()))
 
+_COMPASS = {"С": 0, "N": 0, "СВ": 45, "NE": 45, "В": 90, "E": 90, "ЮВ": 135, "SE": 135,
+            "Ю": 180, "S": 180, "ЮЗ": 225, "SW": 225, "З": 270, "W": 270, "СЗ": 315, "NW": 315}
+
+def parse_aspect(s: str) -> float:
+    """Compass letters (С/СВ/…/N/NE/…) or degrees (0–359) → aspect degrees."""
+    key = s.strip().upper()
+    if key in _COMPASS:
+        return _COMPASS[key]
+    try:
+        d = float(key)
+    except ValueError:
+        raise ValueError("экспозиция: С/СВ/В/ЮВ/Ю/ЮЗ/З/СЗ или градусы 0–359")
+    if 0 <= d < 360:
+        return d
+    raise ValueError("градусы экспозиции: 0–359")
+
+def _load_raw():
+    with open(SITES, encoding="utf-8") as f:
+        return json.load(f)
+
+def add_site(site: dict):
+    """Append a site to sites.json (raises if the name already exists)."""
+    data = _load_raw()
+    if any(s["name"].lower() == site["name"].lower() for s in data["sites"]):
+        raise ValueError(f"старт «{site['name']}» уже есть")
+    data["sites"].append(site)
+    with open(SITES, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+def remove_site(name: str):
+    """Delete a site by name (raises if not found)."""
+    data = _load_raw()
+    kept = [s for s in data["sites"] if s["name"].lower() != name.strip().lower()]
+    if len(kept) == len(data["sites"]):
+        raise ValueError(f"старт «{name}» не найден")
+    data["sites"] = kept
+    with open(SITES, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
 # ---------------------------------------------------------------- URL
 H_1D = ("temperature_2m,wind_speed_10m,wind_gusts_10m,wind_direction_10m,cloud_cover_low,"
         "cloud_cover_mid,precipitation,cape,dew_point_2m,boundary_layer_height,freezing_level_height,"
