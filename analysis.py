@@ -23,6 +23,10 @@ def available() -> bool:
     return bool(os.environ.get("GEMINI_API_KEY"))
 
 
+def model_name() -> str:
+    return _MODEL
+
+
 def _get_client():
     global _client
     if _client is None:

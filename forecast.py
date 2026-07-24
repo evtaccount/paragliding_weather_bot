@@ -14,7 +14,11 @@ GEMINI_API_KEY the bot still works, using the rule-based text.
 import asyncio
 import datetime as dt
 import logging
+import os
+import pathlib
+import shutil
 import tempfile
+import time
 
 import httpx
 
@@ -22,6 +26,11 @@ import analysis
 import engine  # find_site, build_url, report_*, facts_*, RANGE_DAYS
 
 log = logging.getLogger("pgbot.forecast")
+
+# TTL cache: (site name, rng, date) -> (expires_at, text, [png_bytes]).
+# Repeat requests within the TTL touch neither open-meteo nor Gemini.
+_CACHE_TTL = float(os.environ.get("CACHE_TTL_MIN", "15")) * 60
+_cache: dict[tuple, tuple[float, str, list[bytes]]] = {}
 
 
 class ForecastError(Exception):
@@ -33,7 +42,7 @@ def known_sites():
 
 
 async def get_forecast(site_name: str, rng: str, date: str | None = None):
-    """Return (telegram_text, [png_path, ...]) for a site + range.
+    """Return (telegram_text, [png_bytes, ...]) for a site + range.
 
     rng: "1d" | "3d" | "week" | "2weeks". For "1d", date defaults to today.
     """
@@ -46,6 +55,15 @@ async def get_forecast(site_name: str, rng: str, date: str | None = None):
 
     if rng == "1d" and not date:
         date = dt.date.today().isoformat()
+
+    key = (site["name"], rng, date)
+    now = time.monotonic()
+    for k in [k for k, v in _cache.items() if v[0] <= now]:
+        del _cache[k]
+    if key in _cache:
+        _, text, pngs = _cache[key]
+        log.info("cache hit: %s", key)
+        return text, pngs
 
     url = engine.build_url(site, rng, date)
     try:
@@ -61,19 +79,30 @@ async def get_forecast(site_name: str, rng: str, date: str | None = None):
 
     # Charts + deterministic (fallback) text + facts — all from the same real data.
     out = tempfile.mkdtemp(prefix="pgfc_")
-    if rng == "1d":
-        fallback_text, pngs = engine.report_1day(data, site, out)
-        facts = engine.facts_1day(data, site)
-    else:
-        fallback_text, pngs = engine.report_overview(data, site, rng, out)
-        facts = engine.facts_overview(data, site, rng)
+    try:
+        if rng == "1d":
+            fallback_text, png_paths = engine.report_1day(data, site, out)
+            facts = engine.facts_1day(data, site)
+        else:
+            fallback_text, png_paths = engine.report_overview(data, site, rng, out)
+            facts = engine.facts_overview(data, site, rng)
+        pngs = [pathlib.Path(p).read_bytes() for p in png_paths]
+    finally:
+        shutil.rmtree(out, ignore_errors=True)
 
     # LLM analysis over the real facts; fall back to rules if Gemini is unavailable.
     text = fallback_text
     if analysis.available():
+        t0 = time.monotonic()
         try:
             text = await asyncio.to_thread(analysis.analyze, facts, rng)
+            log.info("analysis: llm (gemini %s, %.1fs) — %s %s",
+                     analysis.model_name(), time.monotonic() - t0, site["name"], rng)
         except Exception as e:  # noqa: BLE001 — any Gemini failure → rule-based text
-            log.warning("LLM analysis failed (%s); using rule-based text", e)
+            log.warning("analysis: rules (fallback — gemini failed: %s) — %s %s",
+                        e, site["name"], rng)
+    else:
+        log.info("analysis: rules (no GEMINI_API_KEY) — %s %s", site["name"], rng)
 
+    _cache[key] = (time.monotonic() + _CACHE_TTL, text, pngs)
     return text, pngs
