@@ -223,6 +223,22 @@ def _scan_message(result: dict) -> tuple[str, InlineKeyboardMarkup | None]:
     return "\n".join(lines).rstrip(), kb
 
 
+def _model_short(k: str) -> str:
+    return "Auto" if k == "auto" else engine.model_label(k)
+
+
+def _model_switch_keyboard(site: str, rng: str, date: str | None) -> InlineKeyboardMarkup | None:
+    """Row of model buttons under a forecast; tapping re-renders it with that model.
+    An over-long site name overflows callback_data → _btn drops that button (with a warning)."""
+    cur = engine.get_model_key()
+    row = []
+    for k in engine.MODELS:
+        btn = _btn(f"{_model_short(k)}{' ✓' if k == cur else ''}", f"mf|{k}|{site}|{rng}|{date or ''}")
+        if btn is not None:
+            row.append(btn)
+    return InlineKeyboardMarkup(inline_keyboard=[row]) if row else None
+
+
 async def send_forecast(message: Message, site: str, rng: str, date: str | None = None):
     if rng == "1d" and not date:
         date = dt.date.today().isoformat()
@@ -261,6 +277,9 @@ async def send_forecast(message: Message, site: str, rng: str, date: str | None 
         kb = _day_picker_kb(site, rng)
         if kb is not None:
             await message.answer("📅 Подробно по дню:", reply_markup=kb)
+    mkb = _model_switch_keyboard(site, rng, date)  # let the user re-run in another model
+    if mkb is not None:
+        await message.answer("🌐 Другая модель:", reply_markup=mkb)
 
 
 async def ask_location(message: Message, rng: str, date: str | None):
@@ -360,6 +379,32 @@ async def cb_pick_model(cb: CallbackQuery):
                             reply_markup=_model_keyboard(key))
     except Exception:  # noqa: BLE001 — a stale-message edit can fail; not critical
         pass
+
+
+@dp.callback_query(F.data.startswith("mf|"), flags={"forecast": True})
+async def cb_switch_model(cb: CallbackQuery):
+    """A model button under a forecast → set the model, re-render the same forecast."""
+    msg = await cb_message(cb)
+    if msg is None:
+        return
+    try:
+        _, key, site, rng, date = cb.data.split("|", 4)
+    except ValueError:
+        await cb.answer()
+        return
+    try:
+        engine.set_model_key(key)
+    except ValueError:
+        await cb.answer("Неизвестная модель.", show_alert=True)
+        return
+    except OSError as e:  # read-only model.json — surface it
+        log.exception("set_model_key: write failed")
+        await cb.answer()
+        await msg.answer("⚠️ Не удалось сохранить выбор модели — нет доступа к файлу на запись.\n"
+                         f"({e.strerror or e})")
+        return
+    await cb.answer(f"{engine.model_label(key)} — пересчитываю…")
+    await send_forecast(msg, site, rng, date or None)
 
 
 async def _finish_add(message: Message, name: str, lat: float, lon: float,
