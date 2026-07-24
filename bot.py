@@ -17,6 +17,7 @@ import asyncio
 import datetime as dt
 import logging
 import os
+import re
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command, CommandObject, CommandStart
@@ -102,35 +103,81 @@ def _chunks(text: str, size: int = 4096):
         yield text[i:i + size]
 
 
-def resolve_site(arg: str | None) -> str | None:
-    """Return the site name to use: the given arg, or the sole saved site, else None."""
-    if arg and arg.strip():
-        return arg.strip()
-    names = forecast.known_sites()
-    return names[0] if len(names) == 1 else None
+# worst-case callback_data around a name: "deep|" + name + "|2weeks|YYYY-MM-DD" must fit 64 bytes
+_NAME_MAX_BYTES = 40
+
+
+def name_error(name: str) -> str | None:
+    """Why a site name can't live inside inline-button callback_data, or None if it can."""
+    if "|" in name:
+        return "Имя не должно содержать символ «|»."
+    if len(name.encode("utf-8")) > _NAME_MAX_BYTES:
+        return "Слишком длинное имя — не влезет в кнопки Telegram. До ~20 символов, короче?"
+    return None
+
+
+def _btn(text: str, data: str) -> InlineKeyboardButton | None:
+    """Inline button, or None (with a warning) when callback_data exceeds Telegram's
+    64-byte limit — otherwise Telegram rejects the WHOLE message with the keyboard."""
+    if len(data.encode("utf-8")) > 64:
+        log.warning("callback_data > 64 bytes, кнопка пропущена: %r", data)
+        return None
+    return InlineKeyboardButton(text=text, callback_data=data)
+
+
+_COORD_RE = re.compile(r"[-+]?\d+(?:[.,]\d+)?")
+
+
+def parse_coords(text: str) -> tuple[float, float] | None:
+    """Extract exactly (lat, lon) from free-form text. Decimal commas supported:
+    «42,47 44,48» → (42.47, 44.48). Anything but exactly two numbers → None —
+    re-ask instead of silently taking the first two of four."""
+    nums = _COORD_RE.findall(text)
+    if len(nums) != 2:
+        return None
+    lat, lon = (float(n.replace(",", ".")) for n in nums)
+    if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        return None
+    return lat, lon
+
+
+async def cb_message(cb: CallbackQuery) -> Message | None:
+    """The callback's source message if still accessible. Telegram stops exposing
+    messages older than ~48h — our buttons stay in the chat forever, so a stale
+    press must get an explicit answer, not an AttributeError."""
+    if isinstance(cb.message, Message):
+        return cb.message
+    await cb.answer("Кнопка устарела — запроси прогноз заново.", show_alert=True)
+    return None
 
 
 _WD = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
 
 
-def _day_picker_kb(site: str, rng: str) -> InlineKeyboardMarkup:
+def _day_picker_kb(site: str, rng: str) -> InlineKeyboardMarkup | None:
     """Buttons for each day of an overview period → detailed 1-day forecast.
 
-    An overview is fetched with forecast_days=N, so the period is always
-    today … today+(N-1) in the site's timezone.
+    Dates come from the cached overview facts (site-local, straight from the
+    open-meteo response) — the server's own "today" can differ from the site's
+    around midnight. Cold cache → fall back to server-local dates.
     """
-    today = dt.date.today()
+    dates = forecast.cached_dates(site, rng)
+    if dates is None:
+        today = dt.date.today()
+        dates = [(today + dt.timedelta(days=i)).isoformat() for i in range(engine.RANGE_DAYS[rng])]
     rows, row = [], []
-    for i in range(engine.RANGE_DAYS[rng]):
-        d = today + dt.timedelta(days=i)
-        label = f"{_WD[d.weekday()]} {d.day:02d}.{d.month:02d}"
-        row.append(InlineKeyboardButton(text=label, callback_data=f"pd|{site}|{d.isoformat()}"))
+    for iso in dates:
+        d = dt.date.fromisoformat(iso)
+        btn = _btn(f"{_WD[d.weekday()]} {d.day:02d}.{d.month:02d}", f"pd|{site}|{iso}")
+        if btn is None:
+            continue
+        row.append(btn)
         if len(row) == 3:
             rows.append(row)
             row = []
     if row:
         rows.append(row)
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+    return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
 
 
 async def send_forecast(message: Message, site: str, rng: str, date: str | None = None):
@@ -156,18 +203,22 @@ async def send_forecast(message: Message, site: str, rng: str, date: str | None 
     elif files:
         await message.answer_media_group([InputMediaPhoto(media=f) for f in files])
     # LLM analysis is off by default — offer it on demand.
-    row = [InlineKeyboardButton(text="🧠 Разбор от ИИ", callback_data=f"llm|{site}|{rng}|{date or ''}")]
+    row = [_btn("🧠 Разбор от ИИ", f"llm|{site}|{rng}|{date or ''}")]
     if rng == "1d":  # deep analysis (surrounding points + previous day) — 1-day only
-        row.append(InlineKeyboardButton(text="📊 Глубокий разбор", callback_data=f"deep|{site}|{rng}|{date or ''}"))
-    await message.answer("Нужен разбор от ИИ?", reply_markup=InlineKeyboardMarkup(inline_keyboard=[row]))
+        row.append(_btn("📊 Глубокий разбор", f"deep|{site}|{rng}|{date or ''}"))
+    row = [b for b in row if b is not None]
+    if row:
+        await message.answer("Нужен разбор от ИИ?", reply_markup=InlineKeyboardMarkup(inline_keyboard=[row]))
     if rng != "1d":  # overview → let the user drill into a single day
-        await message.answer("📅 Подробно по дню:", reply_markup=_day_picker_kb(site, rng))
+        kb = _day_picker_kb(site, rng)
+        if kb is not None:
+            await message.answer("📅 Подробно по дню:", reply_markup=kb)
 
 
 async def ask_location(message: Message, rng: str, date: str | None):
     """No site given → offer saved sites + a "по координатам" option as inline buttons."""
-    rows = [[InlineKeyboardButton(text=n, callback_data=f"pk|{rng}|{date or ''}|{n}")]
-            for n in forecast.known_sites()]
+    rows = [[b] for n in forecast.known_sites()
+            if (b := _btn(n, f"pk|{rng}|{date or ''}|{n}")) is not None]
     rows.append([InlineKeyboardButton(text="📍 По координатам", callback_data=f"pc|{rng}|{date or ''}")])
     await message.answer("Для какой точки?", reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
 
@@ -188,6 +239,9 @@ async def cmd_help(message: Message):
 @dp.message(Command("sites"))
 async def cmd_sites(message: Message):
     names = forecast.known_sites()
+    if not names:
+        await message.answer("Сохранённых стартов нет. Добавить: /add")
+        return
     await message.answer("Сохранённые старты:\n" + "\n".join(f"• {n}" for n in names))
 
 
@@ -224,6 +278,9 @@ async def cmd_add(message: Message, command: CommandObject, state: FSMContext):
     if len(parts) >= 4:  # one-shot: /add <Имя> <lat> <lon> <экспозиция>
         *name_parts, lat_s, lon_s, aspect_s = parts
         name = " ".join(name_parts)
+        if err := name_error(name):
+            await message.answer(f"⚠️ {err}")
+            return
         try:
             lat, lon = float(lat_s), float(lon_s)
             if not (-90 <= lat <= 90 and -180 <= lon <= 180):
@@ -244,19 +301,25 @@ async def cmd_add(message: Message, command: CommandObject, state: FSMContext):
                          "Напр.: 42.47, 44.48\n(/cancel — отмена)")
 
 
-@dp.message(AddSite.coords, F.text, ~F.text.startswith("/"))
-async def add_coords(message: Message, state: FSMContext):
-    raw = message.text.replace(",", " ").split()
-    try:
-        lat, lon = float(raw[0]), float(raw[1])
-        if not (-90 <= lat <= 90 and -180 <= lon <= 180):
-            raise ValueError
-    except (ValueError, IndexError):
-        await message.answer("Не понял координаты. Пришли «широта, долгота», напр.: 42.47, 44.48")
-        return
+async def _add_got_coords(message: Message, state: FSMContext, lat: float, lon: float):
     await state.update_data(lat=lat, lon=lon)
     await state.set_state(AddSite.name)
     await message.answer("Название старта?")
+
+
+@dp.message(AddSite.coords, F.location)
+async def add_coords_pin(message: Message, state: FSMContext):
+    await _add_got_coords(message, state, message.location.latitude, message.location.longitude)
+
+
+@dp.message(AddSite.coords, F.text, ~F.text.startswith("/"))
+async def add_coords(message: Message, state: FSMContext):
+    coords = parse_coords(message.text)
+    if coords is None:
+        await message.answer("Не понял координаты. Пришли «широта, долгота» (напр. 42.47, 44.48) "
+                             "или геоточку с карты. (/cancel — отмена)")
+        return
+    await _add_got_coords(message, state, *coords)
 
 
 @dp.message(AddSite.name, F.text, ~F.text.startswith("/"))
@@ -264,6 +327,9 @@ async def add_name(message: Message, state: FSMContext):
     name = message.text.strip()
     if not name:
         await message.answer("Пустое название. Введи имя старта.")
+        return
+    if err := name_error(name):
+        await message.answer(f"{err}\nДругое имя?")
         return
     await state.update_data(name=name)
     await state.set_state(AddSite.aspect)
@@ -295,6 +361,7 @@ async def add_notes(message: Message, state: FSMContext):
 @dp.message(Command("cancel"))
 async def cmd_cancel(message: Message, state: FSMContext):
     if await state.get_state() is None:
+        await message.answer("Нечего отменять.")
         return
     await state.clear()
     await message.answer("Отменено.")
@@ -356,6 +423,9 @@ async def cmd_forecast(message: Message, command: CommandObject):
 
 @dp.callback_query(F.data.startswith(("llm|", "deep|")), flags={"forecast": True})
 async def cb_analysis(cb: CallbackQuery):
+    msg = await cb_message(cb)
+    if msg is None:
+        return
     try:
         kind, site, rng, date = cb.data.split("|", 3)
     except ValueError:
@@ -364,50 +434,69 @@ async def cb_analysis(cb: CallbackQuery):
     deep = kind == "deep"
     await cb.answer("Считаю глубокий разбор…" if deep else "Считаю разбор…")
     try:
-        async with ChatActionSender.typing(bot=cb.message.bot, chat_id=cb.message.chat.id):
+        async with ChatActionSender.typing(bot=msg.bot, chat_id=msg.chat.id):
             text = await forecast.get_analysis(site, rng, date or None, deep=deep)
     except forecast.ForecastError as e:
-        await cb.message.answer(f"⚠️ {e}")
+        await msg.answer(f"⚠️ {e}")
         return
     except Exception as e:  # noqa: BLE001 — surface any unexpected failure to the user
         log.exception("analysis failed")
-        await cb.message.answer(f"⚠️ Ошибка: {e}")
+        await msg.answer(f"⚠️ Ошибка: {e}")
         return
     for chunk in _chunks(text):
-        await cb.message.answer(chunk)
+        await msg.answer(chunk)
     # keep the buttons — the user may want the other mode too
 
 
 @dp.callback_query(F.data.startswith("pd|"), flags={"forecast": True})
-async def cb_pick_day(cb: CallbackQuery):
+async def cb_pick_day(cb: CallbackQuery, state: FSMContext):
     """A day button from an overview → detailed 1-day forecast for that date."""
+    msg = await cb_message(cb)
+    if msg is None:
+        return
     try:
         _, site, date = cb.data.split("|", 2)
+        day = dt.date.fromisoformat(date)
     except ValueError:
         await cb.answer()
         return
+    # the picker stays in the chat for days — a pressed date may be long gone
+    # (−1 day of slack: the server's "today" can trail the site's timezone)
+    if day < dt.date.today() - dt.timedelta(days=1):
+        await cb.answer("Эта дата уже прошла — запроси свежий обзор.", show_alert=True)
+        return
+    if await state.get_state() == AdHoc.coords.state:
+        await state.clear()  # передумал вводить координаты — выбрал день
     await cb.answer(f"Прогноз на {date}…")
     # keep the picker in place — the user may want another day too
-    await send_forecast(cb.message, site, "1d", date)
+    await send_forecast(msg, site, "1d", date)
 
 
 @dp.callback_query(F.data.startswith("pk|"), flags={"forecast": True})
-async def cb_pick_site(cb: CallbackQuery):
+async def cb_pick_site(cb: CallbackQuery, state: FSMContext):
+    msg = await cb_message(cb)
+    if msg is None:
+        return
     try:
         _, rng, date, name = cb.data.split("|", 3)
     except ValueError:
         await cb.answer()
         return
+    if await state.get_state() == AdHoc.coords.state:
+        await state.clear()  # передумал вводить координаты — выбрал сохранённый старт
     await cb.answer()
     try:
-        await cb.message.edit_reply_markup(reply_markup=None)  # collapse the picker
+        await msg.edit_reply_markup(reply_markup=None)  # collapse the picker
     except Exception:  # noqa: BLE001
         pass
-    await send_forecast(cb.message, name, rng, date or None)
+    await send_forecast(msg, name, rng, date or None)
 
 
 @dp.callback_query(F.data.startswith("pc|"))
 async def cb_pick_coords(cb: CallbackQuery, state: FSMContext):
+    msg = await cb_message(cb)
+    if msg is None:
+        return
     try:
         _, rng, date = cb.data.split("|", 2)
     except ValueError:
@@ -417,22 +506,14 @@ async def cb_pick_coords(cb: CallbackQuery, state: FSMContext):
     await state.set_state(AdHoc.coords)
     await state.update_data(rng=rng, date=date)
     try:
-        await cb.message.edit_reply_markup(reply_markup=None)
+        await msg.edit_reply_markup(reply_markup=None)
     except Exception:  # noqa: BLE001
         pass
-    await cb.message.answer("Пришли координаты — широта, долгота (напр. 42.47, 44.48)\n(/cancel — отмена)")
+    await msg.answer("Пришли координаты — широта, долгота (напр. 42.47, 44.48) "
+                     "или геоточку с карты.\n(/cancel — отмена)")
 
 
-@dp.message(AdHoc.coords, F.text, ~F.text.startswith("/"))
-async def adhoc_coords(message: Message, state: FSMContext):
-    raw = message.text.replace(",", " ").split()
-    try:
-        lat, lon = float(raw[0]), float(raw[1])
-        if not (-90 <= lat <= 90 and -180 <= lon <= 180):
-            raise ValueError
-    except (ValueError, IndexError):
-        await message.answer("Не понял координаты. Пришли «широта, долгота», напр.: 42.47, 44.48")
-        return
+async def _adhoc_got_coords(message: Message, state: FSMContext, lat: float, lon: float):
     data = await state.get_data()
     await state.clear()
     rng, date = data.get("rng", "week"), (data.get("date") or None)
@@ -440,6 +521,29 @@ async def adhoc_coords(message: Message, state: FSMContext):
     elev = await forecast.fetch_elevation(lat, lon)
     name = forecast.register_adhoc(lat, lon, elev)
     await send_forecast(message, name, rng, date)
+
+
+@dp.message(AdHoc.coords, F.location)
+async def adhoc_coords_pin(message: Message, state: FSMContext):
+    await _adhoc_got_coords(message, state, message.location.latitude, message.location.longitude)
+
+
+@dp.message(AdHoc.coords, F.text, ~F.text.startswith("/"))
+async def adhoc_coords(message: Message, state: FSMContext):
+    coords = parse_coords(message.text)
+    if coords is None:
+        await message.answer("Не понял координаты. Пришли «широта, долгота» (напр. 42.47, 44.48) "
+                             "или геоточку с карты. (/cancel — отмена)")
+        return
+    await _adhoc_got_coords(message, state, *coords)
+
+
+@dp.message()
+async def unhandled(message: Message):
+    """Whatever no handler matched: random text, stickers, or a message typed into an
+    FSM dialog the bot forgot after a restart (MemoryStorage). Silence looks broken —
+    point at /help instead."""
+    await message.answer("Не понял. Список команд: /help")
 
 
 async def main():

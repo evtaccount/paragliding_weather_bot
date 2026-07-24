@@ -101,10 +101,15 @@ def _load_raw():
         return json.load(f)
 
 def add_site(site: dict):
-    """Append a site to sites.json (raises if the name already exists)."""
+    """Append a site to sites.json (raises if the name collides with a name OR an
+    alias — find_site matches aliases too, an alias-shadowed site would be unreachable)."""
     data = _load_raw()
-    if any(s["name"].lower() == site["name"].lower() for s in data["sites"]):
-        raise ValueError(f"старт «{site['name']}» уже есть")
+    key = site["name"].lower()
+    for s in data["sites"]:
+        if key == s["name"].lower():
+            raise ValueError(f"старт «{site['name']}» уже есть")
+        if key in [a.lower() for a in s.get("aliases", [])]:
+            raise ValueError(f"имя «{site['name']}» уже занято как псевдоним старта «{s['name']}»")
     data["sites"].append(site)
     with open(SITES, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
