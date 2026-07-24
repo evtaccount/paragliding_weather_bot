@@ -185,22 +185,23 @@ def report_1day(data, site, out):
     precip_sum = D["precipitation_sum"][0]
     st_emoji, st_label, _ = day_status(precip_sum, max(dt_wind), max(dt_gust), fly_dir, aspect)
 
-    # ---- text ----
-    L = []
-    L.append(f"🪂 {site['name']} ({card(aspect)}) — прогноз на {fmt_date(t[0])}")
-    L.append(f"📍 {site['lat']:.3f}, {site['lon']:.3f} · {elev} м · {data.get('timezone','')}")
-    L.append("")
-    L.append(f"Вердикт: {st_emoji} {st_label}")
-    L.append("")
-    L.append(f"🌡️ Днём ({hour_of(sr):02d}–{hour_of(ss):02d}): {rng_str(dt_temp,'°')}")
-    L.append(f"💨 Ветер (днём): {rng_str(dt_wind,' м/с',1)}, порывы до {max(dt_gust):.0f}")
-    L.append(f"🧭 Направление (в окно): {card(fly_dir)} ~{round(fly_dir)}° → {dv}")
-    L.append(f"🌧️ Осадки: {'нет' if precip_sum < RAIN_DAY else f'{precip_sum:.1f} мм'}")
-    L.append(f"🔆 Термичка: {'рабочая' if max(cape[i] for i in day) > 20 or top_agl > 500 else 'слабая'}"
-             f", пик {peak_lo:02d}–{peak_hi:02d}")
-    L.append(f"🧗 Потолок: ~{top_agl} м над стартом (~{top_msl} MSL){' · голубой' if blue else ''}")
-    L.append("")
-    L.append(f"⏱️ Лётное окно: {window}" + (f" (пик {peak_lo:02d}–{peak_hi:02d})" if fly_hours else ""))
+    # ---- text: factual card (always shown) + tail (window/caveats) ----
+    card_lines = [
+        f"🪂 {site['name']} ({card(aspect)}) — прогноз на {fmt_date(t[0])}",
+        f"📍 {site['lat']:.3f}, {site['lon']:.3f} · {elev} м · {data.get('timezone','')}",
+        "",
+        f"Вердикт: {st_emoji} {st_label}",
+        "",
+        f"🌡️ Днём ({hour_of(sr):02d}–{hour_of(ss):02d}): {rng_str(dt_temp,'°')}",
+        f"💨 Ветер (днём): {rng_str(dt_wind,' м/с',1)}, порывы до {max(dt_gust):.0f}",
+        f"🧭 Направление (в окно): {card(fly_dir)} ~{round(fly_dir)}° → {dv}",
+        f"🌧️ Осадки: {'нет' if precip_sum < RAIN_DAY else f'{precip_sum:.1f} мм'}",
+        f"🔆 Термичка: {'рабочая' if max(cape[i] for i in day) > 20 or top_agl > 500 else 'слабая'}, пик {peak_lo:02d}–{peak_hi:02d}",
+        f"🧗 Потолок: ~{top_agl} м над стартом (~{top_msl} MSL){' · голубой' if blue else ''}",
+    ]
+    card_text = "\n".join(card_lines)
+
+    tail = [f"⏱️ Лётное окно: {window}" + (f" (пик {peak_lo:02d}–{peak_hi:02d})" if fly_hours else "")]
     cav = []
     if blue: cav.append("голубая термичка (без облаков-маркеров)")
     if top_agl < 900: cav.append("низкий потолок — XC слабый")
@@ -208,8 +209,9 @@ def report_1day(data, site, out):
     elif dc == "cross": cav.append("боковой ветер к склону — сверь экспозицию")
     cav.append(f"высота старта по гриду ({elev} м); прогноз далеко вперёд — пересними за 1–2 суток")
     if cav:
-        L.append("")
-        L.append("⚠️ " + "; ".join(cav) + ".")
+        tail.append("")
+        tail.append("⚠️ " + "; ".join(cav) + ".")
+    text = card_text + "\n\n" + "\n".join(tail)
 
     # ---- charts ----
     pngs = []
@@ -217,7 +219,7 @@ def report_1day(data, site, out):
     pngs.append(meteogram_png(data, site, out))
     pngs.append(ceiling_png(data, site, out))
     pngs.append(profile_png(data, site, out))
-    return "\n".join(L), pngs
+    return text, pngs, card_text
 
 # ---------------------------------------------------------------- report: overview
 def report_overview(data, site, rng, out):
@@ -246,23 +248,23 @@ def report_overview(data, site, rng, out):
                          dom=dom, precip=precip, wc=wc))
     best = max(rows, key=lambda r: r["score"])
     names = {"3d": "3 дня", "week": "неделю", "2weeks": "2 недели"}
-    L = [f"🪂 {site['name']} ({card(aspect)}) — обзор на {names[rng]}",
-         f"📍 {site['lat']:.3f}, {site['lon']:.3f} · {elev} м · {data.get('timezone','')}",
-         "",
-         f"🏆 Лучший день: {best['emoji']} {fmt_date(best['date'])} — {WMO.get(best['wc'],'')}, "
-         f"ветер до {best['wmax']:.0f}, порыв {best['gmax']:.0f} м/с",
-         "",
-         "По дням (светлое время):"]
+    card_lines = [f"🪂 {site['name']} ({card(aspect)}) — обзор на {names[rng]}",
+                  f"📍 {site['lat']:.3f}, {site['lon']:.3f} · {elev} м · {data.get('timezone','')}",
+                  "",
+                  f"🏆 Лучший день: {best['emoji']} {fmt_date(best['date'])} — {WMO.get(best['wc'],'')}, "
+                  f"ветер до {best['wmax']:.0f}, порыв {best['gmax']:.0f} м/с",
+                  "",
+                  "По дням (светлое время):"]
     for r in rows:
-        L.append(f"{r['emoji']} {fmt_date(r['date'])} · {r['tmax']:.0f}° · "
-                 f"ветер до {r['wmax']:.0f}, порыв {r['gmax']:.0f} м/с · "
-                 f"{card(r['dom'])} · {WMO.get(r['wc'],'')}"
-                 + (f" {r['precip']:.1f}мм" if r["precip"] > RAIN_DAY else ""))
-    L.append("")
-    L.append("💨 ветер в м/с; T и ветер — за светлое время. Пороги: ≤5 ок · 5–7 маргинал · >7 нет.")
+        card_lines.append(f"{r['emoji']} {fmt_date(r['date'])} · {r['tmax']:.0f}° · "
+                          f"ветер до {r['wmax']:.0f}, порыв {r['gmax']:.0f} м/с · "
+                          f"{card(r['dom'])} · {WMO.get(r['wc'],'')}"
+                          + (f" {r['precip']:.1f}мм" if r["precip"] > RAIN_DAY else ""))
+    card_text = "\n".join(card_lines)
+    note = "💨 ветер в м/с; T и ветер — за светлое время. Пороги: ≤5 ок · 5–7 маргинал · >7 нет."
     from charts import overview_png
     png = overview_png(rows, site, rng, out)
-    return "\n".join(L), [png]
+    return card_text + "\n\n" + note, [png], card_text
 
 # ---------------------------------------------------------------- facts (for LLM analysis)
 # These extract the REAL numbers from the open-meteo response into a compact,
@@ -366,9 +368,9 @@ def main():
         data = json.load(f)
     os.makedirs(a.out, exist_ok=True)
     if a.range == "1d":
-        text, pngs = report_1day(data, site, a.out)
+        text, pngs, _ = report_1day(data, site, a.out)
     else:
-        text, pngs = report_overview(data, site, a.range, a.out)
+        text, pngs, _ = report_overview(data, site, a.range, a.out)
     print("=" * 8 + " TELEGRAM " + "=" * 8)
     print(text)
     print("=" * 26)

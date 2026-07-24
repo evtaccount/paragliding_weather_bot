@@ -18,9 +18,11 @@ import datetime as dt
 import logging
 import os
 
-from aiogram import Bot, Dispatcher
+from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command, CommandObject, CommandStart
-from aiogram.types import BotCommand, BufferedInputFile, InputMediaPhoto, Message
+from aiogram.types import (BotCommand, BufferedInputFile, CallbackQuery,
+                           InlineKeyboardButton, InlineKeyboardMarkup,
+                           InputMediaPhoto, Message)
 from dotenv import load_dotenv
 
 load_dotenv()  # before guards/forecast read their env vars
@@ -83,6 +85,8 @@ def resolve_site(arg: str | None) -> str | None:
 
 
 async def send_forecast(message: Message, site: str, rng: str, date: str | None = None):
+    if rng == "1d" and not date:
+        date = dt.date.today().isoformat()
     await message.bot.send_chat_action(chat_id=message.chat.id, action="typing")
     try:
         text, pngs = await forecast.get_forecast(site, rng, date)
@@ -101,6 +105,10 @@ async def send_forecast(message: Message, site: str, rng: str, date: str | None 
         await message.answer_photo(files[0])
     elif files:
         await message.answer_media_group([InputMediaPhoto(media=f) for f in files])
+    if rng == "1d":  # offer the on-demand detailed analysis for a single day
+        kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="🔎 Подробный анализ", callback_data=f"det|{site}|{rng}|{date}")]])
+        await message.answer("Развернуть подробный разбор?", reply_markup=kb)
 
 
 async def _shortcut(message: Message, command: CommandObject, rng: str, date: str | None):
@@ -165,6 +173,32 @@ async def cmd_forecast(message: Message, command: CommandObject):
         await message.answer("Не указан старт. /sites — список.")
         return
     await send_forecast(message, site, rng)
+
+
+@dp.callback_query(F.data.startswith("det|"))
+async def cb_detail(cb: CallbackQuery):
+    try:
+        _, site, rng, date = cb.data.split("|", 3)
+    except ValueError:
+        await cb.answer()
+        return
+    await cb.answer("Готовлю подробный разбор…")
+    await cb.message.bot.send_chat_action(chat_id=cb.message.chat.id, action="typing")
+    try:
+        text, _ = await forecast.get_forecast(site, rng, date or None, detail=True)
+    except forecast.ForecastError as e:
+        await cb.message.answer(f"⚠️ {e}")
+        return
+    except Exception as e:  # noqa: BLE001 — surface any unexpected failure to the user
+        log.exception("detail failed")
+        await cb.message.answer(f"⚠️ Ошибка: {e}")
+        return
+    for chunk in _chunks(text):
+        await cb.message.answer(chunk)
+    try:
+        await cb.message.edit_reply_markup(reply_markup=None)  # consume the button
+    except Exception:  # noqa: BLE001 — editing markup is best-effort
+        pass
 
 
 async def main():
