@@ -215,7 +215,7 @@ async def get_analysis(site_name: str, rng: str, date: str | None = None, deep: 
 
     t0 = time.monotonic()
     try:
-        text = await asyncio.to_thread(analysis.analyze, payload, rng, True)
+        text = await asyncio.to_thread(analysis.analyze, payload, rng, deep)
         log.info("analysis: llm (gemini %s, %.1fs, %s) — %s %s",
                  analysis.model_name(), time.monotonic() - t0, mode, site["name"], rng)
     except Exception as e:  # noqa: BLE001 — any Gemini failure → rule-based text
