@@ -297,15 +297,25 @@ def _model_options() -> str:
     return " · ".join(f"{k} ({engine.model_label(k)})" for k in engine.MODELS)
 
 
+def _model_keyboard(current: str) -> InlineKeyboardMarkup:
+    """One button per model (current marked ✓); tapping sets it via an md| callback."""
+    rows = []
+    for k in engine.MODELS:
+        btn = _btn(f"{engine.model_label(k)}{' ✓' if k == current else ''}", f"md|{k}")
+        if btn is not None:
+            rows.append([btn])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 @dp.message(Command("model"))
 async def cmd_model(message: Message, command: CommandObject):
-    """Show or set the global meteo model. Not a forecast request → no cooldown flag."""
+    """No argument → a button picker; /model <ключ> sets directly.
+    Not a forecast request → no cooldown flag."""
     key = (command.args or "").strip().lower()
     if not key:
         cur = engine.get_model_key()
-        await message.answer(
-            f"Текущая модель: {engine.model_label(cur)} ({cur}).\n"
-            f"Сменить: /model <ключ>\nДоступно: {_model_options()}")
+        await message.answer(f"Текущая модель: {engine.model_label(cur)}. Выбери модель:",
+                             reply_markup=_model_keyboard(cur))
         return
     try:
         engine.set_model_key(key)
@@ -319,6 +329,37 @@ async def cmd_model(message: Message, command: CommandObject):
         return
     await message.answer(f"✅ Модель: {engine.model_label(key)} ({key}). "
                          f"Кэш обновится при следующем запросе.")
+
+
+@dp.callback_query(F.data.startswith("md|"))
+async def cb_pick_model(cb: CallbackQuery):
+    """A model button from /model → set the global model, refresh the picker."""
+    msg = await cb_message(cb)
+    if msg is None:
+        return
+    try:
+        _, key = cb.data.split("|", 1)
+    except ValueError:
+        await cb.answer()
+        return
+    try:
+        engine.set_model_key(key)
+    except ValueError:
+        await cb.answer("Неизвестная модель.", show_alert=True)
+        return
+    except OSError as e:  # read-only model.json — surface it, don't fail silently
+        log.exception("set_model_key: write failed")
+        await cb.answer()
+        await msg.answer("⚠️ Не удалось сохранить выбор модели — нет доступа к файлу на запись.\n"
+                         f"({e.strerror or e})")
+        return
+    await cb.answer(f"Модель: {engine.model_label(key)}")
+    try:  # confirm + move the ✓ to the chosen model
+        await msg.edit_text(f"✅ Модель: {engine.model_label(key)} ({key}). "
+                            f"Кэш обновится при следующем запросе.",
+                            reply_markup=_model_keyboard(key))
+    except Exception:  # noqa: BLE001 — a stale-message edit can fail; not critical
+        pass
 
 
 async def _finish_add(message: Message, name: str, lat: float, lon: float,
