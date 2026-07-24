@@ -20,6 +20,9 @@ import os
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command, CommandObject, CommandStart
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (BotCommand, BufferedInputFile, CallbackQuery,
                            InlineKeyboardButton, InlineKeyboardMarkup,
                            InputMediaPhoto, Message)
@@ -34,7 +37,7 @@ import guards  # noqa: E402
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("pgbot")
 
-dp = Dispatcher()
+dp = Dispatcher(storage=MemoryStorage())  # in-memory FSM for the interactive /add
 # guards on both messages and inline-button callbacks. Separate throttle instances
 # so pressing the analysis button right after a command isn't blocked by the command
 # cooldown, while button spam is still throttled on its own.
@@ -42,6 +45,14 @@ dp.message.outer_middleware(guards.WhitelistMiddleware())
 dp.message.middleware(guards.ThrottleMiddleware())
 dp.callback_query.outer_middleware(guards.WhitelistMiddleware())
 dp.callback_query.middleware(guards.ThrottleMiddleware())
+
+
+class AddSite(StatesGroup):
+    """Interactive /add flow: coordinates → name → aspect → notes."""
+    coords = State()
+    name = State()
+    aspect = State()
+    notes = State()
 
 RANGE_ALIASES = {
     "1d": "1d", "day": "1d", "день": "1d",
@@ -140,34 +151,13 @@ async def cmd_sites(message: Message):
     await message.answer("Сохранённые старты:\n" + "\n".join(f"• {n}" for n in names))
 
 
-@dp.message(Command("add"))
-async def cmd_add(message: Message, command: CommandObject):
-    parts = (command.args or "").split()
-    if len(parts) < 4:
-        await message.answer(
-            "Формат: /add <Имя> <lat> <lon> <экспозиция>\n"
-            "Напр.: /add Гудаури 42.47 44.48 С\n"
-            "Экспозиция — куда смотрит склон: С/СВ/В/ЮВ/Ю/ЮЗ/З/СЗ или градусы 0–359.")
-        return
-    *name_parts, lat_s, lon_s, aspect_s = parts
-    name = " ".join(name_parts)
-    try:
-        lat, lon = float(lat_s), float(lon_s)
-        if not (-90 <= lat <= 90 and -180 <= lon <= 180):
-            raise ValueError
-    except ValueError:
-        await message.answer("Координаты неверные. Формат: /add <Имя> <lat> <lon> <экспозиция>")
-        return
-    try:
-        aspect_deg = engine.parse_aspect(aspect_s)
-    except ValueError as e:
-        await message.answer(f"⚠️ {e}")
-        return
+async def _finish_add(message: Message, name: str, lat: float, lon: float,
+                      aspect_deg: float, notes: str = ""):
     await message.bot.send_chat_action(chat_id=message.chat.id, action="typing")
     elev = await forecast.fetch_elevation(lat, lon)
     site = {"name": name, "aliases": [name.lower()], "lat": lat, "lon": lon,
             "elevation_m": elev, "aspect": engine.card(aspect_deg),
-            "aspect_deg": aspect_deg, "notes": ""}
+            "aspect_deg": aspect_deg, "notes": notes}
     try:
         engine.add_site(site)
     except ValueError as e:
@@ -177,6 +167,88 @@ async def cmd_add(message: Message, command: CommandObject):
         f"✅ Старт добавлен: {name}\n"
         f"📍 {lat}, {lon} · {elev} м · экспозиция {engine.card(aspect_deg)} ({round(aspect_deg)}°)\n"
         f"Прогноз: /forecast {name} week")
+
+
+@dp.message(Command("add"))
+async def cmd_add(message: Message, command: CommandObject, state: FSMContext):
+    parts = (command.args or "").split()
+    if len(parts) >= 4:  # one-shot: /add <Имя> <lat> <lon> <экспозиция>
+        *name_parts, lat_s, lon_s, aspect_s = parts
+        name = " ".join(name_parts)
+        try:
+            lat, lon = float(lat_s), float(lon_s)
+            if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+                raise ValueError
+        except ValueError:
+            await message.answer("Координаты неверные. Формат: /add <Имя> <lat> <lon> <экспозиция>")
+            return
+        try:
+            aspect_deg = engine.parse_aspect(aspect_s)
+        except ValueError as e:
+            await message.answer(f"⚠️ {e}")
+            return
+        await _finish_add(message, name, lat, lon, aspect_deg)
+        return
+    # data missing → ask step by step: coordinates → name → aspect
+    await state.set_state(AddSite.coords)
+    await message.answer("Добавляю старт. Пришли координаты — широта, долгота\n"
+                         "Напр.: 42.47, 44.48\n(/cancel — отмена)")
+
+
+@dp.message(AddSite.coords, F.text, ~F.text.startswith("/"))
+async def add_coords(message: Message, state: FSMContext):
+    raw = message.text.replace(",", " ").split()
+    try:
+        lat, lon = float(raw[0]), float(raw[1])
+        if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+            raise ValueError
+    except (ValueError, IndexError):
+        await message.answer("Не понял координаты. Пришли «широта, долгота», напр.: 42.47, 44.48")
+        return
+    await state.update_data(lat=lat, lon=lon)
+    await state.set_state(AddSite.name)
+    await message.answer("Название старта?")
+
+
+@dp.message(AddSite.name, F.text, ~F.text.startswith("/"))
+async def add_name(message: Message, state: FSMContext):
+    name = message.text.strip()
+    if not name:
+        await message.answer("Пустое название. Введи имя старта.")
+        return
+    await state.update_data(name=name)
+    await state.set_state(AddSite.aspect)
+    await message.answer("Экспозиция — куда смотрит склон: С/СВ/В/ЮВ/Ю/ЮЗ/З/СЗ или градусы 0–359")
+
+
+@dp.message(AddSite.aspect, F.text, ~F.text.startswith("/"))
+async def add_aspect(message: Message, state: FSMContext):
+    try:
+        aspect_deg = engine.parse_aspect(message.text)
+    except ValueError as e:
+        await message.answer(f"{e}\nПопробуй ещё раз.")
+        return
+    await state.update_data(aspect_deg=aspect_deg)
+    await state.set_state(AddSite.notes)
+    await message.answer("Заметка к старту? (напр. «южный бриз, SIV-сайт») — или «-», чтобы пропустить")
+
+
+@dp.message(AddSite.notes, F.text, ~F.text.startswith("/"))
+async def add_notes(message: Message, state: FSMContext):
+    notes = message.text.strip()
+    if notes in ("-", "—", "нет", "skip"):
+        notes = ""
+    data = await state.get_data()
+    await state.clear()
+    await _finish_add(message, data["name"], data["lat"], data["lon"], data["aspect_deg"], notes)
+
+
+@dp.message(Command("cancel"))
+async def cmd_cancel(message: Message, state: FSMContext):
+    if await state.get_state() is None:
+        return
+    await state.clear()
+    await message.answer("Отменено.")
 
 
 @dp.message(Command("removesite"))
