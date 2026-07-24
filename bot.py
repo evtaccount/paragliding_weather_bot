@@ -239,8 +239,13 @@ async def send_forecast(message: Message, site: str, rng: str, date: str | None 
     if rng == "1d":  # deep analysis (surrounding points + previous day) — 1-day only
         row.append(_btn("📊 Глубокий разбор", f"deep|{site}|{rng}|{date or ''}"))
     row = [b for b in row if b is not None]
-    if row:
-        await message.answer("Нужен разбор от ИИ?", reply_markup=InlineKeyboardMarkup(inline_keyboard=[row]))
+    kb_rows = [row] if row else []
+    if rng == "1d":  # wind aloft grid (altitude × hour) — 1-day only
+        wg = _btn("🌬 Ветер по высотам", f"wg|{site}|{date or ''}")
+        if wg is not None:
+            kb_rows.append([wg])
+    if kb_rows:
+        await message.answer("Нужен разбор от ИИ?", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows))
     if rng != "1d":  # overview → let the user drill into a single day
         kb = _day_picker_kb(site, rng)
         if kb is not None:
@@ -520,6 +525,35 @@ async def cb_pick_day(cb: CallbackQuery, state: FSMContext):
     await cb.answer(f"Прогноз на {date}…")
     # keep the picker in place — the user may want another day too
     await send_forecast(msg, site, "1d", date)
+
+
+@dp.callback_query(F.data.startswith("wg|"), flags={"forecast": True})
+async def cb_wind_grid(cb: CallbackQuery):
+    """A "ветер по высотам" button → PNG grid (altitude × hour) for that day."""
+    msg = await cb_message(cb)
+    if msg is None:
+        return
+    try:
+        _, site, date = cb.data.split("|", 2)
+        day = dt.date.fromisoformat(date)
+    except ValueError:
+        await cb.answer()
+        return
+    if day < dt.date.today() - dt.timedelta(days=1):
+        await cb.answer("Эта дата уже прошла — запроси свежий прогноз.", show_alert=True)
+        return
+    await cb.answer("Считаю ветер по высотам…")
+    try:
+        async with ChatActionSender.typing(bot=msg.bot, chat_id=msg.chat.id):
+            png = await forecast.get_wind_grid(site, date)
+    except forecast.ForecastError as e:
+        await msg.answer(f"⚠️ {e}")
+        return
+    except Exception as e:  # noqa: BLE001 — surface any unexpected failure to the user
+        log.exception("wind grid failed")
+        await msg.answer(f"⚠️ Ошибка: {e}")
+        return
+    await msg.answer_photo(BufferedInputFile(png, filename="windgrid.png"))
 
 
 @dp.callback_query(F.data.startswith("pk|"), flags={"forecast": True})
