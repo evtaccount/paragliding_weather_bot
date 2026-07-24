@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """PNG charts for the paragliding forecast — light theme, wind in m/s, pure Pillow."""
+import math
 import os
 from PIL import Image, ImageDraw, ImageFont
 
@@ -63,6 +64,19 @@ def _ang(a, b):
 def _card(deg):
     return ["С","ССВ","СВ","ВСВ","В","ВЮВ","ЮВ","ЮЮВ","Ю","ЮЮЗ","ЮЗ","ЗЮЗ","З","ЗСЗ","СЗ","ССЗ"][round((deg%360)/22.5)%16]
 
+def _wind_arrow(d, cx, cy, from_deg, r, color):
+    """Arrow pointing toward the wind SOURCE bearing, map-oriented (N up, E right).
+    So a wind from the south points down — matches a compass rose over the chart."""
+    a = math.radians(from_deg)
+    dx, dy = math.sin(a), -math.cos(a)          # bearing → screen vector
+    hx, hy = cx + dx * r, cy + dy * r           # head, toward source
+    tx, ty = cx - dx * r, cy - dy * r           # tail, downwind
+    d.line([tx, ty, hx, hy], fill=color, width=S(2))
+    for wing in (from_deg + 148, from_deg - 148):
+        wa = math.radians(wing)
+        d.line([hx, hy, hx + math.sin(wa) * r * 0.55, hy - math.cos(wa) * r * 0.55],
+               fill=color, width=S(2))
+
 def _daylight(times, sr, ss, pad=1):
     lo, hi = max(0, _hour(sr) - pad), min(23, _hour(ss) + pad)
     idx = [i for i, t in enumerate(times) if lo <= _hour(t) <= hi]
@@ -77,25 +91,39 @@ def meteogram_png(data, site, out):
     temp = [H["temperature_2m"][i] for i in idx]
     wind = [H["wind_speed_10m"][i] for i in idx]
     gust = [H["wind_gusts_10m"][i] for i in idx]
+    wdir = [H["wind_direction_10m"][i] for i in idx]
     srh, ssh = _hour(sr), _hour(ss)
-    W, Ht = 1040, 620
+    W, Ht = 1040, 652
     img, d = _canvas(W, Ht)
     L, R = 66, 30
     x0, x1 = S(L), S(W - R)
     xf = lambda h: x0 + (x1 - x0) * (h - h0) / max(1, (h1 - h0))
     d.text((S(40), S(28)), f"{site['name']} — метеограмма {t[0][:10]}", font=_font(24, True), fill=INK, anchor="lm")
-    d.text((S(40), S(56)), f"Светлое время {srh:02d}–{ssh:02d} · ветер в м/с · {data.get('timezone','')}",
+    d.text((S(40), S(56)), f"Светлое время {srh:02d}–{ssh:02d} · ветер в м/с, стрелки — откуда · {data.get('timezone','')}",
            font=_font(13), fill=MUTED, anchor="lm")
-    # flyable window band — same criteria as the engine (incl. direction into the slope)
+    # flyable window — same criteria as the engine (incl. direction into the slope),
+    # but only within real daylight (sunrise..sunset — no calm-night hours), and drawn
+    # as separate contiguous runs so a calm morning + calm evening don't merge into one
+    # band across an unflyable, gusty midday.
     asp = site.get("aspect_deg")
-    fly = [h for h, i in zip(hrs, idx)
-           if H["wind_speed_10m"][i] <= 7 and H["wind_gusts_10m"][i] <= 8
-           and H["precipitation"][i] < 0.1
-           and (asp is None or _ang(H["wind_direction_10m"][i], asp) < 110)]
-    if fly:
-        d.rectangle([xf(min(fly)), S(84), xf(max(fly)), S(Ht-34)], fill=GUST + (26,))
-        d.text(((xf(min(fly))+xf(max(fly)))/2, S(96)), f"лётное окно {min(fly):02d}–{max(fly):02d}",
-               font=_font(12, True), fill=GUST, anchor="mm")
+    fly = sorted(h for h, i in zip(hrs, idx)
+                 if srh <= h <= ssh
+                 and H["wind_speed_10m"][i] <= 7 and H["wind_gusts_10m"][i] <= 8
+                 and H["precipitation"][i] < 0.1
+                 and (asp is None or _ang(H["wind_direction_10m"][i], asp) < 110))
+    segs = []
+    for h in fly:
+        if segs and h == segs[-1][-1] + 1:
+            segs[-1].append(h)
+        else:
+            segs.append([h])
+    if segs:
+        for s in segs:  # widen by ½h each side so a lone flyable hour is still visible
+            bx0 = max(x0, xf(s[0] - 0.5)); bx1 = min(x1, xf(s[-1] + 0.5))
+            d.rectangle([bx0, S(84), bx1, S(586)], fill=GUST + (26,))
+        wins = ", ".join(f"{s[0]:02d}–{s[-1]:02d}" if len(s) > 1 else f"{s[0]:02d}" for s in segs)
+        mid = (xf(fly[0]) + xf(fly[-1])) / 2  # center over the span → clear of the panel labels
+        d.text((mid, S(96)), f"лётное окно {wins}", font=_font(12, True), fill=GUST, anchor="mm")
     # panel A temp
     ay0, ay1 = S(112), S(320)
     tmn, tmx = min(temp) - 2, max(temp) + 2
@@ -111,7 +139,7 @@ def meteogram_png(data, site, out):
     d.line(pts, fill=TEMP, width=S(3), joint="curve")
     d.text((x0, ay0 - S(16)), "Температура, °C", font=_font(13, True), fill=TEMP, anchor="lm")
     # panel B wind/gust (m/s)
-    by0, by1 = S(376), S(Ht - 34)
+    by0, by1 = S(376), S(Ht - 66)
     wmx = max(max(gust) + 1, 4)
     yW = lambda v: by1 - (by1 - by0) * v / wmx
     for wv in range(0, int(wmx) + 1, 2):
@@ -125,9 +153,12 @@ def meteogram_png(data, site, out):
     d.text((lx + S(30), by0 - S(12)), "ветер", font=_font(12), fill=MUTED, anchor="lm")
     d.line([lx + S(84), by0 - S(12), lx + S(108), by0 - S(12)], fill=GUST, width=S(3))
     d.text((lx + S(114), by0 - S(12)), "порывы", font=_font(12), fill=MUTED, anchor="lm")
-    for h in hrs:
+    # wind-direction arrow lane + hour axis (every 2 h)
+    ya = by1 + S(22)
+    for h, wd in zip(hrs, wdir):
         if h % 2 == 0:
-            d.text((xf(h), by1 + S(14)), f"{h:02d}", font=_font(12), fill=FAINT, anchor="mm")
+            _wind_arrow(d, xf(h), ya, wd, S(8), WIND)
+            d.text((xf(h), by1 + S(46)), f"{h:02d}", font=_font(12), fill=FAINT, anchor="mm")
     return _save(img, out, "01_meteogram.png")
 
 # ---------------------------------------------------------------- ceiling
