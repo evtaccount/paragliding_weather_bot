@@ -37,6 +37,7 @@ from aiogram import Bot  # noqa: E402
 from aiogram.client.session.base import BaseSession  # noqa: E402
 
 import bot as botmod  # noqa: E402
+import engine  # noqa: E402
 import forecast  # noqa: E402
 
 
@@ -73,6 +74,8 @@ def fresh_state():
     forecast._acache.clear()
     forecast._adhoc.clear()
     botmod.dp.fsm.storage.storage.clear()  # MemoryStorage internals
+    if os.path.exists(engine.MODEL_FILE):  # each test starts at the default model
+        os.remove(engine.MODEL_FILE)
     yield
 
 

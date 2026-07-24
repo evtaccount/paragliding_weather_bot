@@ -27,6 +27,44 @@ DEFAULT_SITES = os.path.join(HERE, "sites.json")
 SITES = os.environ.get("SITES_FILE") or DEFAULT_SITES
 sys.path.insert(0, HERE)  # so `from charts import ...` works from any cwd
 
+# Meteo model — a global setting persisted next to sites.json (writable volume in
+# the container). Requesting a variable a model lacks is not an error: open-meteo
+# returns it as a null series (handled by the degradation in report_1day).
+MODEL_FILE = os.environ.get("MODEL_FILE") or os.path.join(os.path.dirname(SITES) or ".", "model.json")
+MODELS = {  # key → (UI label, open-meteo id)
+    "auto":  ("Auto (best_match)", "best_match"),
+    "ecmwf": ("ECMWF",             "ecmwf_ifs025"),
+    "gfs":   ("GFS",               "gfs_seamless"),
+    "icon":  ("ICON",              "icon_seamless"),
+}
+DEFAULT_MODEL_KEY = "ecmwf"
+
+
+def model_id(key):
+    return MODELS[key][1]
+
+
+def model_label(key):
+    return MODELS[key][0]
+
+
+def get_model_key():
+    """Current global model key; DEFAULT_MODEL_KEY when unset/invalid/corrupt."""
+    try:
+        with open(MODEL_FILE, encoding="utf-8") as f:
+            key = json.load(f).get("model")
+        return key if key in MODELS else DEFAULT_MODEL_KEY
+    except (OSError, ValueError):
+        return DEFAULT_MODEL_KEY
+
+
+def set_model_key(key):
+    """Persist the chosen model. Raises ValueError on an unknown key."""
+    if key not in MODELS:
+        raise ValueError(f"неизвестная модель: {key}. Доступно: {', '.join(MODELS)}")
+    with open(MODEL_FILE, "w", encoding="utf-8") as f:
+        json.dump({"model": key}, f, ensure_ascii=False)
+
 
 def ensure_sites_file():
     """Seed SITES from the packaged default on first run (e.g. an empty volume)."""
@@ -140,7 +178,7 @@ D_OV = ("sunrise,sunset,weather_code,temperature_2m_max,temperature_2m_min,wind_
 
 def build_url(site, rng, date=None):
     base = (f"https://api.open-meteo.com/v1/forecast?latitude={site['lat']}&longitude={site['lon']}"
-            "&wind_speed_unit=ms&timezone=auto")
+            f"&wind_speed_unit=ms&timezone=auto&models={model_id(get_model_key())}")
     if rng == "1d":
         if not date:
             raise SystemExit("для --range 1d нужен --date YYYY-MM-DD")
