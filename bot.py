@@ -109,6 +109,29 @@ def resolve_site(arg: str | None) -> str | None:
     return names[0] if len(names) == 1 else None
 
 
+_WD = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+
+
+def _day_picker_kb(site: str, rng: str) -> InlineKeyboardMarkup:
+    """Buttons for each day of an overview period → detailed 1-day forecast.
+
+    An overview is fetched with forecast_days=N, so the period is always
+    today … today+(N-1) in the site's timezone.
+    """
+    today = dt.date.today()
+    rows, row = [], []
+    for i in range(engine.RANGE_DAYS[rng]):
+        d = today + dt.timedelta(days=i)
+        label = f"{_WD[d.weekday()]} {d.day:02d}.{d.month:02d}"
+        row.append(InlineKeyboardButton(text=label, callback_data=f"pd|{site}|{d.isoformat()}"))
+        if len(row) == 3:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 async def send_forecast(message: Message, site: str, rng: str, date: str | None = None):
     if rng == "1d" and not date:
         date = dt.date.today().isoformat()
@@ -136,6 +159,8 @@ async def send_forecast(message: Message, site: str, rng: str, date: str | None 
     if rng == "1d":  # deep analysis (surrounding points + previous day) — 1-day only
         row.append(InlineKeyboardButton(text="📊 Глубокий разбор", callback_data=f"deep|{site}|{rng}|{date or ''}"))
     await message.answer("Нужен разбор от ИИ?", reply_markup=InlineKeyboardMarkup(inline_keyboard=[row]))
+    if rng != "1d":  # overview → let the user drill into a single day
+        await message.answer("📅 Подробно по дню:", reply_markup=_day_picker_kb(site, rng))
 
 
 async def ask_location(message: Message, rng: str, date: str | None):
@@ -341,6 +366,19 @@ async def cb_analysis(cb: CallbackQuery):
     for chunk in _chunks(text):
         await cb.message.answer(chunk)
     # keep the buttons — the user may want the other mode too
+
+
+@dp.callback_query(F.data.startswith("pd|"), flags={"forecast": True})
+async def cb_pick_day(cb: CallbackQuery):
+    """A day button from an overview → detailed 1-day forecast for that date."""
+    try:
+        _, site, date = cb.data.split("|", 2)
+    except ValueError:
+        await cb.answer()
+        return
+    await cb.answer(f"Прогноз на {date}…")
+    # keep the picker in place — the user may want another day too
+    await send_forecast(cb.message, site, "1d", date)
 
 
 @dp.callback_query(F.data.startswith("pk|"), flags={"forecast": True})
