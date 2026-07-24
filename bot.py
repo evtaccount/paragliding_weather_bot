@@ -34,8 +34,13 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("pgbot")
 
 dp = Dispatcher()
+# guards on both messages and inline-button callbacks. Separate throttle instances
+# so pressing the analysis button right after a command isn't blocked by the command
+# cooldown, while button spam is still throttled on its own.
 dp.message.outer_middleware(guards.WhitelistMiddleware())
 dp.message.middleware(guards.ThrottleMiddleware())
+dp.callback_query.outer_middleware(guards.WhitelistMiddleware())
+dp.callback_query.middleware(guards.ThrottleMiddleware())
 
 RANGE_ALIASES = {
     "1d": "1d", "day": "1d", "день": "1d",
@@ -89,7 +94,7 @@ async def send_forecast(message: Message, site: str, rng: str, date: str | None 
         date = dt.date.today().isoformat()
     await message.bot.send_chat_action(chat_id=message.chat.id, action="typing")
     try:
-        text, pngs = await forecast.get_forecast(site, rng, date)
+        card, pngs = await forecast.get_forecast(site, rng, date)
     except forecast.ForecastError as e:
         await message.answer(f"⚠️ {e}\n\nСписок стартов: /sites")
         return
@@ -98,17 +103,17 @@ async def send_forecast(message: Message, site: str, rng: str, date: str | None 
         await message.answer(f"⚠️ Ошибка: {e}")
         return
 
-    for chunk in _chunks(text):
+    for chunk in _chunks(card):
         await message.answer(chunk)
     files = [BufferedInputFile(p, filename=f"chart{i}.png") for i, p in enumerate(pngs, 1)]
     if len(files) == 1:
         await message.answer_photo(files[0])
     elif files:
         await message.answer_media_group([InputMediaPhoto(media=f) for f in files])
-    if rng == "1d":  # offer the on-demand detailed analysis for a single day
-        kb = InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="🔎 Подробный анализ", callback_data=f"det|{site}|{rng}|{date}")]])
-        await message.answer("Развернуть подробный разбор?", reply_markup=kb)
+    # LLM analysis is off by default — offer it on demand (reuses the fetched data).
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="🧠 Разбор от ИИ", callback_data=f"llm|{site}|{rng}|{date or ''}")]])
+    await message.answer("Нужен разбор от ИИ?", reply_markup=kb)
 
 
 async def _shortcut(message: Message, command: CommandObject, rng: str, date: str | None):
@@ -175,22 +180,22 @@ async def cmd_forecast(message: Message, command: CommandObject):
     await send_forecast(message, site, rng)
 
 
-@dp.callback_query(F.data.startswith("det|"))
-async def cb_detail(cb: CallbackQuery):
+@dp.callback_query(F.data.startswith("llm|"), flags={"forecast": True})
+async def cb_analysis(cb: CallbackQuery):
     try:
         _, site, rng, date = cb.data.split("|", 3)
     except ValueError:
         await cb.answer()
         return
-    await cb.answer("Готовлю подробный разбор…")
+    await cb.answer("Считаю разбор…")
     await cb.message.bot.send_chat_action(chat_id=cb.message.chat.id, action="typing")
     try:
-        text, _ = await forecast.get_forecast(site, rng, date or None, detail=True)
+        text = await forecast.get_analysis(site, rng, date or None)
     except forecast.ForecastError as e:
         await cb.message.answer(f"⚠️ {e}")
         return
     except Exception as e:  # noqa: BLE001 — surface any unexpected failure to the user
-        log.exception("detail failed")
+        log.exception("analysis failed")
         await cb.message.answer(f"⚠️ Ошибка: {e}")
         return
     for chunk in _chunks(text):
