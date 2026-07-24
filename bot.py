@@ -245,7 +245,7 @@ async def send_forecast(message: Message, site: str, rng: str, date: str | None 
         if wg is not None:
             kb_rows.append([wg])
     if kb_rows:
-        await message.answer("Нужен разбор от ИИ?", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows))
+        await message.answer("Ещё:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows))
     if rng != "1d":  # overview → let the user drill into a single day
         kb = _day_picker_kb(site, rng)
         if kb is not None:
