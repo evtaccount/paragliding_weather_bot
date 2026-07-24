@@ -272,6 +272,67 @@ def profile_png(data, site, out):
     d.text((lx, lyy + S(12)), "буквы — направление", font=_font(11), fill=FAINT, anchor="lm")
     return _save(img, out, "03_windprofile.png")
 
+# ---------------------------------------------------------------- wind grid (altitude × hour)
+def _grid_cell_color(ms):
+    if ms > 10:
+        return RAIN
+    if ms > 6:
+        return WARN
+    return GOOD
+
+
+def wind_grid_png(grid, site, out):
+    """Altitude (rows, high→top) × hour (cols) grid. Each cell: colored by wind speed,
+    an arrow (wind source) and the speed number. Launch row highlighted."""
+    hours = grid["hours"]
+    levels = list(reversed(grid["levels"]))  # high altitude on top
+    nrows, ncols = len(levels), len(hours)
+    LabW, RowH, ColW = 76, 52, 64
+    Wc = LabW + ColW * ncols + 24
+    Hc = 104 + RowH * nrows + 64
+    img, d = _canvas(Wc, Hc)
+    x0 = S(LabW)
+    y0 = S(104)
+    cw, ch = S(ColW), S(RowH)
+    xf = lambda c: x0 + cw * c
+    yf = lambda r: y0 + ch * r
+    d.text((S(36), S(28)), f"{site['name']} — ветер по высотам × часам {grid['date']}",
+           font=_font(22, True), fill=INK, anchor="lm")
+    d.text((S(36), S(56)), f"стрелка — откуда · скорость м/с · {grid.get('timezone','')}",
+           font=_font(13), fill=MUTED, anchor="lm")
+    # hour headers
+    for c, h in enumerate(hours):
+        d.text((xf(c) + cw / 2, y0 - S(12)), f"{h:02d}", font=_font(12, True), fill=MUTED, anchor="mm")
+    # rows
+    for r, lv in enumerate(levels):
+        ry0, ry1 = yf(r), yf(r + 1)
+        lab = f"{lv['alt_m_msl']} м" + ("  ⟵ старт" if lv["is_launch"] else "")
+        if lv["is_launch"]:
+            d.rectangle([x0, ry0, xf(ncols), ry1], fill=GUST + (18,))
+        d.text((x0 - S(8), (ry0 + ry1) / 2), lab, font=_font(12, lv["is_launch"]),
+               fill=INK if lv["is_launch"] else MUTED, anchor="rm")
+        for c, cell in enumerate(lv["hourly"]):
+            cx0, cy0 = xf(c), ry0
+            col = _grid_cell_color(cell["wind_ms"])
+            d.rectangle([cx0 + S(1), cy0 + S(1), cx0 + cw - S(1), ry1 - S(1)], fill=col + (48,))
+            _wind_arrow(d, cx0 + cw * 0.32, (cy0 + ry1) / 2, cell["dir_deg"], S(9), col)
+            d.text((cx0 + cw * 0.66, (cy0 + ry1) / 2), f"{cell['wind_ms']:.0f}",
+                   font=_font(13, True), fill=INK, anchor="mm")
+    # grid lines
+    for r in range(nrows + 1):
+        d.line([x0, yf(r), xf(ncols), yf(r)], fill=GRID, width=1)
+    for c in range(ncols + 1):
+        d.line([xf(c), y0, xf(c), yf(nrows)], fill=GRID, width=1)
+    # legend
+    ly = yf(nrows) + S(26)
+    lx = x0
+    for col, lab in ((GOOD, "≤6"), (WARN, "6–10"), (RAIN, ">10 м/с")):
+        d.rectangle([lx, ly - S(7), lx + S(14), ly + S(7)], fill=col + (200,))
+        d.text((lx + S(20), ly), lab, font=_font(12), fill=MUTED, anchor="lm")
+        lx += S(96)
+    d.text((lx + S(8), ly), "стрелка — откуда", font=_font(12), fill=FAINT, anchor="lm")
+    return _save(img, out, "05_windgrid.png")
+
 # ---------------------------------------------------------------- overview
 def overview_png(rows, site, rng, out):
     DOW = ["ПН","ВТ","СР","ЧТ","ПТ","СБ","ВС"]

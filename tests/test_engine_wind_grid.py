@@ -73,3 +73,15 @@ def test_wind_grid_low_launch_keeps_all_levels():
     g = engine.wind_grid(_day_data(), _low_site())
     alts = [lv["alt_m_msl"] for lv in g["levels"]]
     assert 760 in alts and 5600 in alts and len(g["levels"]) == 6
+
+
+import os
+
+import charts
+
+
+def test_wind_grid_png_writes_file(tmp_path):
+    g = engine.wind_grid(_day_data(), _high_site())
+    path = charts.wind_grid_png(g, _high_site(), str(tmp_path))
+    assert os.path.exists(path) and path.endswith(".png")
+    assert os.path.getsize(path) > 1000  # a real image, not an empty stub
