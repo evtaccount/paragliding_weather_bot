@@ -42,6 +42,21 @@ def _site():
             "aspect": "Ю", "aspect_deg": 180.0, "notes": ""}
 
 
+def test_facts_1day_carries_the_thermal_window_and_per_hour_sun():
+    f = engine.facts_1day(_full_1d(), _site())
+    w = f["thermal_window"]
+    assert w["start_hour"] >= 7 and w["end_hour"] <= 19   # sunrise 05:00 / sunset 20:00
+    hours = {h["time"]: h for h in f["hourly_daytime"]}
+    assert hours["12:00"]["slope_sun_index"] > hours["06:00"]["slope_sun_index"]
+    assert 165 < hours["12:00"]["sun_az_deg"] < 195       # south slope, sun on the face
+
+
+def test_facts_overview_carries_a_thermal_window_per_day():
+    data = _full_1d()
+    f = engine.facts_overview(data, _site(), "3d")
+    assert f["days_daytime"][0]["thermal_window"]["start_hour"] >= 7
+
+
 def test_facts_1day_includes_upper_level_directions():
     f = engine.facts_1day(_full_1d(), _site())
     prof = {r["level"]: r for r in f["wind_profile_peak_hour"]}
