@@ -4,6 +4,8 @@ import math
 import os
 from PIL import Image, ImageDraw, ImageFont
 
+import criteria as _criteria
+
 SS = 2  # supersampling for anti-aliasing
 
 # ---- validated light palette (surface #fcfcfb) ----
@@ -19,6 +21,18 @@ GOOD  = (63, 143, 87)
 WARN  = (194, 94, 18)
 RAIN  = (194, 58, 82)
 BEST  = (47, 143, 82)
+
+# Цвет уровня оценки. Ключи — уровни criteria; сами пороги живут только там,
+# здесь остаётся исключительно палитра.
+GRADE_RGB = {
+    "ideal":     (22, 97, 58),
+    "excellent": (63, 143, 87),
+    "fair":      (198, 154, 30),
+    "marginal":  (194, 94, 18),
+    "no_fly":    (194, 58, 82),
+    "danger":    (140, 30, 52),
+    "no_data":   (158, 158, 148),
+}
 
 # Font candidates, in priority order, covering macOS (dev) and Linux/Docker (deploy).
 # DejaVu / Liberation ship Cyrillic glyphs and are installed in the container.
@@ -83,7 +97,7 @@ def _daylight(times, sr, ss, pad=1):
     return idx, lo, hi
 
 # ---------------------------------------------------------------- meteogram
-def meteogram_png(data, site, out):
+def meteogram_png(data, site, out, assess=None):
     H, D = data["hourly"], data["daily"]
     t = H["time"]; sr, ss = D["sunrise"][0], D["sunset"][0]
     idx, h0, h1 = _daylight(t, sr, ss)
@@ -93,7 +107,7 @@ def meteogram_png(data, site, out):
     gust = [H["wind_gusts_10m"][i] for i in idx]
     wdir = [H["wind_direction_10m"][i] for i in idx]
     srh, ssh = _hour(sr), _hour(ss)
-    W, Ht = 1040, 652
+    W, Ht = 1040, 692   # +40 к прежней высоте — под ленту категорий у нижнего края
     img, d = _canvas(W, Ht)
     L, R = 66, 30
     x0, x1 = S(L), S(W - R)
@@ -101,19 +115,13 @@ def meteogram_png(data, site, out):
     d.text((S(40), S(28)), f"{site['name']} — метеограмма {t[0][:10]}", font=_font(24, True), fill=INK, anchor="lm")
     d.text((S(40), S(56)), f"Светлое время {srh:02d}–{ssh:02d} · ветер в м/с, стрелки — откуда · {data.get('timezone','')}",
            font=_font(13), fill=MUTED, anchor="lm")
-    # flyable window — same criteria as the engine (incl. direction into the slope),
-    # but only within the thermal window (sun actually heating the slope — engine.sun_hours),
-    # and drawn as separate contiguous runs so a calm morning + calm evening don't merge
-    # into one band across an unflyable, gusty midday.
-    asp = site.get("aspect_deg")
-    from engine import sun_hours, SLOPE_DEG
-    _, tw = sun_hours(t[0], site["lat"], sr, ss, [_hour(t[i]) for i in idx if srh <= _hour(t[i]) <= ssh],
-                      asp, site.get("slope_deg", SLOPE_DEG))
-    fly = sorted(h for h, i in zip(hrs, idx)
-                 if tw and tw["start_hour"] <= h <= tw["end_hour"]
-                 and H["wind_speed_10m"][i] <= 7 and H["wind_gusts_10m"][i] <= 8
-                 and H["precipitation"][i] < 0.1
-                 and (asp is None or _ang(H["wind_direction_10m"][i], asp) < 110))
+    # Лётное окно берётся из ГОТОВОЙ оценки (engine.assess_day → criteria), а не
+    # пересчитывается здесь по своим порогам: раньше карточка и график считали
+    # лётность независимо, совпадали по случайности и разъезжались от любой правки.
+    if assess is None:
+        from engine import assess_day
+        assess, _ctx = assess_day(data, site)
+    fly = assess.fly_hours
     segs = []
     for h in fly:
         if segs and h == segs[-1][-1] + 1:
@@ -142,7 +150,7 @@ def meteogram_png(data, site, out):
     d.line(pts, fill=TEMP, width=S(3), joint="curve")
     d.text((x0, ay0 - S(16)), "Температура, °C", font=_font(13, True), fill=TEMP, anchor="lm")
     # panel B wind/gust (m/s)
-    by0, by1 = S(376), S(Ht - 66)
+    by0, by1 = S(376), S(Ht - 106)
     wmx = max(max(gust) + 1, 4)
     yW = lambda v: by1 - (by1 - by0) * v / wmx
     for wv in range(0, int(wmx) + 1, 2):
@@ -162,6 +170,20 @@ def meteogram_png(data, site, out):
         if h % 2 == 0:
             _wind_arrow(d, xf(h), ya, wd, S(8), WIND)
             d.text((xf(h), by1 + S(46)), f"{h:02d}", font=_font(12), fill=FAINT, anchor="mm")
+    # Лента категорий: по одной ячейке на час со своим цветом оценки. Полоса
+    # лётного окна показывает только «летаем / не летаем», а лента — насколько
+    # хорошо, и где именно день проседает.
+    ry0, ry1 = S(Ht - 38), S(Ht - 18)
+    by_hour = {h.hour: h for h in assess.hours}
+    for h in hrs:
+        a = by_hour.get(h)
+        if a is None:
+            continue
+        cx0, cx1 = max(x0, xf(h - 0.5)), min(x1, xf(h + 0.5))
+        d.rectangle([cx0, ry0, cx1, ry1], fill=GRADE_RGB.get(a.category, MUTED) + (190,))
+        if a.vetoes:  # час под вето — отметить, а не просто закрасить красным
+            d.text(((cx0 + cx1) / 2, (ry0 + ry1) / 2), "×", font=_font(11, True), fill=BG, anchor="mm")
+    d.text((x0 - S(10), (ry0 + ry1) / 2), "оценка", font=_font(11), fill=FAINT, anchor="rm")
     return _save(img, out, "01_meteogram.png")
 
 # ---------------------------------------------------------------- ceiling
@@ -172,7 +194,8 @@ def ceiling_png(data, site, out):
     hrs = [_hour(t[i]) for i in idx]
     elev = site["elevation_m"]
     blh_msl = [elev + H["boundary_layer_height"][i] for i in idx]
-    lcl_msl = [elev + max(0, 122 * (H["temperature_2m"][i] - H["dew_point_2m"][i])) for i in idx]
+    lcl_msl = [elev + max(0, _criteria.LCL_M_PER_C * (H["temperature_2m"][i] - H["dew_point_2m"][i]))
+               for i in idx]
     W, Ht = 1040, 540
     img, d = _canvas(W, Ht)
     L, R = 66, 28
@@ -214,14 +237,12 @@ def profile_png(data, site, out):
     hours = sorted({min(max(w, srh + 1), ssh - 1) for w in want})
     hidx = {h: next(i for i, tt in enumerate(t) if _hour(tt) == h) for h in hours}
     elev = site["elevation_m"]
-    levels = [("10 м", elev + 10, "wind_speed_10m", "wind_direction_10m"),
-              ("925", "geopotential_height_925hPa", "wind_speed_925hPa", "wind_direction_925hPa"),
-              ("850", "geopotential_height_850hPa", "wind_speed_850hPa", "wind_direction_850hPa"),
-              ("700", "geopotential_height_700hPa", "wind_speed_700hPa", "wind_direction_700hPa"),
-              ("600", "geopotential_height_600hPa", "wind_speed_600hPa", None),
-              ("500", "geopotential_height_500hPa", "wind_speed_500hPa", None)]
+    # общая с engine таблица уровней: своя копия здесь молча теряла направления
+    # на 600 и 500 гПа (там стояли None), хотя движок их запрашивает
+    from engine import _GRID_LEVELS
+    levels = _GRID_LEVELS
     ref = hidx[hours[len(hours)//2]]  # middle hour for heights & directions
-    alt = [lv[1] if isinstance(lv[1], (int, float)) else H[lv[1]][ref] for lv in levels]
+    alt = [elev + 10 if lv[1] == "elev+10" else H[lv[1]][ref] for lv in levels]
     W, Ht = 800, 640
     img, d = _canvas(W, Ht)
     L, R = 60, 156
@@ -278,12 +299,14 @@ def profile_png(data, site, out):
     return _save(img, out, "03_windprofile.png")
 
 # ---------------------------------------------------------------- wind grid (altitude × hour)
-def _grid_cell_color(ms):
-    if ms > 10:
-        return RAIN
-    if ms > 6:
-        return WARN
-    return GOOD
+# Строка сетки → параметр criteria с его порогами. Выше 850 гПа парапланерных
+# порогов нет — там ветер показывается по шкале 850 как ближайшей осмысленной.
+_GRID_PARAM = {"10 м": "wind_10m", "925": "wind_925"}
+
+
+def _grid_cell_color(ms, level_label="10 м"):
+    grade = _criteria.grade_of(_GRID_PARAM.get(level_label, "wind_850"), ms)
+    return GRADE_RGB.get(grade, MUTED)
 
 
 def wind_grid_png(grid, site, out):
@@ -318,7 +341,7 @@ def wind_grid_png(grid, site, out):
                fill=INK if lv["is_launch"] else MUTED, anchor="rm")
         for c, cell in enumerate(lv["hourly"]):
             cx0, cy0 = xf(c), ry0
-            col = _grid_cell_color(cell["wind_ms"])
+            col = _grid_cell_color(cell["wind_ms"], lv["label"])
             d.rectangle([cx0 + S(1), cy0 + S(1), cx0 + cw - S(1), ry1 - S(1)], fill=col + (48,))
             _wind_arrow(d, cx0 + cw * 0.32, (cy0 + ry1) / 2, cell["dir_deg"], S(9), col)
             d.text((cx0 + cw * 0.66, (cy0 + ry1) / 2), f"{cell['wind_ms']:.0f}",
@@ -329,13 +352,16 @@ def wind_grid_png(grid, site, out):
     for c in range(ncols + 1):
         d.line([xf(c), y0, xf(c), yf(nrows)], fill=GRID, width=1)
     # legend
+    # Легенда — уровни оценки, а не числа: у каждой строки свои пороги (у земли,
+    # на 925 и на 850 они разные), одна числовая шкала на всю таблицу врала бы.
     ly = yf(nrows) + S(26)
     lx = x0
-    for col, lab in ((GOOD, "≤6"), (WARN, "6–10"), (RAIN, ">10 м/с")):
-        d.rectangle([lx, ly - S(7), lx + S(14), ly + S(7)], fill=col + (200,))
-        d.text((lx + S(20), ly), lab, font=_font(12), fill=MUTED, anchor="lm")
-        lx += S(96)
-    d.text((lx + S(8), ly), "стрелка — откуда", font=_font(12), fill=FAINT, anchor="lm")
+    for grade in _criteria.GRADES:
+        d.rectangle([lx, ly - S(7), lx + S(14), ly + S(7)], fill=GRADE_RGB[grade] + (200,))
+        d.text((lx + S(20), ly), _criteria.GRADE_LABEL[grade], font=_font(11), fill=MUTED, anchor="lm")
+        lx += S(int(11 * len(_criteria.GRADE_LABEL[grade]) * 0.62) + 34)
+    d.text((x0, ly + S(24)), "пороги: у земли, 925 и 850 гПа — свои; выше — по шкале 850 · стрелка — откуда",
+           font=_font(11), fill=FAINT, anchor="lm")
     return _save(img, out, "05_windgrid.png")
 
 # ---------------------------------------------------------------- overview
@@ -353,10 +379,11 @@ def overview_png(rows, site, rng, out):
     gmax = max(max(r["gmax"] for r in rows) + 1, 6)
     slot = (x1 - x0) / n; bw = min(slot * 0.5, S(70))
     yf = lambda v: y1 - (y1 - y0) * v / gmax
-    colFor = lambda e: RAIN if e == "❌" else (WARN if e == "⚠️" else GOOD)
+    # цвет — по категории дня из скоринга; раньше он разбирался из строки эмодзи,
+    # где ⚠️ означал сразу два разных вердикта
     names = {"3d": "3 дня", "week": "неделю", "2weeks": "2 недели"}
     d.text((S(36), S(28)), f"{site['name']} — обзор на {names[rng]}", font=_font(24, True), fill=INK, anchor="lm")
-    d.text((S(36), S(56)), "Высота столбца — макс. порыв за светлое время (м/с); цвет — пригодность",
+    d.text((S(36), S(56)), "Высота столбца — макс. порыв за светлое время (м/с); цвет и число — балл дня",
            font=_font(13), fill=MUTED, anchor="lm")
     for gv in range(0, int(gmax) + 1, 2):
         yy = yf(gv); d.line([x0, yy, x1, yy], fill=GRID, width=1)
@@ -367,10 +394,11 @@ def overview_png(rows, site, rng, out):
         cx = x0 + slot * (i + 0.5); bx0 = cx - bw / 2; yy = yf(r["gmax"])
         if i == best:
             d.rounded_rectangle([bx0 - S(4), yy - S(4), cx + bw/2 + S(4), y1], radius=S(6), outline=BEST, width=S(2))
-        d.rounded_rectangle([bx0, yy, cx + bw / 2, y1], radius=S(4), fill=colFor(r["emoji"]) + (235,))
+        col = GRADE_RGB.get(r.get("category"), MUTED)
+        d.rounded_rectangle([bx0, yy, cx + bw / 2, y1], radius=S(4), fill=col + (235,))
         d.text((cx, yy - S(10)), f"{r['gmax']:.0f}", font=_font(13, True), fill=INK, anchor="mm")
         d.text((cx, y1 + S(18)), lab(r["date"]), font=_font(12, True), fill=INK, anchor="mm")
-        d.text((cx, y1 + S(36)), r["label"].split()[0], font=_font(11), fill=MUTED, anchor="mm")
-        tail = f"{r['tmax']:.0f}°" + (f" · {r['precip']:.1f}мм" if r["precip"] > 0.2 else "")
+        d.text((cx, y1 + S(36)), f"{round(r['score'])}/100", font=_font(12, True), fill=col, anchor="mm")
+        tail = f"{r['tmax']:.0f}°" + (f" · {r['precip']:.1f}мм" if r["precip"] > _criteria.RAIN_DAY_MM else "")
         d.text((cx, y1 + S(52)), tail, font=_font(11), fill=FAINT, anchor="mm")
     return _save(img, out, "04_overview.png")

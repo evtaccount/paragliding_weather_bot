@@ -14,11 +14,13 @@ def _clear():
         os.remove(engine.MODEL_FILE)
 
 
-def test_default_model_is_ecmwf():
+def test_default_model_is_auto():
+    """Дефолт — best_match: только он отдаёт весь набор полей для скоринга
+    (у ECMWF нет пограничного слоя, LI, CIN, видимости и ветра на 80/120 м)."""
     _clear()
-    assert engine.get_model_key() == "ecmwf"
+    assert engine.get_model_key() == "auto"
+    assert engine.model_id("auto") == "best_match"
     assert engine.model_id("ecmwf") == "ecmwf_ifs025"
-    assert engine.model_label("ecmwf") == "ECMWF"
 
 
 def test_set_and_get_roundtrip():
@@ -33,18 +35,18 @@ def test_set_rejects_unknown_key():
     import pytest
     with pytest.raises(ValueError):
         engine.set_model_key("nope")
-    assert engine.get_model_key() == "ecmwf"  # unchanged
+    assert engine.get_model_key() == "auto"  # unchanged
 
 
 def test_corrupt_model_file_falls_back_to_default():
     with open(engine.MODEL_FILE, "w", encoding="utf-8") as f:
         f.write("{not json")
-    assert engine.get_model_key() == "ecmwf"
+    assert engine.get_model_key() == "auto"
 
 
 def test_build_url_includes_current_model():
     _clear()
-    assert "models=ecmwf_ifs025" in engine.build_url(_site(), "week")
+    assert "models=best_match" in engine.build_url(_site(), "week")
     engine.set_model_key("icon")
     assert "models=icon_seamless" in engine.build_url(_site(), "1d", "2026-07-25")
     _clear()
@@ -66,10 +68,10 @@ def test_cache_key_includes_model(monkeypatch):
 
     site = engine.find_site("Гудаури")
     _s, _d, key1 = forecast._resolve("Гудаури", "week", None)
-    asyncio.run(forecast._ensure(site, "week", None, key1))  # warm under ecmwf
+    asyncio.run(forecast._ensure(site, "week", None, key1))  # warm under auto
     engine.set_model_key("gfs")
     _s, _d, key2 = forecast._resolve("Гудаури", "week", None)
     assert key1 != key2                       # model is part of the key
     asyncio.run(forecast._ensure(site, "week", None, key2))  # must rebuild, not reuse
-    assert [c[0] for c in calls] == ["ecmwf", "gfs"]
+    assert [c[0] for c in calls] == ["auto", "gfs"]
     _clear()

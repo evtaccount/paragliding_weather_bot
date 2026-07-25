@@ -4,50 +4,17 @@ import os
 import tempfile
 
 import engine
+from fixtures import om_1day, om_null, site as _site
 
 
-def _data(blh=1200.0, frz=4000.0):
-    """One complete day; blh/frz=None models a ceiling-less model (ECMWF)."""
-    hours = [f"2026-07-25T{h:02d}:00" for h in range(24)]
-    n = len(hours)
-
-    def c(v):
-        return [v] * n
-
-    return {
-        "timezone": "Asia/Tbilisi",
-        "daily": {
-            "time": ["2026-07-25"], "sunrise": ["2026-07-25T05:00"], "sunset": ["2026-07-25T20:00"],
-            "temperature_2m_max": [22.0], "temperature_2m_min": [10.0], "precipitation_sum": [0.0],
-            "weather_code": [0], "sunshine_duration": [40000.0], "wind_speed_10m_max": [4.0],
-            "wind_gusts_10m_max": [7.0], "wind_direction_10m_dominant": [180.0],
-        },
-        "hourly": {
-            "time": hours,
-            "temperature_2m": c(20.0), "dew_point_2m": c(8.0),
-            "wind_speed_10m": c(2.0), "wind_gusts_10m": c(4.0), "wind_direction_10m": c(180.0),
-            "precipitation": c(0.0), "cape": c(50.0),
-            "cloud_cover_low": c(10.0), "cloud_cover_mid": c(10.0),
-            "boundary_layer_height": c(blh), "freezing_level_height": c(frz),
-            "wind_speed_925hPa": c(3.0), "wind_direction_925hPa": c(190.0), "geopotential_height_925hPa": c(760.0),
-            "wind_speed_850hPa": c(4.0), "wind_direction_850hPa": c(200.0), "geopotential_height_850hPa": c(1500.0),
-            "wind_speed_700hPa": c(6.0), "wind_direction_700hPa": c(210.0), "geopotential_height_700hPa": c(3000.0),
-            "wind_speed_600hPa": c(9.0), "wind_direction_600hPa": c(220.0), "geopotential_height_600hPa": c(4200.0),
-            "wind_speed_500hPa": c(13.0), "wind_direction_500hPa": c(230.0), "geopotential_height_500hPa": c(5600.0),
-        },
-    }
+def _data(**overrides):
+    """One complete day. Kept as a thin alias so the sun tests can import it."""
+    return om_1day(**overrides)
 
 
 def _null_data():
-    d = _data()
-    d["hourly"]["boundary_layer_height"] = [None] * 24
-    d["hourly"]["freezing_level_height"] = [None] * 24
-    return d
-
-
-def _site():
-    return {"name": "Тест", "lat": 42.0, "lon": 44.0, "elevation_m": 1500,
-            "aspect": "Ю", "aspect_deg": 180.0, "notes": ""}
+    """A ceiling-less model (ECMWF): no boundary layer, no freezing level."""
+    return om_null(om_1day(), "boundary_layer_height", "freezing_level_height")
 
 
 def test_report_1day_full_has_ceiling_and_chart():

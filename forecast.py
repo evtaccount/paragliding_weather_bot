@@ -22,6 +22,7 @@ import time
 import httpx
 
 import analysis
+import criteria
 import engine  # find_site, build_url, report_*, facts_*, RANGE_DAYS
 
 log = logging.getLogger("pgbot.forecast")
@@ -44,9 +45,9 @@ def known_sites():
     return [s["name"] for s in engine.load_sites()]
 
 
-# A "suitable" day for the scan: flyable, or flyable-with-caveats. NOT маргинальный
-# (which shares the ⚠️ emoji) and NOT нелётный — so filter on the label, not the emoji.
-FLYABLE_LABELS = {"лётный", "с оговорками"}
+# День попадает в /scan, если его категория ≥ «удовлетворительная». Раньше фильтр
+# сравнивал русские подписи, потому что эмодзи ⚠️ означал сразу два разных
+# вердикта; теперь у каждой категории свой ключ, и сравнивать строки не нужно.
 
 
 async def scan_week() -> dict:
@@ -70,7 +71,7 @@ async def scan_week() -> dict:
             log.warning("scan: %s failed: %s", site["name"], res)
             out["failed"].append(site["name"])
             continue
-        fly = [r for r in res if r["label"] in FLYABLE_LABELS]
+        fly = [r for r in res if criteria.flyable(r["category"])]
         if fly:
             out["sites"].append({"name": site["name"], "aspect": site.get("aspect_deg"), "days": fly})
         else:
@@ -207,8 +208,11 @@ async def _fetch_build(site: dict, rng: str, date: str | None):
     out = tempfile.mkdtemp(prefix="pgfc_")
     try:
         if rng == "1d":
-            fallback, png_paths, card = engine.report_1day(data, site, out)
-            facts = engine.facts_1day(data, site)
+            # один расчёт лётности на карточку, графики и данные для LLM —
+            # иначе три места считали бы его независимо и могли разойтись
+            assessment = engine.assess_day(data, site)
+            fallback, png_paths, card = engine.report_1day(data, site, out, assessment)
+            facts = engine.facts_1day(data, site, assessment)
             rows = []
             grid = engine.wind_grid(data, site)
         else:

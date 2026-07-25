@@ -20,12 +20,14 @@ Usage:
 import argparse, json, os, shutil, sys, math, datetime as dt
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)  # so `import criteria` / `from charts import ...` work from any cwd
+
+import criteria
 # The packaged default (baked into the image). SITES may be redirected via
 # SITES_FILE to a writable location (a mounted data volume) so /add and
 # /removesite can persist as a non-root container user.
 DEFAULT_SITES = os.path.join(HERE, "sites.json")
 SITES = os.environ.get("SITES_FILE") or DEFAULT_SITES
-sys.path.insert(0, HERE)  # so `from charts import ...` works from any cwd
 
 # Meteo model — a global setting persisted next to sites.json (writable volume in
 # the container). Requesting a variable a model lacks is not an error: open-meteo
@@ -37,7 +39,11 @@ MODELS = {  # key → (UI label, open-meteo id)
     "gfs":   ("GFS",               "gfs_seamless"),
     "icon":  ("ICON",              "icon_seamless"),
 }
-DEFAULT_MODEL_KEY = "ecmwf"
+# Auto (best_match) — единственный вариант, который отдаёт ВЕСЬ набор для скоринга.
+# ECMWF молчит про пограничный слой, Lifted Index, CIN, видимость и ветер на 80/120 м;
+# ICON — про пограничный слой и Lifted Index. На них скоринг честно деградирует
+# (перенормировка весов + непроверенные вето), но половина критериев не работает.
+DEFAULT_MODEL_KEY = "auto"
 
 
 def model_id(key):
@@ -74,18 +80,15 @@ def ensure_sites_file():
         os.makedirs(os.path.dirname(SITES) or ".", exist_ok=True)
         shutil.copy(DEFAULT_SITES, SITES)
 
-# ---- paragliding thresholds (m/s) — tune here ----
-WIND_GOOD   = 5.0    # <= calm/comfortable
-WIND_MAX    = 7.0    # > this = no-go on surface wind
-GUST_MAX    = 8.0    # > this gust = alarm
-GUST_SPREAD = 5.0    # gust-wind spread that flags rowdy air
-GUST_STRONG = 11.0   # > this gust = clearly unflyable
-RAIN_DAY    = 0.2    # mm/day -> wet day
-RAIN_HR     = 0.1    # mm/h   -> wet hour
-DIR_IN      = 80     # <= deg from launch aspect = into the slope (good)
-DIR_TAIL    = 110    # >= deg = tail/cross-tail (bad)
+# Пороги живут в criteria.py — здесь только псевдонимы для читаемости.
+# Собственных чисел у engine больше нет: раньше девять констант отсюда
+# дублировались литералами в charts и пересказывались текстом в промпте.
+RAIN_DAY = criteria.RAIN_DAY_MM
+RAIN_HR = criteria.RAIN_HR_MM
 
 RANGE_DAYS = {"1d": 1, "3d": 3, "week": 7, "2weeks": 14}
+# Условие лицензии CC BY 4.0, под которой open-meteo отдаёт данные.
+ATTRIBUTION = "ℹ️ Погода: Open-Meteo.com (CC BY 4.0)"
 WMO = {0:"ясно",1:"в осн. ясно",2:"перем. обл.",3:"пасмурно",45:"туман",48:"туман",
        51:"морось",53:"морось",55:"морось",61:"дождь",63:"дождь",65:"ливень",
        71:"снег",73:"снег",75:"снег",80:"ливни",81:"ливни",82:"ливни",
@@ -164,14 +167,27 @@ def remove_site(name: str):
 
 # ---------------------------------------------------------------- URL
 H_1D = ("temperature_2m,wind_speed_10m,wind_gusts_10m,wind_direction_10m,cloud_cover_low,"
-        "cloud_cover_mid,precipitation,cape,dew_point_2m,boundary_layer_height,freezing_level_height,"
+        "cloud_cover_mid,cloud_cover_high,precipitation,precipitation_probability,cape,"
+        "lifted_index,convective_inhibition,visibility,relative_humidity_2m,shortwave_radiation,"
+        "dew_point_2m,boundary_layer_height,freezing_level_height,"
+        "wind_speed_80m,wind_direction_80m,wind_speed_120m,wind_direction_120m,"
+        "temperature_850hPa,temperature_700hPa,relative_humidity_925hPa,"
         "wind_speed_925hPa,wind_direction_925hPa,geopotential_height_925hPa,"
         "wind_speed_850hPa,wind_direction_850hPa,geopotential_height_850hPa,"
         "wind_speed_700hPa,wind_direction_700hPa,geopotential_height_700hPa,"
         "wind_speed_600hPa,wind_direction_600hPa,geopotential_height_600hPa,"
         "wind_speed_500hPa,wind_direction_500hPa,geopotential_height_500hPa")
 D_1D = "sunrise,sunset,weather_code,temperature_2m_max,temperature_2m_min,wind_speed_10m_max,wind_gusts_10m_max,wind_direction_10m_dominant,precipitation_sum,sunshine_duration"
-H_OV = "temperature_2m,wind_speed_10m,wind_gusts_10m,wind_direction_10m"
+# Обзор считает тем же скорингом, что и день, — просто по меньшему набору полей.
+# Уровни 600/500 гПа и всё, что нужно только карточке дня, сюда не тянем:
+# 14 дней × 24 часа — и лишние серии заметно раздувают ответ.
+H_OV = ("temperature_2m,dew_point_2m,wind_speed_10m,wind_gusts_10m,wind_direction_10m,"
+        "wind_speed_80m,wind_direction_80m,precipitation,precipitation_probability,"
+        "cape,convective_inhibition,cloud_cover_low,boundary_layer_height,shortwave_radiation,"
+        "temperature_850hPa,temperature_700hPa,"
+        "wind_speed_925hPa,wind_direction_925hPa,geopotential_height_925hPa,"
+        "wind_speed_850hPa,wind_direction_850hPa,geopotential_height_850hPa,"
+        "geopotential_height_700hPa")
 D_OV = ("sunrise,sunset,weather_code,temperature_2m_max,temperature_2m_min,wind_speed_10m_max,"
         "wind_gusts_10m_max,wind_direction_10m_dominant,precipitation_sum,precipitation_probability_max,"
         "sunshine_duration,shortwave_radiation_sum")
@@ -287,44 +303,27 @@ def rng_str(vals, unit="", dec=0):
     return f"{round(lo)}–{round(hi)}{unit}" if round(lo) != round(hi) else f"{round(lo)}{unit}"
 
 # ---------------------------------------------------------------- assessment
+# Словесный вердикт по направлению идёт по той же шкале, что и скоринг. Своя
+# мягкая шкала (в лоб до 80°) приводила к прямому противоречию внутри одной
+# карточки: ветер под 60° к склону подписывался «в лоб склону ✅», хотя именно
+# он и был лимитирующим фактором, обрушившим день в «нелётный».
+_DIR_WORDS = {
+    "ideal":     ("точно в лоб склону ✅", "in"),
+    "excellent": ("в лоб склону ✅", "in"),
+    "fair":      ("почти в лоб ✅", "in"),
+    "marginal":  ("боковой ⚠️", "cross"),
+    "no_fly":    ("сильно боковой ⚠️", "cross"),
+    "danger":    ("почти в спину ❌", "cross"),
+}
+
+
 def dir_verdict(deg, aspect_deg):
     if aspect_deg is None:  # ad-hoc point — slope orientation unknown
         return "экспозиция неизвестна", "unknown"
     a = ang(deg, aspect_deg)
-    if a <= DIR_IN:  return "в лоб склону ✅", "in"
-    if a >= DIR_TAIL: return "в спину ❌", "tail"
-    return "боковой ⚠️", "cross"
-
-def day_status(precip, wind_max, gust_max, dom_dir, aspect_deg):
-    """returns (emoji, label, score)."""
-    _, dc = dir_verdict(dom_dir, aspect_deg)
-    if precip > RAIN_DAY:
-        return "❌", "нелётный (дождь)", 0
-    if gust_max > GUST_STRONG or wind_max > WIND_MAX + 2:
-        return "❌", "нелётный (ветер)", 5
-    bad = 0
-    if wind_max > WIND_MAX: bad += 2
-    if gust_max > GUST_MAX + 2: bad += 2
-    if dc == "tail": bad += 2
-    if dc == "cross": bad += 1
-    if bad >= 3:
-        return "⚠️", "маргинальный", 40
-    if bad >= 1:
-        return "⚠️", "с оговорками", 60
-    return "✅", "лётный", 90
-
-def day_score(precip, wind_max, gust_max, dom_dir, aspect_deg, sunshine_s):
-    s = 100.0
-    if precip > RAIN_DAY: s -= 60
-    s -= precip * 3
-    s -= max(0, wind_max - 3) * 7
-    s -= max(0, gust_max - 5) * 5
-    if aspect_deg is not None:
-        a = ang(dom_dir, aspect_deg)
-        if a >= DIR_TAIL: s -= 30
-        elif a > DIR_IN: s -= 12
-    s += min(sunshine_s / 3600.0, 12) * 1.5  # reward sun (thermals)
-    return s
+    if a > 90:  # подветренная сторона — это вето в criteria, не «оговорка»
+        return "в спину ❌", "tail"
+    return _DIR_WORDS[criteria.grade_of("dir_offset", a)]
 
 def _series_available(H, key):
     """True if the hourly variable actually came back (present and not all-null).
@@ -333,8 +332,323 @@ def _series_available(H, key):
     return bool(v) and any(x is not None for x in v)
 
 
+# ---------------------------------------------------------------- derived metrics
+# open-meteo даёт сырые поля; критериям из criteria.py нужны производные величины.
+# Всё считается локально. Где величины нет и честно посчитать её нельзя — None,
+# и criteria исключит параметр из расчёта, а не подставит выдуманное число.
+G = 9.81
+CP_AIR = 1005.0        # удельная теплоёмкость воздуха, Дж/(кг·К)
+DRY_LAPSE = 0.0098     # сухоадиабатический градиент, °C/м
+TI_LEVEL_AGL = 1000    # рабочий уровень Thermal Index — метров над стартом
+
+# Доля коротковолновой радиации, уходящая в приземный поток явного тепла.
+# Открытый параметр модели: у сухого горного склона 0,25–0,35, над влажной
+# растительностью заметно меньше. Отсюда у W* погрешность порядка двойки —
+# поэтому он везде помечен как ОЦЕНКА и один никогда не решает категорию.
+SENSIBLE_HEAT_FRACTION = 0.30
+
+
+def _at(H, key, i):
+    """Значение почасовой серии или None, если модель её не отдала."""
+    v = H.get(key)
+    if not v or i >= len(v):
+        return None
+    return v[i]
+
+
+def _uv(speed, deg):
+    """Ветер (скорость + направление ОТКУДА) → вектор переноса (u, v)."""
+    r = math.radians(deg)
+    return -speed * math.sin(r), -speed * math.cos(r)
+
+
+def air_density(elev_m):
+    """Плотность воздуха по стандартной атмосфере — на 2500 м она на 20% ниже
+    уровня моря, и W* без этой поправки заметно завышается."""
+    return 1.225 * (1.0 - 2.25577e-5 * elev_m) ** 4.2559
+
+
+def w_star(blh_m, radiation_wm2, temp_c, elev_m):
+    """Оценка конвективной скорости Дира: w* = [(g/θ)·(Q/(ρ·cp))·zi]^(1/3).
+
+    ОЦЕНКА, не факт: у open-meteo нет потока тепла, он приближается долей
+    коротковолновой радиации (SENSIBLE_HEAT_FRACTION). Без пограничного слоя
+    (ECMWF, ICON) величины нет вовсе."""
+    if blh_m is None or radiation_wm2 is None or temp_c is None:
+        return None
+    if blh_m <= 0 or radiation_wm2 <= 0:
+        return 0.0
+    theta = temp_c + 273.15
+    heat_flux = SENSIBLE_HEAT_FRACTION * radiation_wm2
+    return round(((G / theta) * (heat_flux / (air_density(elev_m) * CP_AIR)) * blh_m) ** (1 / 3), 2)
+
+
+def shear_100m(H, i):
+    """Модуль векторной разности ветра между 10 м и 100 м, м/с.
+
+    100 м берётся интерполяцией ВЕКТОРОВ между 80 и 120 м: скорости складывать
+    нельзя, если направление меняется. Если 120 м нет — берётся 80 м как есть
+    (пролёт 70 м вместо 100, оценка получается заниженной, но не выдуманной).
+    Ветер на 925 гПа подменой не служит: это ~750 м, другая физическая величина.
+    """
+    s10, d10 = _at(H, "wind_speed_10m", i), _at(H, "wind_direction_10m", i)
+    s80, d80 = _at(H, "wind_speed_80m", i), _at(H, "wind_direction_80m", i)
+    if None in (s10, d10, s80, d80):
+        return None
+    u10, v10 = _uv(s10, d10)
+    u80, v80 = _uv(s80, d80)
+    s120, d120 = _at(H, "wind_speed_120m", i), _at(H, "wind_direction_120m", i)
+    if None in (s120, d120):
+        u, v = u80, v80
+    else:
+        u120, v120 = _uv(s120, d120)
+        f = (100 - 80) / (120 - 80)
+        u, v = u80 + f * (u120 - u80), v80 + f * (v120 - v80)
+    return round(math.hypot(u - u10, v - v10), 2)
+
+
+def _bl_levels(H, i, elev, blh):
+    """(высота MSL, направление) уровней внутри пограничного слоя.
+
+    Верх слоя — пограничный слой модели; без него берётся старт+1500 м как
+    рабочее приближение (в комментарии к вызову это помечается оценкой)."""
+    top = elev + (blh if blh is not None else 1500)
+    out = []
+    for alt, dkey in ((elev + 10, "wind_direction_10m"), (elev + 80, "wind_direction_80m")):
+        d = _at(H, dkey, i)
+        if d is not None and alt <= top:
+            out.append((alt, d))
+    for hpa in (925, 850):
+        alt = _at(H, f"geopotential_height_{hpa}hPa", i)
+        d = _at(H, f"wind_direction_{hpa}hPa", i)
+        if alt is not None and d is not None and elev <= alt <= top:
+            out.append((alt, d))
+    return out
+
+
+def dir_misalign(H, i, elev, blh):
+    """Максимальное расхождение направления ветра между уровнями внутри слоя.
+
+    Сильный разворот с высотой — признак сдвигового слоя или конвергенции:
+    термики рваные, на переходе через слой резкая турбулентность."""
+    lv = _bl_levels(H, i, elev, blh)
+    if len(lv) < 2:
+        return None
+    return round(max(ang(a[1], b[1]) for a in lv for b in lv), 1)
+
+
+def _profile(H, i, elev):
+    """Профиль скорости ветра (высота MSL, м/с) от старта вверх.
+
+    Уровни давления ниже старта отбрасываются: под стартом они «под землёй»,
+    пилот в этом воздухе не летит, а в отсортированном профиле такой уровень
+    ломает интерполяцию (то же правило, что в wind_grid)."""
+    surface = elev + 10
+    pts = []
+    s10 = _at(H, "wind_speed_10m", i)
+    if s10 is not None:
+        pts.append((surface, s10))
+    for hpa in (925, 850, 700):
+        alt = _at(H, f"geopotential_height_{hpa}hPa", i)
+        spd = _at(H, f"wind_speed_{hpa}hPa", i)
+        if alt is not None and spd is not None and alt > surface:
+            pts.append((alt, spd))
+    return sorted(pts)
+
+
+def wind_at(H, i, elev, alt_msl):
+    """Скорость ветра на заданной высоте — линейная интерполяция профиля."""
+    pts = _profile(H, i, elev)
+    if not pts:
+        return None
+    if alt_msl <= pts[0][0]:
+        return round(pts[0][1], 1)
+    for (a1, s1), (a2, s2) in zip(pts, pts[1:]):
+        if a1 <= alt_msl <= a2:
+            f = (alt_msl - a1) / (a2 - a1) if a2 != a1 else 0.0
+            return round(s1 + f * (s2 - s1), 1)
+    return round(pts[-1][1], 1)
+
+
+def thermal_index(H, i, elev, temp_c):
+    """Thermal Index на рабочем уровне: насколько среда холоднее поднимающейся частицы.
+
+    Частица идёт от приземной температуры по сухой адиабате; температура среды —
+    интерполяция между 850 и 700 гПа по их геопотенциальным высотам. Чем
+    отрицательнее, тем сильнее поток. Возвращает (TI, высота уровня MSL)."""
+    if temp_c is None:
+        return None, None
+    lv = []
+    for hpa in (850, 700):
+        alt = _at(H, f"geopotential_height_{hpa}hPa", i)
+        t = _at(H, f"temperature_{hpa}hPa", i)
+        if alt is not None and t is not None:
+            lv.append((alt, t))
+    if len(lv) < 2:
+        return None, None
+    lv.sort()
+    # рабочий уровень — старт+1000 м, но не ниже нижнего и не выше верхнего
+    # уровня с данными: экстраполировать стратификацию за пределы профиля нельзя
+    level = min(max(elev + TI_LEVEL_AGL, lv[0][0]), lv[-1][0])
+    (a1, t1), (a2, t2) = lv[0], lv[-1]
+    f = (level - a1) / (a2 - a1) if a2 != a1 else 0.0
+    t_env = t1 + f * (t2 - t1)
+    t_parcel = temp_c - DRY_LAPSE * (level - elev)
+    return round(t_env - t_parcel, 1), round(level)
+
+
+# Фён по правилу Шамони (перепад давления через хребет >4 гПа) требует двух точек
+# по разные стороны хребта — у бота точечные данные, посчитать его нечем. Здесь
+# только ЭВРИСТИКА по косвенным признакам: сильный поток поперёк склона, сухой
+# и тёплый воздух, отсутствие низкой облачности. Это предупреждение, НЕ вето.
+FOEHN_WIND_MS = 10.0
+FOEHN_SPREAD_C = 10.0
+FOEHN_RH_PCT = 40.0
+FOEHN_CLOUD_PCT = 20.0
+
+
+def foehn_suspect(wind_850, dir_850, aspect, spread, rh_925, cloud_low):
+    if None in (wind_850, dir_850, aspect, spread, cloud_low):
+        return None
+    across = ang(dir_850, aspect) <= 45      # поток бьёт в склон с наветренной стороны хребта
+    dry = spread >= FOEHN_SPREAD_C and (rh_925 is None or rh_925 < FOEHN_RH_PCT)
+    return bool(wind_850 >= FOEHN_WIND_MS and across and dry and cloud_low < FOEHN_CLOUD_PCT)
+
+
+def derive_hour(H, i, site, ctx):
+    """Один час сырых полей open-meteo → плоский словарь для criteria.score_hour.
+
+    ctx — результат day_context(): высота старта, экспозиция, термическое окно.
+    """
+    elev, aspect = site["elevation_m"], site.get("aspect_deg")
+    temp = _at(H, "temperature_2m", i)
+    dew = _at(H, "dew_point_2m", i)
+    wind = _at(H, "wind_speed_10m", i)
+    gust = _at(H, "wind_gusts_10m", i)
+    wdir = _at(H, "wind_direction_10m", i)
+    blh = _at(H, "boundary_layer_height", i)
+    spread = None if None in (temp, dew) else round(temp - dew, 1)
+    base_agl = None if spread is None else round(max(0.0, criteria.LCL_M_PER_C * spread))
+
+    # порывистость: знаменатель ограничен снизу опорным ветром, иначе при штиле
+    # отношение улетает в бесконечность (см. GUST_FACTOR_REF_WIND_MS)
+    gf = None
+    if None not in (wind, gust):
+        gf = round(gust / max(wind, criteria.GUST_FACTOR_REF_WIND_MS), 2)
+
+    ti, ti_level = thermal_index(H, i, elev, temp)
+    route_top = site.get("route_top_m")
+    win = ctx.get("thermal_window")
+
+    return {
+        "wind_10m": wind,
+        "wind_925": _at(H, "wind_speed_925hPa", i),
+        "wind_850": _at(H, "wind_speed_850hPa", i),
+        "gust_factor": gf,
+        "gust_delta": None if None in (wind, gust) else round(gust - wind, 1),
+        "dir_offset": None if None in (wdir, aspect) else round(ang(wdir, aspect), 1),
+        "w_star": w_star(blh, _at(H, "shortwave_radiation", i), temp, elev),
+        "bl_depth": blh,
+        "thermal_index": ti,
+        "cape": _at(H, "cape", i),
+        "lifted_index": _at(H, "lifted_index", i),
+        "cloud_low": _at(H, "cloud_cover_low", i),
+        "base_clearance": base_agl,
+        "precip_prob": _at(H, "precipitation_probability", i),
+        "visibility": _at(H, "visibility", i),
+        "shear_100m": shear_100m(H, i),
+        "spread": spread,
+        "window_hours": None if not win else float(win["end_hour"] - win["start_hour"] + 1),
+        # входы правил без собственной шкалы
+        "precip_mm": _at(H, "precipitation", i),
+        "cin": _at(H, "convective_inhibition", i),
+        "wind_at_base": None if base_agl is None else wind_at(H, i, elev, elev + base_agl),
+        "base_over_route": None if (base_agl is None or route_top is None)
+                           else round(elev + base_agl - route_top),
+        "dir_misalign": dir_misalign(H, i, elev, blh),
+        # справочное — в скоринг не входит, показывается пилоту и LLM
+        "ti_level_m": ti_level,
+        "foehn_suspect": foehn_suspect(
+            _at(H, "wind_speed_850hPa", i), _at(H, "wind_direction_850hPa", i), aspect,
+            spread, _at(H, "relative_humidity_925hPa", i), _at(H, "cloud_cover_low", i)),
+    }
+
+
+def day_context(data, site, day_index=0):
+    """Общий для всех часов дня контекст: границы дня и термическое окно."""
+    H, D = data["hourly"], data["daily"]
+    t = H["time"]
+    sr, ss = D["sunrise"][day_index], D["sunset"][day_index]
+    date = D["time"][day_index]
+    idx = [i for i, tt in enumerate(t) if ymd(tt) == date and hour_of(sr) <= hour_of(tt) <= hour_of(ss)]
+    _rows, window = sun_hours(date, site["lat"], sr, ss, [hour_of(t[i]) for i in idx],
+                              site.get("aspect_deg"), site.get("slope_deg", SLOPE_DEG))
+    return {"date": date, "sunrise": sr, "sunset": ss, "daylight_idx": idx,
+            "thermal_window": window}
+
+
+def assess_day(data, site, day_index=0):
+    """Почасовые оценки и свёртка дня по criteria — единственный путь расчёта
+    лётности, общий для карточки, графиков, обзора и данных для LLM."""
+    H = data["hourly"]
+    ctx = day_context(data, site, day_index)
+    hours = [criteria.score_hour(derive_hour(H, i, site, ctx), hour_of(H["time"][i]))
+             for i in ctx["daylight_idx"]]
+    day = criteria.score_day(ctx["date"], hours, ctx["thermal_window"])
+    return day, ctx
+
+
+def assessment_facts(assess):
+    """Свёртка дня в компактный блок для LLM.
+
+    Детерминированный скоринг — источник истины; LLM его объясняет, а не
+    пересчитывает. Непроверенные вето передаются явно, чтобы модель не приняла
+    отсутствие данных за отсутствие опасности."""
+    return {
+        "score": None if assess.score is None else round(assess.score),
+        "category": assess.category,
+        "label_ru": assess.label,
+        "limiting_factor": assess.limiting,
+        "limiting_factor_ru": assess.limiting_label,
+        "fly_window": list(assess.fly_window) if assess.fly_window else None,
+        "confidence": assess.confidence,
+        "warnings": assess.warnings,
+        "vetoes_in_window": criteria.veto_labels(assess.vetoes_in_window),
+        "unchecked_vetoes": criteria.veto_labels(assess.unchecked_vetoes),
+    }
+
+
+def data_note(assess, skip=()):
+    """Строка о полноте данных: сколько критериев реально посчиталось и какие
+    вето остались непроверенными.
+
+    Молчаливая деградация — самое опасное, что может сделать прогноз: без этой
+    строки «нет данных по видимости» выглядит как «с видимостью всё хорошо».
+    `skip` убирает вето, непроверяемые не из-за модели, а по настройке старта —
+    иначе одна и та же строка висела бы на каждой карточке и приучила бы её
+    пролистывать ровно тогда, когда она важна."""
+    parts = [f"📊 Критериев посчитано: {round(assess.confidence * 100)}%"]
+    unchecked = [v for v in assess.unchecked_vetoes if v not in skip]
+    if unchecked:
+        parts.append("не проверено вето: " + ", ".join(criteria.veto_labels(unchecked)))
+    return " · ".join(parts)
+
+
+def hourly_strip(day_assessment, window):
+    """Полоса «час · эмодзи · балл» по часам термического окна.
+
+    Табличной вёрстки нет намеренно: Telegram рисует карточку пропорциональным
+    шрифтом, а эмодзи вдвое шире цифр — колонки в три строки всё равно поедут.
+    Текучая строка через разделитель читается и переносится корректно."""
+    hours = day_assessment.hours
+    if window:
+        hours = [h for h in hours if window["start_hour"] <= h.hour <= window["end_hour"]] or hours
+    return " · ".join(f"{h.hour:02d} {h.emoji} {'—' if h.score is None else round(h.score)}"
+                      for h in hours)
+
+
 # ---------------------------------------------------------------- report: 1 day
-def report_1day(data, site, out):
+def report_1day(data, site, out, assessment=None):
     H, D = data["hourly"], data["daily"]
     t = H["time"]
     sr, ss = D["sunrise"][0], D["sunset"][0]
@@ -348,15 +662,15 @@ def report_1day(data, site, out):
     dt_temp = [temp[i] for i in day]
     dt_wind = [wind[i] for i in day]
     dt_gust = [gust[i] for i in day]
-    # flyable hours: inside the thermal window (before it the slope isn't heating yet,
-    # after it the sun has left the face — see sun_hours), wind/gust/precip/direction ok
-    _, tw = sun_hours(t[0], site["lat"], sr, ss, [hour_of(t[i]) for i in day],
-                      aspect, site.get("slope_deg", SLOPE_DEG))
+    # Лётность считает criteria — один расчёт на карточку, графики и данные для LLM.
+    # Раньше карточка и метеограмма проверяли пороги независимо и могли разойтись.
+    assess, ctx = assessment or assess_day(data, site)
+    tw = ctx["thermal_window"]
     workable = [i for i in day if tw and tw["start_hour"] <= hour_of(t[i]) <= tw["end_hour"]]
-    fly_hours = [hour_of(t[i]) for i in workable
-                 if wind[i] <= WIND_MAX and gust[i] <= GUST_MAX and precip[i] < RAIN_HR
-                 and (aspect is None or ang(wdir[i], aspect) < DIR_TAIL)]
-    window = f"{min(fly_hours):02d}:00–{max(fly_hours):02d}:00" if fly_hours else "нет"
+    # лётные часы — только внутри термического окна: вне его склон не греет,
+    # и «лётный» штиль в 06:00 не окно, а ночной сток
+    fly_hours = assess.fly_window
+    window = f"{fly_hours[0]:02d}:00–{fly_hours[1]:02d}:00" if fly_hours else "нет"
     # thermal peak = the hottest hour of the window; near-ties (a flat temperature
     # profile) go to the hour the sun hits the slope most directly
     ref = tw["peak_hour"] if tw else hour_of(t[max(day, key=lambda i: temp[i])])
@@ -383,14 +697,22 @@ def report_1day(data, site, out):
     fly_dir = wind_from_avg([wdir[i] for i in core], [max(wind[i], 0.3) for i in core])
     dv, dc = dir_verdict(fly_dir, aspect)
     precip_sum = D["precipitation_sum"][0]
-    st_emoji, st_label, _ = day_status(precip_sum, max(dt_wind), max(dt_gust), fly_dir, aspect)
 
     # ---- text: factual card (always shown) + tail (window/caveats) ----
+    verdict = f"Вердикт: {assess.emoji} {assess.label}"
+    if assess.score is not None:
+        verdict += f" — {round(assess.score)}/100"
     card_lines = [
         f"🪂 {site['name']}{(' (' + card(aspect) + ')') if aspect is not None else ''} — прогноз на {fmt_date(t[0])}",
         f"📍 {site['lat']:.3f}, {site['lon']:.3f} · {elev} м · {data.get('timezone','')} · {model_label(get_model_key())}",
         "",
-        f"Вердикт: {st_emoji} {st_label}",
+        verdict,
+    ]
+    if assess.limiting_label:
+        card_lines.append(f"🎯 Ограничивает: {assess.limiting_label}")
+    if tw:
+        card_lines.append(f"📈 По часам: {hourly_strip(assess, tw)}")
+    card_lines += [
         "",
         f"🌡️ Днём ({hour_of(sr):02d}–{hour_of(ss):02d}): {rng_str(dt_temp,'°')}",
         f"💨 Ветер (днём): {rng_str(dt_wind,' м/с',1)}, порывы до {max(dt_gust):.0f}",
@@ -402,14 +724,26 @@ def report_1day(data, site, out):
         (f"🧗 Потолок: ~{top_agl} м над стартом (~{top_msl} MSL){' · голубой' if blue else ''}"
          if has_blh else "🧗 Потолок: н/д (модель не даёт)"),
     ]
+    # вершины маршрута — необязательная настройка старта, а не пробел в модели
+    no_route_top = site.get("route_top_m") is None
+    card_lines.append(data_note(assess, skip=("base_below_route",) if no_route_top else ()))
+    card_lines.append(ATTRIBUTION)
     card_text = "\n".join(card_lines)
 
     tail = [f"⏱️ Лётное окно: {window}" + (f" (пик {peak_lo:02d}–{peak_hi:02d})" if fly_hours else "")]
     cav = []
+    if assess.vetoes_in_window:
+        cav.append("вето внутри окна: " + ", ".join(criteria.veto_labels(assess.vetoes_in_window)))
+    if any(h.raw.get("foehn_suspect") for h in assess.hours):
+        cav.append("признаки фёна (эвристика по косвенным приметам, не расчёт) — "
+                   "роторы с подветра могут быть жёсткими")
     if blue: cav.append("голубая термичка (без облаков-маркеров)")
     if has_blh and top_agl < 900: cav.append("низкий потолок — XC слабый")
     if dc == "tail": cav.append("ветер в спину в рабочее окно — опасно, сверь экспозицию")
     elif dc == "cross": cav.append("боковой ветер к склону — сверь экспозицию")
+    if no_route_top:
+        cav.append("вершины маршрута у старта не заданы (route_top_m) — вето «база ниже вершин» "
+                   "не проверяется, запас считается только над стартом")
     cav.append(f"высота старта по гриду ({elev} м); прогноз далеко вперёд — пересними за 1–2 суток")
     if cav:
         tail.append("")
@@ -419,7 +753,7 @@ def report_1day(data, site, out):
     # ---- charts ----
     pngs = []
     from charts import meteogram_png, ceiling_png, profile_png
-    pngs.append(meteogram_png(data, site, out))
+    pngs.append(meteogram_png(data, site, out, assess))
     if has_blh:  # ceiling chart needs the boundary-layer series
         pngs.append(ceiling_png(data, site, out))
     pngs.append(profile_png(data, site, out))
@@ -471,10 +805,17 @@ def wind_grid(data, site):
 
 # ---------------------------------------------------------------- report: overview
 def overview_rows(data, site):
-    """Per-day daytime assessment for an overview response: one dict per day with
-    date, status (emoji/label/score) and the headline numbers. Shared by
-    report_overview (card + chart) and the multi-site scan."""
-    D = data["daily"]; H = data["hourly"]; t = H["time"]; aspect = site["aspect_deg"]
+    """Оценка каждого дня обзора — тем же скорингом, что и карточка на день.
+
+    Отдельного «упрощённого» расчёта нет намеренно: обзор запрашивает меньше
+    полей, недостающие параметры приходят как None, и механизм пропусков сам
+    служит регулятором точности. Поэтому балл дня в обзоре может отличаться от
+    балла того же дня, открытого подробно, — там данных больше; `confidence`
+    показывает разницу честно.
+
+    Ключи строки те же, что раньше (их читают bot и charts), плюс category,
+    limiting и confidence."""
+    D = data["daily"]; H = data["hourly"]; t = H["time"]
     rows = []
     for k, dcode in enumerate(D["time"]):
         sr, ss = D["sunrise"][k], D["sunset"][k]
@@ -488,13 +829,13 @@ def overview_rows(data, site):
             dom = wind_from_avg([hdir[i] for i in core], [max(H["wind_speed_10m"][i], 0.3) for i in core])
         else:
             dom = D["wind_direction_10m_dominant"][k]
-        precip = D["precipitation_sum"][k]
-        wc = D["weather_code"][k]; sun = D["sunshine_duration"][k]
-        emoji, label, _ = day_status(precip, max(dt_wind), max(dt_gust), dom, aspect)
-        score = day_score(precip, max(dt_wind), max(dt_gust), dom, aspect, sun)
-        rows.append(dict(date=dcode, emoji=emoji, label=label, score=score,
+        day, _ctx = assess_day(data, site, k)
+        rows.append(dict(date=dcode, emoji=day.emoji, label=day.label,
+                         score=day.score if day.score is not None else 0.0,
+                         category=day.category, limiting=day.limiting_label,
+                         confidence=day.confidence, fly_window=day.fly_window,
                          tmax=max(dt_temp), wmax=max(dt_wind), gmax=max(dt_gust),
-                         dom=dom, precip=precip, wc=wc))
+                         dom=dom, precip=D["precipitation_sum"][k], wc=D["weather_code"][k]))
     return rows
 
 
@@ -506,17 +847,24 @@ def report_overview(data, site, rng, out):
     card_lines = [f"🪂 {site['name']}{(' (' + card(aspect) + ')') if aspect is not None else ''} — обзор на {names[rng]}",
                   f"📍 {site['lat']:.3f}, {site['lon']:.3f} · {elev} м · {data.get('timezone','')}",
                   "",
-                  f"🏆 Лучший день: {best['emoji']} {fmt_date(best['date'])} — {WMO.get(best['wc'],'')}, "
-                  f"ветер до {best['wmax']:.0f}, порыв {best['gmax']:.0f} м/с",
+                  f"🏆 Лучший день: {best['emoji']} {fmt_date(best['date'])} — {round(best['score'])}/100, "
+                  f"{WMO.get(best['wc'],'')}, ветер до {best['wmax']:.0f}, порыв {best['gmax']:.0f} м/с"
+                  + (f", окно {best['fly_window'][0]:02d}–{best['fly_window'][1]:02d}"
+                     if best["fly_window"] else ""),
                   "",
                   "По дням (светлое время):"]
     for r in rows:
-        card_lines.append(f"{r['emoji']} {fmt_date(r['date'])} · {r['tmax']:.0f}° · "
+        card_lines.append(f"{r['emoji']} {fmt_date(r['date'])} · {round(r['score']):>3}/100 · {r['tmax']:.0f}° · "
                           f"ветер до {r['wmax']:.0f}, порыв {r['gmax']:.0f} м/с · "
                           f"{card(r['dom'])} · {WMO.get(r['wc'],'')}"
-                          + (f" {r['precip']:.1f}мм" if r["precip"] > RAIN_DAY else ""))
+                          + (f" {r['precip']:.1f}мм" if r["precip"] > RAIN_DAY else "")
+                          + (f" · ограничивает {r['limiting']}" if r["limiting"] else ""))
+    card_lines.append("")
+    card_lines.append(ATTRIBUTION)
     card_text = "\n".join(card_lines)
-    note = "💨 ветер в м/с; T и ветер — за светлое время. Пороги: ≤5 ок · 5–7 маргинал · >7 нет."
+    note = ("💨 ветер в м/с; T и ветер — за светлое время. " + criteria.thresholds_note()
+            + "\nОбзор считает по сокращённому набору полей — открой день подробно, "
+              "там расчёт полнее.")
     from charts import overview_png
     png = overview_png(rows, site, rng, out)
     return card_text + "\n\n" + note, [png], card_text
@@ -524,7 +872,7 @@ def report_overview(data, site, rng, out):
 # ---------------------------------------------------------------- facts (for LLM analysis)
 # These extract the REAL numbers from the open-meteo response into a compact,
 # unit-labelled dict. The LLM interprets these facts; it never invents them.
-def facts_1day(data, site):
+def facts_1day(data, site, assessment=None):
     H, D = data["hourly"], data["daily"]
     t = H["time"]; sr, ss = D["sunrise"][0], D["sunset"][0]
     day = daylight_idx(t, sr, ss)
@@ -560,6 +908,8 @@ def facts_1day(data, site):
     sun_rows, thermal_window = sun_hours(t[0], site["lat"], sr, ss, [hour_of(t[i]) for i in day],
                                          aspect, site.get("slope_deg", SLOPE_DEG))
     sun_by_hour = {r["hour"]: r for r in sun_rows}
+    assess, _ctx = assessment or assess_day(data, site)
+    by_hour = {h.hour: h for h in assess.hours}
 
     return {
         "site": {"name": site["name"], "aspect": card(aspect) if aspect is not None else None, "aspect_deg": aspect,
@@ -567,6 +917,8 @@ def facts_1day(data, site):
         "date": t[0][:10],
         "daylight_hours": f"{hour_of(sr):02d}-{hour_of(ss):02d}",
         "thermal_window": thermal_window,
+        "criteria_version": criteria.CRITERIA_VERSION,
+        "assessment": assessment_facts(assess),
         "precip_sum_mm": round(D["precipitation_sum"][0], 1),
         "cape_max": round(max(cape[i] for i in day)),
         "freezing_level_m": round(H["freezing_level_height"][tmax_i]) if has_frz else None,
@@ -580,9 +932,13 @@ def facts_1day(data, site):
              "cloud_low_pct": round(clow[i]), "precip_mm": round(precip[i], 2), "cape": round(cape[i]),
              "sun_elev_deg": sun_by_hour[hour_of(t[i])]["sun_elev_deg"],
              "sun_az_deg": sun_by_hour[hour_of(t[i])]["sun_az_deg"],
-             "slope_sun_index": sun_by_hour[hour_of(t[i])]["slope_sun_index"]}
+             "slope_sun_index": sun_by_hour[hour_of(t[i])]["slope_sun_index"],
+             **by_hour[hour_of(t[i])].compact()}
             for i in day],
         "wind_profile_peak_hour": profile,
+        "derived_peak_hour": {k: v for k, v in
+                              derive_hour(H, tmax_i, site, {"thermal_window": thermal_window}).items()
+                              if v is not None},
     }
 
 
@@ -602,6 +958,7 @@ def facts_overview(data, site, rng):
             dom = wind_from_avg([hdir[i] for i in core], [max(H["wind_speed_10m"][i], 0.3) for i in core])
         else:
             dom = D["wind_direction_10m_dominant"][k]
+        day_assess, _ctx = assess_day(data, site, k)
         days.append({
             "date": dcode, "weather": WMO.get(D["weather_code"][k], ""),
             "temp_max_c": round(max(dt_temp)), "temp_min_c": round(D["temperature_2m_min"][k]),
@@ -610,11 +967,14 @@ def facts_overview(data, site, rng):
             "precip_mm": round(D["precipitation_sum"][k], 1),
             "sunshine_h": round(D["sunshine_duration"][k] / 3600.0, 1),
             "thermal_window": sun_summary(dcode, site, sr, ss),
+            "assessment": assessment_facts(day_assess),
         })
     return {
         "site": {"name": site["name"], "aspect": card(aspect) if aspect is not None else None, "aspect_deg": aspect,
                  "elevation_m": site["elevation_m"], "timezone": data.get("timezone")},
         "range": rng,
+        "criteria_version": criteria.CRITERIA_VERSION,
+        "fidelity": "обзор — сокращённый набор полей, у дня подробно расчёт полнее",
         "days_daytime": days,
     }
 
