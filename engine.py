@@ -348,18 +348,25 @@ def report_1day(data, site, out):
     dt_temp = [temp[i] for i in day]
     dt_wind = [wind[i] for i in day]
     dt_gust = [gust[i] for i in day]
-    # flyable hours: within daylight, wind/gust/precip/direction ok
-    fly = []
-    for i in day:
-        ok = (wind[i] <= WIND_MAX and gust[i] <= GUST_MAX and precip[i] < RAIN_HR
-              and (aspect is None or ang(wdir[i], aspect) < DIR_TAIL))
-        fly.append((hour_of(t[i]), ok))
-    fly_hours = [h for h, ok in fly if ok]
+    # flyable hours: inside the thermal window (before it the slope isn't heating yet,
+    # after it the sun has left the face — see sun_hours), wind/gust/precip/direction ok
+    _, tw = sun_hours(t[0], site["lat"], sr, ss, [hour_of(t[i]) for i in day],
+                      aspect, site.get("slope_deg", SLOPE_DEG))
+    workable = [i for i in day if tw and tw["start_hour"] <= hour_of(t[i]) <= tw["end_hour"]]
+    fly_hours = [hour_of(t[i]) for i in workable
+                 if wind[i] <= WIND_MAX and gust[i] <= GUST_MAX and precip[i] < RAIN_HR
+                 and (aspect is None or ang(wdir[i], aspect) < DIR_TAIL)]
     window = f"{min(fly_hours):02d}:00–{max(fly_hours):02d}:00" if fly_hours else "нет"
-    # thermal peak = hours around max temp within daylight
-    tmax_i = max(day, key=lambda i: temp[i])
-    peak_lo = max(hour_of(sr), hour_of(t[tmax_i]) - 1)
-    peak_hi = hour_of(t[tmax_i]) + 1
+    # thermal peak = the hottest hour of the window; near-ties (a flat temperature
+    # profile) go to the hour the sun hits the slope most directly
+    ref = tw["peak_hour"] if tw else hour_of(t[max(day, key=lambda i: temp[i])])
+    tmax_i = max(workable or day, key=lambda i: (round(temp[i], 1), -abs(hour_of(t[i]) - ref)))
+    peak_h = hour_of(t[tmax_i])
+    if tw:
+        peak_lo = max(tw["start_hour"], peak_h - 1)
+        peak_hi = min(tw["end_hour"], peak_h + 1)
+    else:
+        peak_lo, peak_hi = max(hour_of(sr), peak_h - 1), peak_h + 1
     # ceiling
     midday = min(day, key=lambda i: abs(hour_of(t[i]) - hour_of(t[tmax_i])))
     lcl_agl = 122 * (temp[midday] - dew[midday])
@@ -389,7 +396,9 @@ def report_1day(data, site, out):
         f"💨 Ветер (днём): {rng_str(dt_wind,' м/с',1)}, порывы до {max(dt_gust):.0f}",
         f"🧭 Направление (в окно): {card(fly_dir)} ~{round(fly_dir)}° → {dv}",
         f"🌧️ Осадки: {'нет' if precip_sum < RAIN_DAY else f'{precip_sum:.1f} мм'}",
-        f"🔆 Термичка: {'рабочая' if max(cape[i] for i in day) > 20 or (top_agl or 0) > 500 else 'слабая'}, пик {peak_lo:02d}–{peak_hi:02d}",
+        (f"🔆 Термичка: {'рабочая' if max(cape[i] for i in day) > 20 or (top_agl or 0) > 500 else 'слабая'}"
+         + (f", солнце на склоне {tw['start_hour']:02d}–{tw['end_hour']:02d}" if tw else "")
+         + f" (пик {peak_lo:02d}–{peak_hi:02d})"),
         (f"🧗 Потолок: ~{top_agl} м над стартом (~{top_msl} MSL){' · голубой' if blue else ''}"
          if has_blh else "🧗 Потолок: н/д (модель не даёт)"),
     ]

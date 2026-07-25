@@ -4,7 +4,10 @@ The LLM used to flag "risks" at sunrise because every daylight hour looked equal
 thermic to it. These cover the numbers that fix that: sun azimuth/elevation per hour,
 how directly the sun hits the launch slope, and the derived working window.
 """
+import tempfile
+
 import engine
+from test_engine_degrade import _data, _site
 
 
 DATE = "2026-07-25"   # summer, declination ~+19°
@@ -55,6 +58,22 @@ def test_thermal_window_is_none_in_polar_night():
     _, w = engine.sun_hours("2026-12-21", 78.0, "2026-12-21T11:00", "2026-12-21T12:00",
                             [11, 12], 180.0)
     assert w is None
+
+
+def test_card_window_is_clipped_to_the_thermal_window():
+    """Calm all day (fixture wind 2 m/s), so only the sun bounds the window —
+    it must not run sunrise-to-sunset (05:00–20:00)."""
+    text, _pngs, _card = engine.report_1day(_data(), _site(), tempfile.mkdtemp())
+    assert "⏱️ Лётное окно: 07:00–17:00" in text
+    assert "солнце на склоне 07–17" in text
+
+
+def test_card_window_shrinks_further_when_the_afternoon_blows_out():
+    d = _data()
+    for h in range(16, 24):                   # wind over the limit from 16:00 on
+        d["hourly"]["wind_speed_10m"][h] = 9.0
+    text, _pngs, _card = engine.report_1day(d, _site(), tempfile.mkdtemp())
+    assert "⏱️ Лётное окно: 07:00–15:00" in text
 
 
 def test_unknown_aspect_keeps_geometry_but_drops_the_slope_index():
