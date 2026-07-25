@@ -555,7 +555,7 @@ async def test_model_no_arg_shows_picker_buttons(feed, session):
     datas = [b.callback_data for b in buttons(kb)]
     assert datas == ["md|auto", "md|ecmwf", "md|gfs", "md|icon"]
     labels = [b.text for b in buttons(kb)]
-    assert any("ECMWF" in l and "✓" in l for l in labels)  # current model marked
+    assert any("Auto" in l and "✓" in l for l in labels)  # current model marked
 
 
 async def test_model_button_sets_and_confirms(feed, session):
@@ -566,7 +566,7 @@ async def test_model_button_sets_and_confirms(feed, session):
 
 async def test_model_button_unknown_key_alerts(feed, session):
     await feed(callback_update("md|bogus"))
-    assert engine.get_model_key() == "ecmwf"  # unchanged
+    assert engine.get_model_key() == "auto"  # unchanged
     alert = cb_answers(session)[-1]
     assert "Неизвестная" in alert.text and alert.show_alert
 
@@ -602,7 +602,7 @@ async def test_model_invalid_key_lists_options(feed, session):
     out = texts(session)[-1]
     assert "plasma" not in engine.MODELS
     assert "ecmwf" in out and "gfs" in out  # error lists valid keys
-    assert engine.get_model_key() == "ecmwf"  # unchanged
+    assert engine.get_model_key() == "auto"  # unchanged
 
 
 # ---------------------------------------------------------------- analysis HTML formatting
