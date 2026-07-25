@@ -132,6 +132,30 @@ def om_null(data, *fields):
     return data
 
 
+def ideal_hour(**overrides):
+    """Плоский словарь для criteria.score_hour, где КАЖДЫЙ параметр идеален.
+
+    Тесты вето и штрафов портят ровно одно поле и смотрят, что изменилось —
+    так видно, что сработало именно проверяемое правило, а не соседнее.
+    """
+    raw = {
+        # параметры со шкалой
+        "wind_10m": 3.0, "wind_925": 4.0, "wind_850": 5.0,
+        "gust_factor": 1.15, "gust_delta": 1.0,
+        "dir_offset": 10.0,
+        "w_star": 2.5, "bl_depth": 1500.0, "thermal_index": -4.0,
+        "cape": 200.0, "lifted_index": 3.0,
+        "cloud_low": 20.0, "base_clearance": 800.0,
+        "precip_prob": 0.0, "visibility": 30000.0,
+        "shear_100m": 1.5, "spread": 5.0, "window_hours": 6.0,
+        # входы правил, у которых нет собственной шкалы
+        "precip_mm": 0.0, "cin": 100.0, "wind_at_base": 6.0,
+        "base_over_route": 500.0, "dir_misalign": 10.0,
+    }
+    raw.update(overrides)
+    return raw
+
+
 def site(**overrides):
     """A saved-site dict as engine functions expect it (south-facing, 1500 m)."""
     s = {"name": "Тест", "lat": 42.0, "lon": 44.0, "elevation_m": 1500,
