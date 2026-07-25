@@ -198,6 +198,88 @@ def daylight_idx(times, sunrise, sunset):
     lo, hi = hour_of(sunrise), hour_of(sunset)
     return [i for i, t in enumerate(times) if lo <= hour_of(t) <= hi]
 
+# ---------------------------------------------------------------- sun geometry
+# The launch aspect is a fixed number, but the sun moves: an eastern slope heats in the
+# morning, a southern one at midday, a western one in the evening. Without these numbers
+# the LLM treats every daylight hour as equally thermic and flags "risks" at sunrise.
+# All of it is local compute from lat + date + the sunrise/sunset already in the response.
+SLOPE_DEG      = 25.0   # assumed launch steepness when the site doesn't specify slope_deg
+SUN_MIN_ELEV   = 12.0   # sun lower than this: heating too weak for workable thermals
+SLOPE_LIT_MIN  = 0.15   # cos(incidence) below this: the slope face is effectively in shade
+THERMAL_LAG_H  = 2      # thermals need ~2h of sun after sunrise to break off
+THERMAL_LEAD_H = 1      # the last hour before sunset is already collapsing
+
+
+def _declination(date_iso):
+    """Solar declination (deg) for a date — Cooper's day-of-year approximation."""
+    n = dt.date.fromisoformat(date_iso[:10]).timetuple().tm_yday
+    return 23.45 * math.sin(math.radians(360.0 * (284 + n) / 365.0))
+
+
+def _clock_h(iso):
+    """ISO local time → hours as a float (05:47 → 5.783)."""
+    return int(iso[11:13]) + int(iso[14:16]) / 60.0
+
+
+def sun_position(lat, dec, hour_angle):
+    """(elevation, azimuth) in degrees for a solar hour angle (0 = solar noon,
+    negative = morning). Azimuth is measured from north, clockwise (90 = east)."""
+    la, d, h = map(math.radians, (lat, dec, hour_angle))
+    sin_el = math.sin(la) * math.sin(d) + math.cos(la) * math.cos(d) * math.cos(h)
+    el = math.asin(max(-1.0, min(1.0, sin_el)))
+    sin_az = -math.cos(d) * math.sin(h)
+    cos_az = (math.sin(d) - math.sin(la) * math.sin(el)) / (math.cos(la) * math.cos(el) or 1e-9)
+    return math.degrees(el), math.degrees(math.atan2(sin_az, cos_az)) % 360
+
+
+def slope_sun_index(sun_elev, sun_az, aspect_deg, slope_deg=SLOPE_DEG):
+    """How directly the sun hits the launch slope: cos of the incidence angle, 0–1.
+    1 = perpendicular to the face (maximum heating), 0 = the face gets no direct sun.
+    None when the aspect is unknown (ad-hoc point)."""
+    if aspect_deg is None:
+        return None
+    if sun_elev <= 0:
+        return 0.0
+    el, sl = math.radians(sun_elev), math.radians(slope_deg)
+    c = (math.cos(sl) * math.sin(el)
+         + math.sin(sl) * math.cos(el) * math.cos(math.radians(sun_az - aspect_deg)))
+    return round(max(0.0, c), 2)
+
+
+def sun_hours(date_iso, lat, sunrise, sunset, hours, aspect_deg, slope_deg=SLOPE_DEG):
+    """Per-hour sun geometry over `hours` (local clock hours), plus the derived
+    thermal window. Solar noon is the sunrise/sunset midpoint, so no timezone math
+    is needed — the API already returns everything in the site's local time."""
+    dec = _declination(date_iso)
+    noon = (_clock_h(sunrise) + _clock_h(sunset)) / 2.0
+    rows = []
+    for h in hours:
+        el, az = sun_position(lat, dec, 15.0 * (h + 0.5 - noon))  # mid-hour sample
+        rows.append({"hour": h, "sun_elev_deg": round(el), "sun_az_deg": round(az),
+                     "slope_sun_index": slope_sun_index(el, az, aspect_deg, slope_deg)})
+    lit = [r for r in rows if r["sun_elev_deg"] >= SUN_MIN_ELEV
+           and (r["slope_sun_index"] is None or r["slope_sun_index"] >= SLOPE_LIT_MIN)]
+    window = None
+    if lit:
+        lo = max(int(_clock_h(sunrise)) + THERMAL_LAG_H, lit[0]["hour"])
+        hi = min(int(_clock_h(sunset)) - THERMAL_LEAD_H, lit[-1]["hour"])
+        if lo <= hi:
+            best = max(lit, key=lambda r: (r["slope_sun_index"] if r["slope_sun_index"] is not None
+                                           else r["sun_elev_deg"]))
+            window = {"start_hour": lo, "end_hour": hi, "peak_hour": best["hour"],
+                      "solar_noon": f"{int(noon):02d}:{round((noon % 1) * 60):02d}"}
+    return rows, window
+
+
+def sun_summary(date_iso, site, sunrise, sunset):
+    """Thermal window for one day at a site — used where there is no hourly series
+    (the multi-day overview). Same geometry, evaluated over whole daylight hours."""
+    hours = list(range(int(_clock_h(sunrise)), int(_clock_h(sunset)) + 1))
+    _, window = sun_hours(date_iso, site["lat"], sunrise, sunset, hours,
+                          site.get("aspect_deg"), site.get("slope_deg", SLOPE_DEG))
+    return window
+
+
 def rng_str(vals, unit="", dec=0):
     lo, hi = min(vals), max(vals)
     if dec:
@@ -466,11 +548,16 @@ def facts_1day(data, site):
             row["dir_deg"] = round(H[dr][tmax_i])
         profile.append(row)
 
+    sun_rows, thermal_window = sun_hours(t[0], site["lat"], sr, ss, [hour_of(t[i]) for i in day],
+                                         aspect, site.get("slope_deg", SLOPE_DEG))
+    sun_by_hour = {r["hour"]: r for r in sun_rows}
+
     return {
         "site": {"name": site["name"], "aspect": card(aspect) if aspect is not None else None, "aspect_deg": aspect,
                  "elevation_m": elev, "timezone": data.get("timezone"), "model": model_label(get_model_key())},
         "date": t[0][:10],
         "daylight_hours": f"{hour_of(sr):02d}-{hour_of(ss):02d}",
+        "thermal_window": thermal_window,
         "precip_sum_mm": round(D["precipitation_sum"][0], 1),
         "cape_max": round(max(cape[i] for i in day)),
         "freezing_level_m": round(H["freezing_level_height"][tmax_i]) if has_frz else None,
@@ -481,7 +568,10 @@ def facts_1day(data, site):
         "hourly_daytime": [
             {"time": t[i][11:16], "temp_c": round(temp[i], 1), "wind_ms": round(wind[i], 1),
              "gust_ms": round(gust[i], 1), "dir_deg": round(wdir[i]),
-             "cloud_low_pct": round(clow[i]), "precip_mm": round(precip[i], 2), "cape": round(cape[i])}
+             "cloud_low_pct": round(clow[i]), "precip_mm": round(precip[i], 2), "cape": round(cape[i]),
+             "sun_elev_deg": sun_by_hour[hour_of(t[i])]["sun_elev_deg"],
+             "sun_az_deg": sun_by_hour[hour_of(t[i])]["sun_az_deg"],
+             "slope_sun_index": sun_by_hour[hour_of(t[i])]["slope_sun_index"]}
             for i in day],
         "wind_profile_peak_hour": profile,
     }
@@ -510,6 +600,7 @@ def facts_overview(data, site, rng):
             "wind_dir_window": f"{card(dom)} ({round(dom)}°)",
             "precip_mm": round(D["precipitation_sum"][k], 1),
             "sunshine_h": round(D["sunshine_duration"][k] / 3600.0, 1),
+            "thermal_window": sun_summary(dcode, site, sr, ss),
         })
     return {
         "site": {"name": site["name"], "aspect": card(aspect) if aspect is not None else None, "aspect_deg": aspect,
