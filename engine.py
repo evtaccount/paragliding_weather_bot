@@ -85,10 +85,6 @@ def ensure_sites_file():
 # дублировались литералами в charts и пересказывались текстом в промпте.
 RAIN_DAY = criteria.RAIN_DAY_MM
 RAIN_HR = criteria.RAIN_HR_MM
-# Словесный вердикт по направлению («в лоб / боковой / в спину») — это НЕ шкала
-# скоринга (её ведёт criteria.PARAMS["dir_offset"]), а грубая подпись в карточке.
-DIR_IN = 80          # ≤ столько градусов от экспозиции — ветер в склон
-DIR_TAIL = 110       # ≥ столько — ветер с тыла
 
 RANGE_DAYS = {"1d": 1, "3d": 3, "week": 7, "2weeks": 14}
 # Условие лицензии CC BY 4.0, под которой open-meteo отдаёт данные.
@@ -307,13 +303,27 @@ def rng_str(vals, unit="", dec=0):
     return f"{round(lo)}–{round(hi)}{unit}" if round(lo) != round(hi) else f"{round(lo)}{unit}"
 
 # ---------------------------------------------------------------- assessment
+# Словесный вердикт по направлению идёт по той же шкале, что и скоринг. Своя
+# мягкая шкала (в лоб до 80°) приводила к прямому противоречию внутри одной
+# карточки: ветер под 60° к склону подписывался «в лоб склону ✅», хотя именно
+# он и был лимитирующим фактором, обрушившим день в «нелётный».
+_DIR_WORDS = {
+    "ideal":     ("точно в лоб склону ✅", "in"),
+    "excellent": ("в лоб склону ✅", "in"),
+    "fair":      ("почти в лоб ✅", "in"),
+    "marginal":  ("боковой ⚠️", "cross"),
+    "no_fly":    ("сильно боковой ⚠️", "cross"),
+    "danger":    ("почти в спину ❌", "cross"),
+}
+
+
 def dir_verdict(deg, aspect_deg):
     if aspect_deg is None:  # ad-hoc point — slope orientation unknown
         return "экспозиция неизвестна", "unknown"
     a = ang(deg, aspect_deg)
-    if a <= DIR_IN:  return "в лоб склону ✅", "in"
-    if a >= DIR_TAIL: return "в спину ❌", "tail"
-    return "боковой ⚠️", "cross"
+    if a > 90:  # подветренная сторона — это вето в criteria, не «оговорка»
+        return "в спину ❌", "tail"
+    return _DIR_WORDS[criteria.grade_of("dir_offset", a)]
 
 def _series_available(H, key):
     """True if the hourly variable actually came back (present and not all-null).

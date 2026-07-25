@@ -75,6 +75,22 @@ def test_route_top_veto_is_a_setup_hint_not_permanent_noise():
     assert "route_top_m" not in with_top
 
 
+def test_direction_wording_agrees_with_the_score():
+    """Подпись направления идёт по той же шкале, что и скоринг. Своя мягкая
+    шкала давала прямое противоречие в одной карточке: ветер под 60° к склону
+    подписывался «в лоб склону ✅», хотя именно он и обрушивал день."""
+    assert engine.dir_verdict(180.0, 180.0)[0].endswith("в лоб склону ✅")   # 0°
+    assert engine.dir_verdict(210.0, 180.0)[1] == "in"                      # 30° — ещё в лоб
+    assert engine.dir_verdict(220.0, 180.0)[1] == "cross"                   # 40° — уже боковой
+    assert "в лоб" not in engine.dir_verdict(240.0, 180.0)[0]               # 60° — не «в лоб»
+    assert engine.dir_verdict(300.0, 180.0) == ("в спину ❌", "tail")        # 120° — подветер
+
+    # и в самой карточке подпись не спорит с лимитирующим фактором
+    text, _pngs, _c = _card(om_1day(wind_direction_10m=240.0))
+    assert "в лоб склону" not in text
+    assert "🎯 Ограничивает: отклонение ветра от склона" in text
+
+
 def test_card_reports_vetoed_hours_inside_the_window():
     data = om_1day(precipitation=0.5, precipitation_probability=90.0)
     text, _pngs, _c = _card(data)
