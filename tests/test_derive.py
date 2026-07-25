@@ -26,9 +26,20 @@ def _raw(data, s, hour=13):
 
 # ---------------------------------------------------------------- порывистость
 def test_gust_factor_and_delta():
-    r = _raw(om_1day(wind_speed_10m=5.0, wind_gusts_10m=7.0), site())
+    """Выше опорного ветра отношение считается напрямую: 11,2 / 8,0 = 1,4."""
+    r = _raw(om_1day(wind_speed_10m=8.0, wind_gusts_10m=11.2), site())
     assert r["gust_factor"] == pytest.approx(1.4)
-    assert r["gust_delta"] == pytest.approx(2.0)
+    assert r["gust_delta"] == pytest.approx(3.2)
+
+
+def test_a_lively_but_flyable_thermic_day_is_not_called_unflyable():
+    """4 м/с с порывом 7 (14→25 км/ч) — обычный рабочий день. По сырому
+    отношению 1,75 группа порывов уходила в «нелётно» и топила весь день."""
+    r = _raw(om_1day(wind_speed_10m=4.0, wind_gusts_10m=7.0), site())
+    a = criteria.score_hour(r, 13)
+    assert criteria.grade_of("gust_factor", r["gust_factor"]) == "ideal"
+    assert a.groups["gusts"] == criteria.GRADE_SCORE["fair"]   # решает абсолютный отрыв
+    assert criteria.flyable(a.category)
 
 
 def test_gust_factor_denominator_is_floored_at_the_reference_wind():

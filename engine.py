@@ -80,16 +80,15 @@ def ensure_sites_file():
         os.makedirs(os.path.dirname(SITES) or ".", exist_ok=True)
         shutil.copy(DEFAULT_SITES, SITES)
 
-# ---- paragliding thresholds (m/s) — tune here ----
-WIND_GOOD   = 5.0    # <= calm/comfortable
-WIND_MAX    = 7.0    # > this = no-go on surface wind
-GUST_MAX    = 8.0    # > this gust = alarm
-GUST_SPREAD = 5.0    # gust-wind spread that flags rowdy air
-GUST_STRONG = 11.0   # > this gust = clearly unflyable
-RAIN_DAY    = 0.2    # mm/day -> wet day
-RAIN_HR     = 0.1    # mm/h   -> wet hour
-DIR_IN      = 80     # <= deg from launch aspect = into the slope (good)
-DIR_TAIL    = 110    # >= deg = tail/cross-tail (bad)
+# Пороги живут в criteria.py — здесь только псевдонимы для читаемости.
+# Собственных чисел у engine больше нет: раньше девять констант отсюда
+# дублировались литералами в charts и пересказывались текстом в промпте.
+RAIN_DAY = criteria.RAIN_DAY_MM
+RAIN_HR = criteria.RAIN_HR_MM
+# Словесный вердикт по направлению («в лоб / боковой / в спину») — это НЕ шкала
+# скоринга (её ведёт criteria.PARAMS["dir_offset"]), а грубая подпись в карточке.
+DIR_IN = 80          # ≤ столько градусов от экспозиции — ветер в склон
+DIR_TAIL = 110       # ≥ столько — ветер с тыла
 
 RANGE_DAYS = {"1d": 1, "3d": 3, "week": 7, "2weeks": 14}
 # Условие лицензии CC BY 4.0, под которой open-meteo отдаёт данные.
@@ -183,7 +182,16 @@ H_1D = ("temperature_2m,wind_speed_10m,wind_gusts_10m,wind_direction_10m,cloud_c
         "wind_speed_600hPa,wind_direction_600hPa,geopotential_height_600hPa,"
         "wind_speed_500hPa,wind_direction_500hPa,geopotential_height_500hPa")
 D_1D = "sunrise,sunset,weather_code,temperature_2m_max,temperature_2m_min,wind_speed_10m_max,wind_gusts_10m_max,wind_direction_10m_dominant,precipitation_sum,sunshine_duration"
-H_OV = "temperature_2m,wind_speed_10m,wind_gusts_10m,wind_direction_10m"
+# Обзор считает тем же скорингом, что и день, — просто по меньшему набору полей.
+# Уровни 600/500 гПа и всё, что нужно только карточке дня, сюда не тянем:
+# 14 дней × 24 часа — и лишние серии заметно раздувают ответ.
+H_OV = ("temperature_2m,dew_point_2m,wind_speed_10m,wind_gusts_10m,wind_direction_10m,"
+        "wind_speed_80m,wind_direction_80m,precipitation,precipitation_probability,"
+        "cape,convective_inhibition,cloud_cover_low,boundary_layer_height,shortwave_radiation,"
+        "temperature_850hPa,temperature_700hPa,"
+        "wind_speed_925hPa,wind_direction_925hPa,geopotential_height_925hPa,"
+        "wind_speed_850hPa,wind_direction_850hPa,geopotential_height_850hPa,"
+        "geopotential_height_700hPa")
 D_OV = ("sunrise,sunset,weather_code,temperature_2m_max,temperature_2m_min,wind_speed_10m_max,"
         "wind_gusts_10m_max,wind_direction_10m_dominant,precipitation_sum,precipitation_probability_max,"
         "sunshine_duration,shortwave_radiation_sum")
@@ -306,37 +314,6 @@ def dir_verdict(deg, aspect_deg):
     if a <= DIR_IN:  return "в лоб склону ✅", "in"
     if a >= DIR_TAIL: return "в спину ❌", "tail"
     return "боковой ⚠️", "cross"
-
-def day_status(precip, wind_max, gust_max, dom_dir, aspect_deg):
-    """returns (emoji, label, score)."""
-    _, dc = dir_verdict(dom_dir, aspect_deg)
-    if precip > RAIN_DAY:
-        return "❌", "нелётный (дождь)", 0
-    if gust_max > GUST_STRONG or wind_max > WIND_MAX + 2:
-        return "❌", "нелётный (ветер)", 5
-    bad = 0
-    if wind_max > WIND_MAX: bad += 2
-    if gust_max > GUST_MAX + 2: bad += 2
-    if dc == "tail": bad += 2
-    if dc == "cross": bad += 1
-    if bad >= 3:
-        return "⚠️", "маргинальный", 40
-    if bad >= 1:
-        return "⚠️", "с оговорками", 60
-    return "✅", "лётный", 90
-
-def day_score(precip, wind_max, gust_max, dom_dir, aspect_deg, sunshine_s):
-    s = 100.0
-    if precip > RAIN_DAY: s -= 60
-    s -= precip * 3
-    s -= max(0, wind_max - 3) * 7
-    s -= max(0, gust_max - 5) * 5
-    if aspect_deg is not None:
-        a = ang(dom_dir, aspect_deg)
-        if a >= DIR_TAIL: s -= 30
-        elif a > DIR_IN: s -= 12
-    s += min(sunshine_s / 3600.0, 12) * 1.5  # reward sun (thermals)
-    return s
 
 def _series_available(H, key):
     """True if the hourly variable actually came back (present and not all-null).
@@ -818,10 +795,17 @@ def wind_grid(data, site):
 
 # ---------------------------------------------------------------- report: overview
 def overview_rows(data, site):
-    """Per-day daytime assessment for an overview response: one dict per day with
-    date, status (emoji/label/score) and the headline numbers. Shared by
-    report_overview (card + chart) and the multi-site scan."""
-    D = data["daily"]; H = data["hourly"]; t = H["time"]; aspect = site["aspect_deg"]
+    """Оценка каждого дня обзора — тем же скорингом, что и карточка на день.
+
+    Отдельного «упрощённого» расчёта нет намеренно: обзор запрашивает меньше
+    полей, недостающие параметры приходят как None, и механизм пропусков сам
+    служит регулятором точности. Поэтому балл дня в обзоре может отличаться от
+    балла того же дня, открытого подробно, — там данных больше; `confidence`
+    показывает разницу честно.
+
+    Ключи строки те же, что раньше (их читают bot и charts), плюс category,
+    limiting и confidence."""
+    D = data["daily"]; H = data["hourly"]; t = H["time"]
     rows = []
     for k, dcode in enumerate(D["time"]):
         sr, ss = D["sunrise"][k], D["sunset"][k]
@@ -835,13 +819,13 @@ def overview_rows(data, site):
             dom = wind_from_avg([hdir[i] for i in core], [max(H["wind_speed_10m"][i], 0.3) for i in core])
         else:
             dom = D["wind_direction_10m_dominant"][k]
-        precip = D["precipitation_sum"][k]
-        wc = D["weather_code"][k]; sun = D["sunshine_duration"][k]
-        emoji, label, _ = day_status(precip, max(dt_wind), max(dt_gust), dom, aspect)
-        score = day_score(precip, max(dt_wind), max(dt_gust), dom, aspect, sun)
-        rows.append(dict(date=dcode, emoji=emoji, label=label, score=score,
+        day, _ctx = assess_day(data, site, k)
+        rows.append(dict(date=dcode, emoji=day.emoji, label=day.label,
+                         score=day.score if day.score is not None else 0.0,
+                         category=day.category, limiting=day.limiting_label,
+                         confidence=day.confidence, fly_window=day.fly_window,
                          tmax=max(dt_temp), wmax=max(dt_wind), gmax=max(dt_gust),
-                         dom=dom, precip=precip, wc=wc))
+                         dom=dom, precip=D["precipitation_sum"][k], wc=D["weather_code"][k]))
     return rows
 
 
@@ -853,17 +837,24 @@ def report_overview(data, site, rng, out):
     card_lines = [f"🪂 {site['name']}{(' (' + card(aspect) + ')') if aspect is not None else ''} — обзор на {names[rng]}",
                   f"📍 {site['lat']:.3f}, {site['lon']:.3f} · {elev} м · {data.get('timezone','')}",
                   "",
-                  f"🏆 Лучший день: {best['emoji']} {fmt_date(best['date'])} — {WMO.get(best['wc'],'')}, "
-                  f"ветер до {best['wmax']:.0f}, порыв {best['gmax']:.0f} м/с",
+                  f"🏆 Лучший день: {best['emoji']} {fmt_date(best['date'])} — {round(best['score'])}/100, "
+                  f"{WMO.get(best['wc'],'')}, ветер до {best['wmax']:.0f}, порыв {best['gmax']:.0f} м/с"
+                  + (f", окно {best['fly_window'][0]:02d}–{best['fly_window'][1]:02d}"
+                     if best["fly_window"] else ""),
                   "",
                   "По дням (светлое время):"]
     for r in rows:
-        card_lines.append(f"{r['emoji']} {fmt_date(r['date'])} · {r['tmax']:.0f}° · "
+        card_lines.append(f"{r['emoji']} {fmt_date(r['date'])} · {round(r['score']):>3}/100 · {r['tmax']:.0f}° · "
                           f"ветер до {r['wmax']:.0f}, порыв {r['gmax']:.0f} м/с · "
                           f"{card(r['dom'])} · {WMO.get(r['wc'],'')}"
-                          + (f" {r['precip']:.1f}мм" if r["precip"] > RAIN_DAY else ""))
+                          + (f" {r['precip']:.1f}мм" if r["precip"] > RAIN_DAY else "")
+                          + (f" · ограничивает {r['limiting']}" if r["limiting"] else ""))
+    card_lines.append("")
+    card_lines.append(ATTRIBUTION)
     card_text = "\n".join(card_lines)
-    note = "💨 ветер в м/с; T и ветер — за светлое время. Пороги: ≤5 ок · 5–7 маргинал · >7 нет."
+    note = ("💨 ветер в м/с; T и ветер — за светлое время. " + criteria.thresholds_note()
+            + "\nОбзор считает по сокращённому набору полей — открой день подробно, "
+              "там расчёт полнее.")
     from charts import overview_png
     png = overview_png(rows, site, rng, out)
     return card_text + "\n\n" + note, [png], card_text
@@ -957,6 +948,7 @@ def facts_overview(data, site, rng):
             dom = wind_from_avg([hdir[i] for i in core], [max(H["wind_speed_10m"][i], 0.3) for i in core])
         else:
             dom = D["wind_direction_10m_dominant"][k]
+        day_assess, _ctx = assess_day(data, site, k)
         days.append({
             "date": dcode, "weather": WMO.get(D["weather_code"][k], ""),
             "temp_max_c": round(max(dt_temp)), "temp_min_c": round(D["temperature_2m_min"][k]),
@@ -965,11 +957,14 @@ def facts_overview(data, site, rng):
             "precip_mm": round(D["precipitation_sum"][k], 1),
             "sunshine_h": round(D["sunshine_duration"][k] / 3600.0, 1),
             "thermal_window": sun_summary(dcode, site, sr, ss),
+            "assessment": assessment_facts(day_assess),
         })
     return {
         "site": {"name": site["name"], "aspect": card(aspect) if aspect is not None else None, "aspect_deg": aspect,
                  "elevation_m": site["elevation_m"], "timezone": data.get("timezone")},
         "range": rng,
+        "criteria_version": criteria.CRITERIA_VERSION,
+        "fidelity": "обзор — сокращённый набор полей, у дня подробно расчёт полнее",
         "days_daytime": days,
     }
 

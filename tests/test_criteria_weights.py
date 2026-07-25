@@ -61,8 +61,19 @@ def test_ecmwf_shaped_gaps_still_produce_a_score():
     assert a.score is not None and a.category != "no_data"
     assert "shear" not in a.groups
     assert a.groups["thermals"] == 100          # остался только Thermal Index
-    assert a.confidence == pytest.approx(0.94)  # выбыла только группа сдвига
+    # Термичка считается по одному параметру из трёх, грозы и осадки — по одному
+    # из двух, сдвиг выбыл целиком: 0,15×⅓ + 0,12×½ + 0,06×½ + 0 вместо полных весов
+    assert a.confidence == pytest.approx(0.75)
     assert {"shear", "visibility"} <= set(a.unchecked_vetoes)
+
+
+def test_confidence_counts_parameters_not_just_surviving_groups():
+    """Группа «грозы» выживает на одном CAPE без Lifted Index — считать это
+    стопроцентной уверенностью нельзя, иначе строка «критериев посчитано»
+    показывала бы 100% при половине отсутствующих параметров."""
+    a = c.score_hour(_blank("lifted_index"), 13)
+    assert "storms" in a.groups                      # группа жива и участвует в балле
+    assert a.confidence == pytest.approx(1.0 - 0.12 / 2)
 
 
 def test_low_confidence_caps_the_category():

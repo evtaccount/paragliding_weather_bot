@@ -1,7 +1,13 @@
-"""analyze() tries the model chain in order, falling through on failure/empty response."""
+"""analyze() tries the model chain in order, falling through on failure/empty response.
+
+Второй блок — защита от расхождения промпта с расчётом: пороги в промпте должны
+ГЕНЕРИРОВАТЬСЯ из criteria, а не быть переписанными руками. Раньше они были
+вписаны в _REFERENCE текстом и молча расходились с engine при любой правке.
+"""
 import pytest
 
 import analysis
+import criteria
 
 
 class _FakeResp:
@@ -72,3 +78,42 @@ def test_model_chain_default_when_unset(monkeypatch):
     monkeypatch.delenv("GEMINI_MODELS", raising=False)
     monkeypatch.delenv("GEMINI_MODEL", raising=False)
     assert analysis._model_chain() == analysis._DEFAULT_MODELS
+
+
+# ---------------------------------------------------------------- защита от расхождения
+def test_prompt_embeds_the_generated_threshold_block():
+    assert criteria.reference_text() in analysis._REFERENCE
+
+
+def test_prompt_carries_the_real_numbers():
+    """Если кто-то снова впишет пороги руками, тест упадёт на первой же правке таблицы."""
+    text = analysis._ANALYSIS
+    assert str(criteria.TRIM_MS) in text                     # 10.6 — вето по ветру
+    assert "1.70" in text or "1.7" in text                   # порог порывистости
+    assert f"{criteria.GROUPS['wind'].weight:.2f}" in text   # 0.22 — вес группы ветра
+    for rule in criteria.VETOES:
+        assert rule.label in text, f"вето «{rule.label}» пропало из промпта"
+
+
+def test_prompt_forbids_overriding_the_deterministic_score():
+    text = analysis._ANALYSIS
+    assert "источник истины" in text
+    assert "unchecked_vetoes" in text
+    assert "ОЦЕНКА" in text, "W* должен быть назван оценкой, а не измерением"
+
+
+def test_analyze_sends_the_reference_block(monkeypatch):
+    captured = {}
+
+    class _Models:
+        def generate_content(self, model, contents, config):
+            captured["prompt"] = contents
+            return _FakeResp("ОК")
+
+    class _Client:
+        models = _Models()
+
+    monkeypatch.setattr(analysis, "_get_client", lambda: _Client())
+    monkeypatch.setenv("GEMINI_MODELS", "m1")
+    analysis.analyze({"assessment": {"score": 70}}, "1d")
+    assert criteria.reference_text() in captured["prompt"]

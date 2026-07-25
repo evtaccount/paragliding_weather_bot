@@ -379,10 +379,11 @@ def overview_png(rows, site, rng, out):
     gmax = max(max(r["gmax"] for r in rows) + 1, 6)
     slot = (x1 - x0) / n; bw = min(slot * 0.5, S(70))
     yf = lambda v: y1 - (y1 - y0) * v / gmax
-    colFor = lambda e: RAIN if e == "❌" else (WARN if e == "⚠️" else GOOD)
+    # цвет — по категории дня из скоринга; раньше он разбирался из строки эмодзи,
+    # где ⚠️ означал сразу два разных вердикта
     names = {"3d": "3 дня", "week": "неделю", "2weeks": "2 недели"}
     d.text((S(36), S(28)), f"{site['name']} — обзор на {names[rng]}", font=_font(24, True), fill=INK, anchor="lm")
-    d.text((S(36), S(56)), "Высота столбца — макс. порыв за светлое время (м/с); цвет — пригодность",
+    d.text((S(36), S(56)), "Высота столбца — макс. порыв за светлое время (м/с); цвет и число — балл дня",
            font=_font(13), fill=MUTED, anchor="lm")
     for gv in range(0, int(gmax) + 1, 2):
         yy = yf(gv); d.line([x0, yy, x1, yy], fill=GRID, width=1)
@@ -393,10 +394,11 @@ def overview_png(rows, site, rng, out):
         cx = x0 + slot * (i + 0.5); bx0 = cx - bw / 2; yy = yf(r["gmax"])
         if i == best:
             d.rounded_rectangle([bx0 - S(4), yy - S(4), cx + bw/2 + S(4), y1], radius=S(6), outline=BEST, width=S(2))
-        d.rounded_rectangle([bx0, yy, cx + bw / 2, y1], radius=S(4), fill=colFor(r["emoji"]) + (235,))
+        col = GRADE_RGB.get(r.get("category"), MUTED)
+        d.rounded_rectangle([bx0, yy, cx + bw / 2, y1], radius=S(4), fill=col + (235,))
         d.text((cx, yy - S(10)), f"{r['gmax']:.0f}", font=_font(13, True), fill=INK, anchor="mm")
         d.text((cx, y1 + S(18)), lab(r["date"]), font=_font(12, True), fill=INK, anchor="mm")
-        d.text((cx, y1 + S(36)), r["label"].split()[0], font=_font(11), fill=MUTED, anchor="mm")
-        tail = f"{r['tmax']:.0f}°" + (f" · {r['precip']:.1f}мм" if r["precip"] > 0.2 else "")
+        d.text((cx, y1 + S(36)), f"{round(r['score'])}/100", font=_font(12, True), fill=col, anchor="mm")
+        tail = f"{r['tmax']:.0f}°" + (f" · {r['precip']:.1f}мм" if r["precip"] > _criteria.RAIN_DAY_MM else "")
         d.text((cx, y1 + S(52)), tail, font=_font(11), fill=FAINT, anchor="mm")
     return _save(img, out, "04_overview.png")

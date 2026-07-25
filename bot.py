@@ -208,9 +208,11 @@ def _scan_message(result: dict) -> tuple[str, InlineKeyboardMarkup | None]:
         for r in s["days"]:
             d = dt.date.fromisoformat(r["date"])
             day = f"{_WD[d.weekday()]} {d.day:02d}.{d.month:02d}"
-            lines.append(f"  {r['emoji']} {day} · до {r['wmax']:.0f}, порыв {r['gmax']:.0f} м/с · "
-                         f"{engine.card(r['dom'])} · {engine.WMO.get(r['wc'], '')}"
-                         + (f" {r['precip']:.1f}мм" if r["precip"] > engine.RAIN_DAY else ""))
+            lines.append(f"  {r['emoji']} {day} · {round(r['score'])}/100 · до {r['wmax']:.0f}, "
+                         f"порыв {r['gmax']:.0f} м/с · {engine.card(r['dom'])} · "
+                         f"{engine.WMO.get(r['wc'], '')}"
+                         + (f" {r['precip']:.1f}мм" if r["precip"] > engine.RAIN_DAY else "")
+                         + (f" · ограничивает {r['limiting']}" if r.get("limiting") else ""))
             btn = _btn(f"{r['emoji']} {day} · {s['name']}", f"pd|{s['name']}|{r['date']}")
             if btn is not None:
                 rows.append([btn])
