@@ -1,45 +1,15 @@
 """engine.wind_grid: altitude × hour wind table extracted from the 1d response."""
 import engine
-
-
-def _day_data():
-    """One-day open-meteo-shaped response, hours 04..20, with pressure-level winds.
-    Geopotential heights are constant across hours here (real data varies slightly)."""
-    hours = [f"2026-07-25T{h:02d}:00" for h in range(24)]
-    n = len(hours)
-
-    def const(v):
-        return [v] * n
-
-    return {
-        "timezone": "Asia/Tbilisi",
-        "daily": {"time": ["2026-07-25"], "sunrise": ["2026-07-25T05:00"],
-                  "sunset": ["2026-07-25T20:00"]},
-        "hourly": {
-            "time": hours,
-            "wind_speed_10m": const(2.0), "wind_direction_10m": const(180.0),
-            "wind_speed_925hPa": const(3.0), "wind_direction_925hPa": const(190.0),
-            "geopotential_height_925hPa": const(760.0),
-            "wind_speed_850hPa": const(4.0), "wind_direction_850hPa": const(200.0),
-            "geopotential_height_850hPa": const(1500.0),
-            "wind_speed_700hPa": const(6.0), "wind_direction_700hPa": const(210.0),
-            "geopotential_height_700hPa": const(3000.0),
-            "wind_speed_600hPa": const(9.0), "wind_direction_600hPa": const(220.0),
-            "geopotential_height_600hPa": const(4200.0),
-            "wind_speed_500hPa": const(13.0), "wind_direction_500hPa": const(230.0),
-            "geopotential_height_500hPa": const(5600.0),
-        },
-    }
+from fixtures import om_1day as _day_data, site
 
 
 def _high_site():  # launch above 850hPa — 925/850 are below launch
-    return {"name": "Гудаури", "lat": 42.47, "lon": 44.48,
-            "elevation_m": 2685, "aspect": "Ю", "aspect_deg": 180.0, "notes": ""}
+    return site(name="Гудаури", lat=42.47, lon=44.48, elevation_m=2685)
 
 
 def _low_site():  # launch below every pressure level
-    return {"name": "Лалискури", "lat": 42.1, "lon": 45.3,
-            "elevation_m": 400, "aspect": "ЮЗ", "aspect_deg": 225.0, "notes": ""}
+    return site(name="Лалискури", lat=42.1, lon=45.3, elevation_m=400,
+                aspect="ЮЗ", aspect_deg=225.0)
 
 
 def test_wind_grid_hours_are_daylight_hourly():
