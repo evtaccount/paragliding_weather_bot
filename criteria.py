@@ -408,10 +408,12 @@ class DayAssessment:
     label: str
     limiting: str | None = None
     limiting_label: str | None = None
-    fly_window: tuple | None = None      # (час_начала, час_конца) лётных часов внутри окна
+    fly_hours: list = field(default_factory=list)   # лётные часы ВНУТРИ термического окна
+    fly_window: tuple | None = None      # (час_начала, час_конца) по fly_hours
     confidence: float = 0.0
     warnings: list = field(default_factory=list)
     unchecked_vetoes: list = field(default_factory=list)
+    vetoes_in_window: list = field(default_factory=list)
 
 
 def grade_of(param_key, value):
@@ -581,9 +583,13 @@ def score_day(date, hours, window):
         d.limiting = max(set(lims), key=lims.count)
         d.limiting_label = PARAMS[d.limiting].label
 
-    fly = [h.hour for h in in_window if flyable(h.category)]
-    if fly:
-        d.fly_window = (min(fly), max(fly))
+    # Лётные часы считаются ТОЛЬКО внутри термического окна: вне его склон не
+    # греет, и спокойный штиль в 06:00 — это ночной сток, а не лётное окно.
+    # И карточка, и полоса на метеограмме берут этот список, а не фильтруют
+    # часы сами — иначе график рисовал бы окно с рассвета, а текст с 07:00.
+    d.fly_hours = sorted(h.hour for h in in_window if flyable(h.category))
+    if d.fly_hours:
+        d.fly_window = (d.fly_hours[0], d.fly_hours[-1])
 
     seen = set()
     for h in scored:
@@ -592,6 +598,7 @@ def score_day(date, hours, window):
                 seen.add(w)
                 d.warnings.append(w)
     d.unchecked_vetoes = sorted({v for h in scored for v in h.unchecked_vetoes})
+    d.vetoes_in_window = sorted({v for h in in_window for v in h.vetoes})
     return d
 
 

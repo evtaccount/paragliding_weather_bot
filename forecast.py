@@ -207,8 +207,11 @@ async def _fetch_build(site: dict, rng: str, date: str | None):
     out = tempfile.mkdtemp(prefix="pgfc_")
     try:
         if rng == "1d":
-            fallback, png_paths, card = engine.report_1day(data, site, out)
-            facts = engine.facts_1day(data, site)
+            # один расчёт лётности на карточку, графики и данные для LLM —
+            # иначе три места считали бы его независимо и могли разойтись
+            assessment = engine.assess_day(data, site)
+            fallback, png_paths, card = engine.report_1day(data, site, out, assessment)
+            facts = engine.facts_1day(data, site, assessment)
             rows = []
             grid = engine.wind_grid(data, site)
         else:

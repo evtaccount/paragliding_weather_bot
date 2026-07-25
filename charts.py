@@ -4,6 +4,8 @@ import math
 import os
 from PIL import Image, ImageDraw, ImageFont
 
+import criteria as _criteria
+
 SS = 2  # supersampling for anti-aliasing
 
 # ---- validated light palette (surface #fcfcfb) ----
@@ -83,7 +85,7 @@ def _daylight(times, sr, ss, pad=1):
     return idx, lo, hi
 
 # ---------------------------------------------------------------- meteogram
-def meteogram_png(data, site, out):
+def meteogram_png(data, site, out, assess=None):
     H, D = data["hourly"], data["daily"]
     t = H["time"]; sr, ss = D["sunrise"][0], D["sunset"][0]
     idx, h0, h1 = _daylight(t, sr, ss)
@@ -101,19 +103,13 @@ def meteogram_png(data, site, out):
     d.text((S(40), S(28)), f"{site['name']} — метеограмма {t[0][:10]}", font=_font(24, True), fill=INK, anchor="lm")
     d.text((S(40), S(56)), f"Светлое время {srh:02d}–{ssh:02d} · ветер в м/с, стрелки — откуда · {data.get('timezone','')}",
            font=_font(13), fill=MUTED, anchor="lm")
-    # flyable window — same criteria as the engine (incl. direction into the slope),
-    # but only within the thermal window (sun actually heating the slope — engine.sun_hours),
-    # and drawn as separate contiguous runs so a calm morning + calm evening don't merge
-    # into one band across an unflyable, gusty midday.
-    asp = site.get("aspect_deg")
-    from engine import sun_hours, SLOPE_DEG
-    _, tw = sun_hours(t[0], site["lat"], sr, ss, [_hour(t[i]) for i in idx if srh <= _hour(t[i]) <= ssh],
-                      asp, site.get("slope_deg", SLOPE_DEG))
-    fly = sorted(h for h, i in zip(hrs, idx)
-                 if tw and tw["start_hour"] <= h <= tw["end_hour"]
-                 and H["wind_speed_10m"][i] <= 7 and H["wind_gusts_10m"][i] <= 8
-                 and H["precipitation"][i] < 0.1
-                 and (asp is None or _ang(H["wind_direction_10m"][i], asp) < 110))
+    # Лётное окно берётся из ГОТОВОЙ оценки (engine.assess_day → criteria), а не
+    # пересчитывается здесь по своим порогам: раньше карточка и график считали
+    # лётность независимо, совпадали по случайности и разъезжались от любой правки.
+    if assess is None:
+        from engine import assess_day
+        assess, _ctx = assess_day(data, site)
+    fly = assess.fly_hours
     segs = []
     for h in fly:
         if segs and h == segs[-1][-1] + 1:
