@@ -7,6 +7,7 @@
 import math
 import re
 import xml.etree.ElementTree as ET
+from dataclasses import dataclass, field
 
 MIN_POINTS = 2
 MAX_POINTS = 50           # потолок числа точек на входе
@@ -166,3 +167,117 @@ def parse_gpx(data):
         if points:
             return _checked_count(_thin(points, MAX_POINTS)), name
     raise RouteError("в GPX нет ни маршрута, ни трека, ни путевых точек")
+
+
+# ---------------------------------------------------------------- геометрия
+EARTH_R_M = 6371008.8          # средний радиус Земли (IUGG)
+SAMPLE_STEP_KM = 10.0          # разрешение глобальных моделей open-meteo — 9–11 км;
+                               # точки чаще сетки дают ложную детализацию
+MAX_SAMPLES = 50               # потолок числа погодных сэмплов
+SITE_MATCH_KM = 2.0            # радиус сопоставления точки с сохранённым стартом
+
+
+def haversine(a, b):
+    """(расстояние в метрах, начальный пеленг в градусах) между двумя точками."""
+    f1, f2 = math.radians(a.lat), math.radians(b.lat)
+    df = f2 - f1
+    dl = math.radians(b.lon - a.lon)
+    h = math.sin(df / 2) ** 2 + math.cos(f1) * math.cos(f2) * math.sin(dl / 2) ** 2
+    dist = 2 * EARTH_R_M * math.asin(min(1.0, math.sqrt(h)))
+    y = math.sin(dl) * math.cos(f2)
+    x = math.cos(f1) * math.sin(f2) - math.sin(f1) * math.cos(f2) * math.cos(dl)
+    return dist, (math.degrees(math.atan2(y, x)) + 360.0) % 360.0
+
+
+@dataclass
+class Sample:
+    """Точка, в которой запрашивается погода. Поля после `track_bearing_deg`
+    дозаполняются последующими шагами конвейера."""
+    km: float
+    lat: float
+    lon: float
+    name: str | None = None
+    role: str = "enroute"              # takeoff | enroute | goal
+    is_turnpoint: bool = False
+    leg_length_km: float = 0.0         # доля маршрута, которую представляет сэмпл
+    track_bearing_deg: float = 0.0
+    terrain_m: float | None = None
+    terrain_point_m: float | None = None
+    is_terrain_peak: bool = False
+    cloud_base_m: float | None = None
+    working_band_m: float | None = None
+    wind_kmh: float | None = None
+    wind_dir_deg: float | None = None
+    wind_along_kmh: float | None = None
+    wind_cross_kmh: float | None = None
+    eta_h: float | None = None
+    eta_fixed_h: float | None = None
+    gs_kmh: float | None = None
+    crab_limited: bool = False
+    window: dict | None = None
+    time_margin_min: float | None = None
+    w_star_ms: float | None = None
+    site_match: str | None = None
+    weather: dict = field(default_factory=dict)
+
+
+def _lerp_point(a, b, f):
+    """Точка на доле f отрезка. Линейно по широте и долготе: на плече до 100 км
+    отклонение от дуги большого круга меньше 100 м, то есть на порядок меньше
+    шага погодной сетки."""
+    return Point(a.lat + (b.lat - a.lat) * f, a.lon + (b.lon - a.lon) * f)
+
+
+def _set_leg_lengths(samples):
+    """Каждому сэмплу — половина расстояния до соседа слева и справа; концам
+    только их половина. Сумма при этом ровно равна длине маршрута, и её можно
+    использовать как вес при усреднении по маршруту (спека 2)."""
+    for i, s in enumerate(samples):
+        left = (s.km - samples[i - 1].km) / 2 if i > 0 else 0.0
+        right = (samples[i + 1].km - s.km) / 2 if i < len(samples) - 1 else 0.0
+        s.leg_length_km = left + right
+
+
+def resample(points, step_km=SAMPLE_STEP_KM, max_samples=MAX_SAMPLES):
+    """Точки маршрута → погодные сэмплы. Возвращает (сэмплы, фактический шаг).
+
+    Поворотные точки включаются всегда, даже если их одних уже `max_samples`;
+    промежуточные добираются только до потолка. Шаг считается один раз, а не
+    подбирается циклом, — так результат детерминирован.
+    """
+    legs = []
+    for a, b in zip(points, points[1:]):
+        d, brg = haversine(a, b)
+        legs.append((a, b, d / 1000.0, brg))
+    total_km = sum(leg[2] for leg in legs)
+    # Свободных мест под промежуточные точки может не остаться вовсе — тогда шаг
+    # бесконечен и добора не будет, а наружу уйдёт фактическое среднее расстояние
+    # между сэмплами.
+    free = max_samples - len(points)
+    step = max(step_km, total_km / (free + 1)) if free > 0 else math.inf
+
+    samples, km = [], 0.0
+    for a, b, length, brg in legs:
+        samples.append(Sample(km=km, lat=a.lat, lon=a.lon, name=a.name,
+                              is_turnpoint=True, track_bearing_deg=brg))
+        # Число интервалов — БЛИЖАЙШЕЕ целое, а не округление вверх: плечо ровно
+        # в восемь шагов длиннее восьми шагов на доли метра, и ceil дал бы
+        # девятый интервал на ровном месте.
+        n_inner = 0 if math.isinf(step) else max(1, round(length / step)) - 1
+        for k in range(1, n_inner + 1):
+            f = k / (n_inner + 1)
+            p = _lerp_point(a, b, f)
+            samples.append(Sample(km=km + length * f, lat=p.lat, lon=p.lon,
+                                  track_bearing_deg=brg))
+        km += length
+    last = points[-1]
+    samples.append(Sample(km=km, lat=last.lat, lon=last.lon, name=last.name,
+                          is_turnpoint=True,
+                          track_bearing_deg=legs[-1][3] if legs else 0.0))
+
+    samples[0].role = "takeoff"
+    samples[-1].role = "goal"
+    _set_leg_lengths(samples)
+    if math.isinf(step):
+        step = total_km / (len(samples) - 1) if len(samples) > 1 else total_km
+    return samples, step
