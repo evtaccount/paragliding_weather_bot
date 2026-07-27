@@ -524,3 +524,101 @@ def march(samples, speed_kmh, wind_for_segment, departure_h):
         samples[i + 1].eta_h = samples[i].eta_h + leg / gs
         samples[i + 1].gs_kmh = gs
         samples[i + 1].crab_limited = limited
+
+
+# ---------------------------------------------------------------- карточка
+CARD_WIDTH = 32                # шире Telegram переносит моноширинный блок на телефоне
+CAPE_WATCH = 800.0             # с этого значения гроза стоит отдельной строки
+LI_WATCH = -2.0
+
+
+def _signed(v):
+    """Число со знаком минус-тире, без выравнивания: «+330», «−25»."""
+    return "н/д" if v is None else f"{'−' if v < 0 else '+'}{abs(v):.0f}"
+
+
+def _plural(n, one, few, many):
+    """«1 точка», «3 точки», «5 точек» — иначе карточка читается как машинный вывод."""
+    n = abs(int(n))
+    if n % 10 == 1 and n % 100 != 11:
+        return one
+    if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14:
+        return few
+    return many
+
+
+def _rows(points):
+    """Колонки: километр, время, МОДУЛЬ составляющей вдоль курса (знак несёт
+    стрелка), абсолютный ветер на рабочей высоте, оценка силы потоков."""
+    out = [" км  время  вдоль  ветер  поток"]
+    for p in points:
+        along = p.get("wind_along_kmh")
+        arrow = " " if along is None else ("→" if along >= 0 else "←")
+        along_txt = " н/д" if along is None else f"{abs(along):3.0f}"
+        deg, spd = p.get("wind_working_alt_dir"), p.get("wind_working_alt_kmh")
+        wind = "   н/д" if deg is None or spd is None else f"{engine.card(deg):>3} {spd:2.0f}"
+        w = "  —" if p.get("w_star_ms") is None else f"{p['w_star_ms']:3.1f}"
+        eta = p["eta"] or "  —  "      # None = расчёт оборвался на границе суток
+        out.append(f"{p['km']:3.0f}  {eta}  {arrow}{along_txt}  {wind}  {w}")
+    return out
+
+
+def _eta_gap_min(points):
+    """Расхождение времён прилёта в минутах; 0, если сравнивать не с чем."""
+    last = points[-1] if points else {}
+    if not last.get("eta") or not last.get("eta_fixed"):
+        return 0
+
+    def mins(hhmm):
+        h, m = hhmm.split(":")
+        return int(h) * 60 + int(m)
+
+    return abs(mins(last["eta"]) - mins(last["eta_fixed"]))
+
+
+def render_card(profile):
+    """Текстовая карточка маршрута. Только погода и время — высот здесь нет."""
+    r, pts = profile["route"], profile["points"]
+    n = len(pts)
+    word = _plural(n, "точка", "точки", "точек")
+    head = [f"🗺 {r['name']}",
+            f"{r['total_km']:.0f} км · {n} {word} · {engine.fmt_date(r['date'])}",
+            ""]
+    if pts and pts[-1]["eta"]:
+        head.append(f"⏱ Вылет {r['departure']} → прилёт ~{pts[-1]['eta']}")
+    else:
+        head.append(f"⏱ Вылет {r['departure']}")
+        head.append("   Прилёт за пределами суток")
+    head.append("")
+    tail = [""]
+
+    margins = [p.get("time_margin_min") for p in pts if p.get("time_margin_min") is not None]
+    if margins:
+        tail.append("⏳ Запас окна, мин:")
+        tail.append(f"   старт {_signed(margins[0])} · финиш {_signed(margins[-1])}")
+
+    wet = [p for p in pts if (p["weather"].get("precipitation") or 0) > 0]
+    if wet:
+        mm = max(p["weather"]["precipitation"] for p in wet)
+        tail.append(f"🌧 {wet[0]['km']:.0f}–{wet[-1]['km']:.0f} км: осадки "
+                    f"{mm:.1f} мм".replace(".", ","))
+
+    storm = [p for p in pts
+             if (p["weather"].get("cape") or 0) >= CAPE_WATCH
+             or (p["weather"].get("lifted_index") is not None
+                 and p["weather"]["lifted_index"] <= LI_WATCH)]
+    if storm:
+        p = storm[0]
+        tail.append(f"⚡ {p['km']:.0f} км: CAPE {p['weather']['cape']:.0f}, "
+                    f"LI {p['weather']['lifted_index']:.1f}".replace(".", ","))
+
+    if _eta_gap_min(pts) > ETA_WARN_MIN:
+        tail.append("⚠️ Без учёта ветра прилёт был бы")
+        tail.append(f"   в {pts[-1]['eta_fixed']} — раньше на "
+                    f"{_eta_gap_min(pts):.0f} мин")
+
+    tail.extend(profile.get("notes") or [])
+    cnt = r["sample_count"]
+    tail.append(f"📊 {cnt} {_plural(cnt, 'точка', 'точки', 'точек')} · "
+                f"шаг {r['sample_step_km']:.0f} км · {r['model'].split(' ')[0]}")
+    return "\n".join(head + _rows(pts) + tail)
