@@ -380,7 +380,7 @@ async def get_route(points, name, date, departure=None) -> dict
     "wind_along_kmh", "wind_cross_kmh",
     "wind_working_alt_kmh", "wind_working_alt_dir",
     "effective_ground_speed_kmh", "crab_limited",
-    "window",              # {"open_hour": int, "close_hour": int} либо None
+    "window",              # {"start_hour": int, "end_hour": int} либо None
     "time_margin_min",     # None, если окна нет
     "site_match",          # имя сохранённого старта в радиусе 2 км, иначе None
     "weather": {...},      # переменные open-meteo на момент прибытия

@@ -10,6 +10,7 @@ to the deterministic rule text if Gemini is unavailable.
 Gemini only reasons over real data; it never invents numbers.
 """
 import asyncio
+import copy
 import datetime as dt
 import logging
 import os
@@ -42,6 +43,7 @@ _terrain_cache: dict[tuple, list] = {}
 _TERRAIN_CACHE_MAX = 64
 _rcache: dict[tuple, tuple] = {}
 ELEVATION_CHUNK = 100          # документированный потолок Elevation API
+DEPARTURE_STEP_H = 0.5         # шаг скана времени вылета
 ROUTE_HORIZON_DAYS = 15        # open-meteo отдаёт прогноз примерно на 16 суток вперёд
 
 
@@ -373,11 +375,16 @@ def _hhmm(hour):
 
 
 def _nearest_site(sample, sites):
-    for name, site in sites.items():
+    """Сохранённый старт в радиусе SITE_MATCH_KM или None.
+
+    Нужен ради экспозиции: у совпавшей точки начинает работать критерий
+    направления ветра к склону, который для точки в воздухе не определён.
+    """
+    for site in sites.values():
         d, _ = route.haversine(route.Point(sample.lat, sample.lon),
                                route.Point(site["lat"], site["lon"]))
         if d / 1000.0 <= route.SITE_MATCH_KM:
-            return name
+            return site
     return None
 
 
@@ -415,48 +422,84 @@ def _point_dict(s):
         "window": s.window,
         "time_margin_min": None if s.time_margin_min is None else round(s.time_margin_min),
         "w_star_ms": s.w_star_ms, "site_match": s.site_match, "weather": s.weather,
+        "profile": s.role,
+        "score": None if s.assessment is None else s.assessment.score,
+        "category": None if s.assessment is None else s.assessment.category,
+        "limiting": None if s.assessment is None else s.assessment.limiting_label,
+        "vetoes": [] if s.assessment is None else criteria.veto_labels(s.assessment.vetoes),
+        "storm_ahead": s.storm_ahead,
     }
 
 
-async def get_route(points, name, date, departure_h=None):
-    """Профиль маршрута: два запроса, кэш, все маршрутные величины. Без скоринга."""
-    _check_date(date)
-    cfg = settings.get()
-    speed = cfg["avg_route_speed_kmh"]
-    samples, step = route.resample(points)
-    total_km = samples[-1].km
-    notes = []
-    if step > route.SAMPLE_STEP_KM + 0.01:
-        notes.append(f"Маршрут длинный: шаг увеличен до {step:.0f} км")
+def _profile_for(sample):
+    return criteria.PROFILES[sample.role]
 
-    grid = route.terrain_grid(points, total_km)
-    elev = await _ensure_terrain(grid)
-    if elev is None:
-        notes.append("Рельеф недоступен — рабочий диапазон не посчитан")
-    route.attach_terrain(samples, grid, elev, step_km=step)
 
-    bodies = await _ensure_route_weather(samples, date)
-    sites = {s["name"]: s for s in engine.load_sites()}
+def _raw_for(sample, body, date):
+    """Входы критериев для одной точки.
 
-    # окно термической активности в каждой точке — нужно ДО расчёта времени,
-    # потому что вылет по умолчанию берётся из окна первой точки
+    Срез погоды на момент прилёта уже посчитан спекой 1 (с интерполяцией и с
+    «худшим из двух часов» для осадков). Из него собирается синтетический блок
+    из одного часа, и по нему зовётся существующая engine.derive_hour — так ни
+    одна формула производных величин не дублируется, а интерполяция не теряется.
+    """
+    synth = {k: [v] for k, v in sample.weather.items()}
+    hour = int(sample.eta_h)
+    synth["time"] = [f"{date}T{hour:02d}:00"]
+    D = body["daily"]
+    elev = _elev_of(sample, body)
+    site = {"name": sample.name or "точка", "lat": sample.lat, "lon": sample.lon,
+            "elevation_m": elev, "aspect_deg": sample.site_aspect_deg,
+            "slope_deg": engine.SLOPE_DEG}
+    ctx = {"date": date, "sunrise": D["sunrise"][0], "sunset": D["sunset"][0],
+           "daylight_idx": [0], "thermal_window": sample.window}
+
+    raw = engine.derive_hour(synth, 0, site, ctx)
+    raw["wind_along"] = sample.wind_along_kmh
+    raw["wind_cross"] = None if sample.wind_cross_kmh is None else abs(sample.wind_cross_kmh)
+    raw["working_band"] = sample.working_band_m
+    raw["time_margin"] = sample.time_margin_min
+    raw["wind_working"] = None if sample.wind_kmh is None else sample.wind_kmh / route.MS_TO_KMH
+    raw["ground_speed"] = sample.gs_kmh
+    if sample.role == "enroute":
+        # На маршруте вето по ветру проверяется по среднему ветру рабочего слоя,
+        # а не по ветру на базе: пилот весь переход идёт именно в этом слое.
+        raw["wind_at_base"] = raw["wind_working"]
+    return raw
+
+
+def _score_samples(samples, bodies, date):
+    """Оценить каждую точку по профилю её роли и вернуть свёртку маршрута."""
     for s, body in zip(samples, bodies):
-        H, D = body["hourly"], body["daily"]
-        s.window = route.thermal_window(date, s.lat, D["sunrise"][0], D["sunset"][0],
-                                        H.get("boundary_layer_height"),
-                                        H.get("shortwave_radiation"))
-    if departure_h is None:
-        if not samples[0].window:
-            raise ForecastError(
-                "В первой точке термическое окно не открывается — задай время вылета "
-                "вручную: /route <дата> ЧЧ:ММ")
-        departure_h = float(samples[0].window["open_hour"])
+        s.assessment = (None if s.eta_h is None else
+                        criteria.score_hour(_raw_for(s, body, date), int(s.eta_h),
+                                            profile=_profile_for(s)))
+    live = [s for s in samples if s.assessment is not None]
+    scored = [{"km": s.km, "leg_length_km": s.leg_length_km,
+               "eta": _hhmm(s.eta_h), "assessment": s.assessment} for s in live]
+    if not scored:
+        return criteria.RouteAssessment(None, *criteria.NO_DATA, feasibility="unknown")
+    for s, ahead in zip(live, criteria.storm_ahead(scored)):
+        s.storm_ahead = ahead
+    return criteria.score_route(scored)
+
+
+def _evaluate(samples, bodies, date, departure_h, cfg):
+    """Времена прилёта, маршрутные величины и скоринг для ОДНОГО времени вылета.
+
+    Работает на копии сэмплов: скан перебирает десятки вариантов, и мутировать
+    общий список нельзя. Окна термической активности уже проставлены вызывающим
+    и от времени вылета не зависят — они свойство точки, а не рейса.
+    """
+    work = copy.deepcopy(samples)
+    notes = []
+    speed = cfg["avg_route_speed_kmh"]
 
     def wind_for_segment(i, hour):
         pairs = []
-        for s, body in ((samples[i], bodies[i]), (samples[i + 1], bodies[i + 1])):
+        for s, body in ((work[i], bodies[i]), (work[i + 1], bodies[i + 1])):
             kmh, deg = _wind_at(s, body, hour)
-            along, cross = route.wind_components(kmh, deg, samples[i].track_bearing_deg)
+            along, cross = route.wind_components(kmh, deg, work[i].track_bearing_deg)
             if along is not None:
                 pairs.append((along, cross))
         if not pairs:
@@ -464,24 +507,24 @@ async def get_route(points, name, date, departure_h=None):
         return (sum(p[0] for p in pairs) / len(pairs),
                 sum(p[1] for p in pairs) / len(pairs))
 
-    route.fixed_eta(samples, speed, departure_h)
+    route.fixed_eta(work, speed, departure_h)
     if cfg["wind_correction_enabled"]:
-        route.march(samples, speed, wind_for_segment, departure_h)
+        route.march(work, speed, wind_for_segment, departure_h)
     else:
-        for s in samples:
+        for s in work:
             s.eta_h, s.gs_kmh = s.eta_fixed_h, speed
 
     # Данные запрошены на ОДИН день. Если прилёт уходит за полночь, дальше считать
     # нечем, и молчать об этом нельзя: пустая строка в таблице читалась бы как
     # «погода там неизвестна», а не как «расчёт оборвался».
-    over = [s for s in samples if s.eta_h is not None and s.eta_h >= 24.0]
+    over = [s for s in work if s.eta_h is not None and s.eta_h >= 24.0]
     if over:
         notes.append(f"С {over[0].km:.0f} км прилёт выходит за сутки — "
                      "дальше не считаю, данные запрошены на один день")
         for s in over:
             s.eta_h = None
 
-    for s, body in zip(samples, bodies):
+    for s, body in zip(work, bodies):
         if s.eta_h is None:
             continue
         H = body["hourly"]
@@ -497,19 +540,102 @@ async def get_route(points, name, date, departure_h=None):
         s.w_star_ms = engine.w_star(s.weather.get("boundary_layer_height"),
                                     s.weather.get("shortwave_radiation"),
                                     s.weather.get("temperature_2m"), elev_m)
-        s.site_match = _nearest_site(s, sites)
+
+    verdict = _score_samples(work, bodies, date)
+    return work, verdict, notes
+
+
+def _departure_options(samples):
+    """Времена вылета внутри термического окна первой точки, шагом полчаса."""
+    w = samples[0].window
+    if not w:
+        return []
+    n = int((w["end_hour"] - w["start_hour"]) / DEPARTURE_STEP_H) + 1
+    return [w["start_hour"] + k * DEPARTURE_STEP_H for k in range(max(0, n))]
+
+
+async def get_route(points, name, date, departure_h=None):
+    """Профиль маршрута: два запроса, кэш, маршрутные величины, скоринг и вердикт."""
+    _check_date(date)
+    cfg = settings.get()
+    samples, step = route.resample(points)
+    total_km = samples[-1].km
+    notes = []
+    if step > route.SAMPLE_STEP_KM + 0.01:
+        notes.append(f"Маршрут длинный: шаг увеличен до {step:.0f} км")
+
+    grid = route.terrain_grid(points, total_km)
+    elev = await _ensure_terrain(grid)
+    if elev is None:
+        notes.append("Рельеф недоступен — рабочий диапазон не посчитан")
+    route.attach_terrain(samples, grid, elev, step_km=step)
+
+    bodies = await _ensure_route_weather(samples, date)
+    sites = {s["name"]: s for s in engine.load_sites()}
+
+    # Окно термической активности и совпадение с сохранённым стартом не зависят
+    # от времени вылета — считаются один раз, до перебора вариантов.
+    for s, body in zip(samples, bodies):
+        H, D = body["hourly"], body["daily"]
+        s.window = route.thermal_window(date, s.lat, D["sunrise"][0], D["sunset"][0],
+                                        H.get("boundary_layer_height"),
+                                        H.get("shortwave_radiation"))
+        matched = _nearest_site(s, sites)
+        if matched is not None:
+            s.site_match, s.site_aspect_deg = matched["name"], matched.get("aspect_deg")
+
+    if departure_h is None:
+        if not samples[0].window:
+            raise ForecastError(
+                "В первой точке термическое окно не открывается — задай время вылета "
+                "вручную: /route <дата> ЧЧ:ММ")
+        departure_h = float(samples[0].window["start_hour"])
+
+    work, verdict, eval_notes = _evaluate(samples, bodies, date, departure_h, cfg)
+    notes += eval_notes
+
+    # Скан времени вылета и обратное направление считаются по УЖЕ полученным
+    # данным: меняется только индексация по времени и порядок точек.
+    scan = []
+    for h in _departure_options(samples):
+        _w, v, _n = _evaluate(samples, bodies, date, h, cfg)
+        scan.append({"departure": _hhmm(h), "score": v.score, "feasibility": v.feasibility})
+    completable = [e for e in scan if e["feasibility"] == "completable"]
+    # Лучший из НЕПРОХОДИМЫХ не показывается намеренно: это предложение выбрать,
+    # каким способом не долететь.
+    best = max(completable, key=lambda e: e["score"] or 0) if completable else None
+
+    rev_samples = route.reverse_samples(samples)
+    _rw, rev_verdict, _rn = _evaluate(rev_samples, list(reversed(bodies)), date,
+                                      departure_h, cfg)
+    gain = (rev_verdict.score or 0) - (verdict.score or 0)
 
     return {
         "route": {
             "name": name, "date": date, "departure": _hhmm(departure_h),
             "timezone": os.environ.get("TZ") or "Asia/Tbilisi",
             "total_km": round(total_km, 1),
-            "avg_route_speed_kmh": speed,
+            "avg_route_speed_kmh": cfg["avg_route_speed_kmh"],
             "wind_correction_enabled": cfg["wind_correction_enabled"],
-            "sample_step_km": round(step, 1), "sample_count": len(samples),
+            "sample_step_km": round(step, 1), "sample_count": len(work),
             "model": engine.model_label(engine.get_model_key()),
         },
-        "points": [_point_dict(s) for s in samples],
+        "points": [_point_dict(s) for s in work],
+        "verdict": {
+            "score": verdict.score, "category": verdict.category,
+            "label": verdict.label, "emoji": verdict.emoji,
+            "feasibility": verdict.feasibility, "bottleneck": verdict.bottleneck,
+            "blocked_at_km": verdict.blocked_at_km,
+            "blocked_reason": criteria.veto_labels([verdict.blocked_reason])[0]
+                              if verdict.blocked_reason else None,
+            "flyable_until_km": (None if verdict.flyable_until_km is None
+                                 else round(verdict.flyable_until_km, 1)),
+            "mean_score": verdict.mean_score, "confidence": verdict.confidence,
+        },
+        "departure_scan": scan,
+        "best_departure": best,
+        "reverse": {"score": rev_verdict.score, "feasibility": rev_verdict.feasibility,
+                    "better": gain >= criteria.REVERSE_GAIN},
         "notes": notes,
     }
 

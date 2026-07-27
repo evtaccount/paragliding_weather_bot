@@ -100,3 +100,115 @@ def test_storm_line_names_the_kilometre():
 
 def test_notes_are_shown():
     assert "рельеф" in route.render_card(profile(notes=["Рельеф недоступен"])).lower()
+
+
+# ---------------------------------------------------------------- вердикт
+def with_verdict(**over):
+    p = profile()
+    for i, pt in enumerate(p["points"]):
+        pt["score"] = [78, 62, 44][i]
+        pt["category"] = ["excellent", "fair", "marginal"][i]
+        pt["limiting"] = "рабочий диапазон высот"
+        pt["vetoes"] = []
+        pt["storm_ahead"] = None
+        pt["profile"] = ["takeoff", "enroute", "goal"][i]
+    p["verdict"] = {"score": 61, "category": "fair", "emoji": "🟡",
+                    "label": "удовлетворительно", "feasibility": "completable",
+                    "bottleneck": {"km": 40, "score": 44, "reason": "ветер вдоль курса"},
+                    "blocked_at_km": None, "blocked_reason": None,
+                    "flyable_until_km": 40, "mean_score": 61.3, "confidence": 1.0}
+    p["departure_scan"] = [{"departure": "11:00", "score": 69, "feasibility": "completable"},
+                           {"departure": "11:30", "score": 61, "feasibility": "completable"}]
+    p["best_departure"] = p["departure_scan"][0]
+    p["reverse"] = {"score": 74, "feasibility": "completable", "better": True}
+    p.update(over)
+    return p
+
+
+def test_verdict_line_shows_category_and_score():
+    text = route.render_card(with_verdict())
+    assert "🟡" in text and "61" in text
+
+
+def test_score_column_replaces_the_thermal_column():
+    text = route.render_card(with_verdict())
+    assert "балл" in text
+    assert "поток" not in text
+
+
+def test_table_still_fits_the_mobile_width():
+    assert max(len(ln) for ln in route.render_card(with_verdict()).splitlines()) \
+        <= route.CARD_WIDTH
+
+
+def test_bottleneck_names_the_kilometre():
+    text = route.render_card(with_verdict())
+    assert "40" in text and "44" in text
+
+
+def test_blocked_route_leads_with_the_reason_not_the_score():
+    p = with_verdict()
+    p["verdict"].update({"feasibility": "blocked_at_km", "blocked_at_km": 40,
+                         "blocked_reason": "база ниже безопасной высоты над рельефом",
+                         "flyable_until_km": 20})
+    text = route.render_card(p)
+    head = "\n".join(text.splitlines()[:8])
+    assert "40" in head and "база ниже" in head
+    assert "Лётно до 20 км" in text
+
+
+def test_blocked_reason_wraps_within_the_width():
+    p = with_verdict()
+    p["verdict"].update({"feasibility": "blocked_at_km", "blocked_at_km": 40,
+                         "blocked_reason": "база ниже безопасной высоты над рельефом",
+                         "flyable_until_km": 20})
+    assert max(len(ln) for ln in route.render_card(p).splitlines()) <= route.CARD_WIDTH
+
+
+def test_best_departure_and_alternatives():
+    text = route.render_card(with_verdict())
+    assert "11:00" in text and "11:30" in text
+
+
+def test_a_long_departure_scan_still_fits_the_width():
+    """Скан даёт два десятка вариантов; в карточку влезают не все."""
+    p = with_verdict()
+    p["departure_scan"] = [{"departure": f"{h:02d}:{m:02d}", "score": 85,
+                            "feasibility": "completable"}
+                           for h in range(7, 19) for m in (0, 30)]
+    p["best_departure"] = p["departure_scan"][0]
+    assert max(len(ln) for ln in route.render_card(p).splitlines()) <= route.CARD_WIDTH
+
+
+def test_flyable_until_only_shows_when_the_route_breaks():
+    """Иначе это повтор общей длины маршрута."""
+    assert "Лётно до" not in route.render_card(with_verdict())
+    p = with_verdict()
+    p["verdict"].update({"feasibility": "blocked_at_km", "blocked_at_km": 40,
+                         "blocked_reason": "туман", "flyable_until_km": 20})
+    assert "Лётно до 20 км" in route.render_card(p)
+
+
+def test_no_completable_departure_is_said_plainly():
+    p = with_verdict(best_departure=None)
+    p["departure_scan"] = [{"departure": "11:00", "score": 30, "feasibility": "blocked_at_km"}]
+    assert "ни одно время" in route.render_card(p).lower()
+
+
+def test_reverse_line_appears_only_when_better():
+    assert "74" in route.render_card(with_verdict())
+    p = with_verdict()
+    p["reverse"]["better"] = False
+    assert "Обратный" not in route.render_card(p)
+
+
+def test_storm_ahead_line_names_kilometre_and_time():
+    p = with_verdict()
+    p["points"][0]["storm_ahead"] = {"km": 60, "eta": "14:20"}
+    text = route.render_card(p)
+    assert "60" in text and "14:20" in text
+
+
+def test_card_without_a_verdict_still_renders():
+    """Карточка спеки 1 (без блоков вердикта) не должна падать."""
+    assert "Гудаури" in route.render_card(profile())

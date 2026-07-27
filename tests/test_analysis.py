@@ -91,7 +91,11 @@ def test_prompt_carries_the_real_numbers():
     assert str(criteria.TRIM_MS) in text                     # 10.6 — вето по ветру
     assert "1.70" in text or "1.7" in text                   # порог порывистости
     assert f"{criteria.GROUPS['wind'].weight:.2f}" in text   # 0.22 — вес группы ветра
+    # Промпт разбирает СТАРТ, поэтому сверяется с вето профиля старта: три
+    # маршрутных вето к нему не относятся и в блок порогов не идут.
     for rule in criteria.VETOES:
+        if rule.key not in criteria.TAKEOFF.vetoes:
+            continue
         assert rule.label in text, f"вето «{rule.label}» пропало из промпта"
 
 
@@ -125,3 +129,16 @@ def test_analyze_sends_the_reference_block(monkeypatch):
     monkeypatch.setenv("GEMINI_MODELS", "m1")
     analysis.analyze({"assessment": {"score": 70}}, "1d")
     assert criteria.reference_text() in captured["prompt"]
+
+
+def test_reference_text_is_generated_per_profile():
+    launch = criteria.reference_text(criteria.TAKEOFF)
+    enroute = criteria.reference_text(criteria.ENROUTE)
+    assert "направление к склону" in launch
+    assert "направление к склону" not in enroute
+    assert "ветер вдоль курса" in enroute
+    assert f"{criteria.ROUTE_GROUPS['wind_along'].weight:.2f}" in enroute
+
+
+def test_default_reference_text_is_still_the_launch_one():
+    assert criteria.reference_text() == criteria.reference_text(criteria.TAKEOFF)
