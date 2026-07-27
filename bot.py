@@ -36,6 +36,8 @@ load_dotenv()  # before guards/forecast read their env vars
 import engine  # noqa: E402
 import forecast  # noqa: E402
 import guards  # noqa: E402
+import route  # noqa: E402
+import settings  # noqa: E402
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("pgbot")
@@ -62,6 +64,11 @@ class AddSite(StatesGroup):
 class AdHoc(StatesGroup):
     """"По координатам": ask coordinates for a one-off forecast."""
     coords = State()
+
+
+class SettingsSpeed(StatesGroup):
+    """/settings → «Ввести свою»: ждём число средней маршрутной скорости."""
+    value = State()
 
 RANGE_ALIASES = {
     "1d": "1d", "day": "1d", "день": "1d",
@@ -94,6 +101,8 @@ BOT_COMMANDS = [
     BotCommand(command="twoweeks", description="Обзор на 2 недели"),
     BotCommand(command="scan", description="Лётные дни на неделю по всем стартам"),
     BotCommand(command="forecast", description="Прогноз: <старт> <диапазон>"),
+    BotCommand(command="route", description="Погода по маршруту: список координат или GPX"),
+    BotCommand(command="settings", description="Настройки маршрута"),
     BotCommand(command="model", description="Метеомодель: /model <auto|ecmwf|gfs|icon>"),
     BotCommand(command="sites", description="Список стартов"),
     BotCommand(command="add", description="Добавить старт: <имя> <lat> <lon> <эксп>"),
@@ -407,6 +416,67 @@ async def cb_switch_model(cb: CallbackQuery):
         return
     await cb.answer(f"{engine.model_label(key)} — пересчитываю…")
     await send_forecast(msg, site, rng, date or None)
+
+
+def _settings_text() -> str:
+    cfg = settings.get()
+    wind = "включён" if cfg["wind_correction_enabled"] else "выключен"
+    return ("⚙️ Настройки\n\n"
+            f"Средняя маршрутная скорость: {cfg['avg_route_speed_kmh']:.0f} км/ч\n"
+            f"Учёт ветра во времени прилёта: {wind}")
+
+
+def _settings_keyboard() -> InlineKeyboardMarkup:
+    cfg = settings.get()
+    speeds = [InlineKeyboardButton(text=f"{v}", callback_data=f"sp|{v}") for v in (20, 25, 30)]
+    speeds.append(InlineKeyboardButton(text="Ввести свою", callback_data="sp|custom"))
+    toggle = InlineKeyboardButton(
+        text="Выключить учёт ветра" if cfg["wind_correction_enabled"] else "Включить учёт ветра",
+        callback_data=f"sw|{0 if cfg['wind_correction_enabled'] else 1}")
+    return InlineKeyboardMarkup(inline_keyboard=[speeds, [toggle]])
+
+
+@dp.message(Command("settings"))
+async def cmd_settings(message: Message):
+    await message.answer(_settings_text(), reply_markup=_settings_keyboard())
+
+
+@dp.callback_query(F.data.startswith("sp|"))
+async def cb_set_speed(cb: CallbackQuery, state: FSMContext):
+    value = cb.data.split("|", 1)[1]
+    msg = await cb_message(cb)
+    if value == "custom":
+        await state.set_state(SettingsSpeed.value)
+        if msg:
+            await msg.answer("Введи среднюю маршрутную скорость в км/ч "
+                             f"({settings.SPEED_MIN:.0f}–{settings.SPEED_MAX:.0f}):")
+        return await cb.answer()
+    settings.set_speed(float(value))
+    if msg:
+        await msg.answer(_settings_text(), reply_markup=_settings_keyboard())
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("sw|"))
+async def cb_toggle_wind(cb: CallbackQuery):
+    settings.set_wind_correction(cb.data.split("|", 1)[1] == "1")
+    msg = await cb_message(cb)
+    if msg:
+        await msg.answer(_settings_text(), reply_markup=_settings_keyboard())
+    await cb.answer()
+
+
+@dp.message(SettingsSpeed.value)
+async def settings_speed_value(message: Message, state: FSMContext):
+    try:
+        settings.set_speed(float((message.text or "").replace(",", ".").strip()))
+    except ValueError as e:
+        detail = str(e) if str(e).startswith("средняя") else (
+            "Нужно число, например 25. Это средняя по маршруту с учётом наборов "
+            "в термиках, а не скорость крыла.")
+        return await message.answer(detail)
+    await state.clear()
+    await message.answer(_settings_text(), reply_markup=_settings_keyboard())
 
 
 async def _finish_add(message: Message, name: str, lat: float, lon: float,
