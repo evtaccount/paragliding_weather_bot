@@ -371,6 +371,31 @@ PENALTIES = (
 )
 
 
+@dataclass(frozen=True)
+class Profile:
+    """Роль точки определяет, по каким критериям её оценивать.
+
+    У точки в воздухе нет склона, поэтому спрашивать «совпадает ли ветер с
+    направлением склона» там бессмысленно; на финише наоборот снова важны
+    приземный ветер и порывы — это посадка. Веса, набор параметров, вето и
+    штрафы едут вместе, потому что менять их поодиночке нельзя: выкинутая
+    группа без перенормировки весов тихо занижает балл.
+    """
+    key: str
+    label: str
+    groups: dict
+    params: tuple
+    vetoes: tuple
+    penalties: tuple
+
+    def group_params(self, gkey):
+        return tuple(k for k in self.params if PARAMS[k].group == gkey)
+
+
+TAKEOFF = Profile("takeoff", "старт", GROUPS, tuple(PARAMS),
+                  tuple(r.key for r in VETOES), tuple(r.key for r in PENALTIES))
+
+
 @dataclass
 class HourAssessment:
     hour: int
@@ -462,10 +487,10 @@ def _grade_of_score(value):
     return "danger"
 
 
-def _present_share(a, group_key):
+def _present_share(a, group_key, profile):
     """Доля параметров группы, у которых были данные."""
-    keys = [k for k, p in PARAMS.items() if p.group == group_key]
-    return sum(1 for k in keys if k in a.subs) / len(keys)
+    keys = profile.group_params(group_key)
+    return sum(1 for k in keys if k in a.subs) / len(keys) if keys else 0.0
 
 
 def _one_level_up(grade):
@@ -474,19 +499,22 @@ def _one_level_up(grade):
     return GRADES[max(0, i - 1)]
 
 
-def score_hour(raw, hour=0):
-    """Оценить один час. `raw` — плоский словарь ключ→значение (или None).
+def score_hour(raw, hour=0, profile=TAKEOFF):
+    """Оценить один час по профилю роли точки. `raw` — плоский словарь.
 
     Ключи-параметры перечислены в PARAMS; дополнительно правила читают
-    precip_mm, cin, wind_at_base, base_over_route, dir_misalign.
+    precip_mm, cin, wind_at_base, base_over_route, dir_misalign, ground_speed.
+
+    Дефолт — профиль старта: он равен поведению до появления профилей, поэтому
+    все существующие вызовы считают ровно то же самое.
     """
     a = HourAssessment(hour=hour, score=None, category=NO_DATA[0],
                        emoji=NO_DATA[1], label=NO_DATA[2], raw=dict(raw))
 
     # 1. субоценки параметров
-    for key, p in PARAMS.items():
-        v = raw.get(key)
-        g = p.grade(v)
+    for key in profile.params:
+        p = PARAMS[key]
+        g = p.grade(raw.get(key))
         if g is None:
             a.warnings.append(f"no_data:{key}")
             continue
@@ -494,8 +522,8 @@ def score_hour(raw, hour=0):
         a.subs[key] = GRADE_SCORE[g]
 
     # 2. свёртка по группам (только по присутствующим параметрам)
-    for gkey, group in GROUPS.items():
-        vals = [a.subs[k] for k, p in PARAMS.items() if p.group == gkey and k in a.subs]
+    for gkey, group in profile.groups.items():
+        vals = [a.subs[k] for k in profile.group_params(gkey) if k in a.subs]
         if not vals:
             continue
         a.groups[gkey] = min(vals) if group.agg == "min" else sum(vals) / len(vals)
@@ -517,10 +545,10 @@ def score_hour(raw, hour=0):
     # пришедших параметров: строка «критериев посчитано» должна говорить,
     # сколько критериев реально отработало, а не сколько групп уцелело —
     # иначе она показывала бы 100%, когда половина параметров группы отсутствует.
-    total_w = sum(GROUPS[g].weight for g in a.groups)
-    score = sum(GROUPS[g].weight * v for g, v in a.groups.items()) / total_w
+    total_w = sum(profile.groups[g].weight for g in a.groups)
+    score = sum(profile.groups[g].weight * v for g, v in a.groups.items()) / total_w
     a.confidence = round(sum(
-        GROUPS[g].weight * _present_share(a, g) for g in a.groups), 3)
+        profile.groups[g].weight * _present_share(a, g, profile) for g in a.groups), 3)
     a.weighted = round(score, 1)
 
     # 4. лимитирующий фактор — параметр с минимальной субоценкой. Если всё на
@@ -531,6 +559,8 @@ def score_hour(raw, hour=0):
 
     # 5. мультипликативные штрафы
     for rule in PENALTIES:
+        if rule.key not in profile.penalties:
+            continue
         if any(raw.get(n) is None for n in rule.needs):
             continue
         if rule.test(raw):
@@ -538,7 +568,8 @@ def score_hour(raw, hour=0):
             a.penalties.append(rule.key)
 
     # 6. потолок по худшей значимой группе (см. LIMIT_CAP_MIN_WEIGHT)
-    heavy = [v for g, v in a.groups.items() if GROUPS[g].weight >= LIMIT_CAP_MIN_WEIGHT]
+    heavy = [v for g, v in a.groups.items()
+             if profile.groups[g].weight >= LIMIT_CAP_MIN_WEIGHT]
     if heavy:
         capped = _cap(score, _one_level_up(_grade_of_score(min(heavy))))
         a.capped = capped < score
@@ -546,6 +577,8 @@ def score_hour(raw, hour=0):
 
     # 7. вето (последними: перекрывают любой балл)
     for rule in VETOES:
+        if rule.key not in profile.vetoes:
+            continue
         if any(raw.get(n) is None for n in rule.needs):
             a.unchecked_vetoes.append(rule.key)
             continue
