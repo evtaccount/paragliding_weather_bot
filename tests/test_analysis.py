@@ -102,6 +102,14 @@ def test_prompt_forbids_overriding_the_deterministic_score():
     assert "ОЦЕНКА" in text, "W* должен быть назван оценкой, а не измерением"
 
 
+def test_prompt_forbids_risks_above_the_working_ceiling():
+    """Без этого правила модель выносила ветер на 500 гПа (5–6 км) в риски дня."""
+    text = analysis._REFERENCE
+    assert "thermal_ceiling_m_msl" in text
+    assert "lcl_m_agl" in text
+    assert "wind_profile_peak_hour" in text
+
+
 def test_analyze_sends_the_reference_block(monkeypatch):
     captured = {}
 
