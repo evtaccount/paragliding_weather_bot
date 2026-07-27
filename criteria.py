@@ -418,6 +418,15 @@ VETOES = (
          lambda r: r["visibility"] < 1500),
     Rule("shear", "сдвиг ветра у земли >6,9 м/с", ("shear_100m",),
          lambda r: r["shear_100m"] > 6.9),
+    # --- маршрутные вето ------------------------------------------------------
+    # Срабатывают только в профиле маршрута и НЕ обнуляют весь маршрут: свёртка
+    # переводит его в состояние «обрывается на N-м км» с указанием километра.
+    Rule("route_terrain_block", "база ниже безопасной высоты над рельефом",
+         ("working_band",), lambda r: r["working_band"] <= 0),
+    Rule("route_no_progress", f"эффективная путевая ≤ {MIN_GROUND_SPEED_KMH:.0f} км/ч",
+         ("ground_speed",), lambda r: r["ground_speed"] <= MIN_GROUND_SPEED_KMH),
+    Rule("route_window_closed", "прилёт после закрытия термического окна",
+         ("time_margin",), lambda r: r["time_margin"] < 0),
 )
 
 # Нелинейные взаимодействия: сильный ветер плюс сильные термики дают

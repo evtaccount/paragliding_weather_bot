@@ -80,3 +80,31 @@ def test_enroute_profile_has_no_ground_parameters():
 def test_launch_profile_has_no_route_parameters():
     for key in ("wind_along", "wind_cross", "working_band", "wind_working"):
         assert key not in c.TAKEOFF.params
+
+
+# ---------------------------------------------------------------- маршрутные вето
+def test_route_terrain_block_veto():
+    a = c.score_hour(route_raw(working_band=-50.0), 13, profile=c.ENROUTE)
+    assert "route_terrain_block" in a.vetoes
+    assert a.score == 0
+
+
+def test_route_no_progress_veto():
+    a = c.score_hour(route_raw(ground_speed=8.0), 13, profile=c.ENROUTE)
+    assert "route_no_progress" in a.vetoes
+
+
+def test_route_window_closed_veto():
+    a = c.score_hour(route_raw(time_margin=-5.0), 13, profile=c.ENROUTE)
+    assert "route_window_closed" in a.vetoes
+
+
+def test_route_vetoes_do_not_fire_at_takeoff():
+    a = c.score_hour(ideal_hour(working_band=-50.0, ground_speed=2.0), 13)
+    assert not a.vetoes
+
+
+def test_route_veto_is_unchecked_when_its_input_is_missing():
+    a = c.score_hour(route_raw(working_band=None), 13, profile=c.ENROUTE)
+    assert "route_terrain_block" in a.unchecked_vetoes
+    assert "route_terrain_block" not in a.vetoes
