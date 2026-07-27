@@ -746,7 +746,11 @@ def _goal_margin(points):
 
 def _flyable_until(points, blocked):
     """Километр последней точки перед первым вето — ради этого вето и не обнуляет
-    весь маршрут."""
+    весь маршрут.
+
+    Опирается на прямую между точками. Фактическая точка разворота зависит от
+    того, где найдётся последний рабочий поток, и будет раньше.
+    """
     if not points:
         return None
     if blocked is None:
@@ -904,9 +908,13 @@ def legend(param_key):
     return [(grade, _interval_text(p, intervals)) for grade, intervals in p.bands]
 
 
-def reference_text():
+def reference_text(profile=TAKEOFF):
     """Русский блок порогов для промпта LLM — генерируется из таблицы выше,
-    чтобы промпт не мог разойтись с расчётом (раньше он был захардкожен)."""
+    чтобы промпт не мог разойтись с расчётом (раньше он был захардкожен).
+
+    У каждой роли точки свой набор критериев, поэтому и блок свой: описывать
+    маршрутной точке критерий направления к склону значит звать модель судить
+    по тому, чего в расчёте нет."""
     lines = [
         f"Пороги калиброваны под уверенного XC-пилота на {GLIDER}: trim {TRIM_MS} м/с, "
         f"макс {TOP_MS} м/с. Это НЕ пороги новичка.",
@@ -915,8 +923,8 @@ def reference_text():
         "",
         "ПАРАМЕТРЫ И ДИАПАЗОНЫ:",
     ]
-    for gkey, group in GROUPS.items():
-        params = [p for p in PARAMS.values() if p.group == gkey]
+    for gkey, group in profile.groups.items():
+        params = [PARAMS[k] for k in profile.group_params(gkey)]
         if not params:
             continue
         lines.append(f"— {group.label} (вес {group.weight:.2f}, свёртка по "
@@ -926,8 +934,11 @@ def reference_text():
             lines.append(f"   • {p.label}{f' ({p.unit})' if p.unit else ''}: {spans}")
     lines += [
         "",
-        "ВЕТО (любое → категория «опасная», балл 0): " + "; ".join(r.label for r in VETOES) + ".",
-        "ШТРАФЫ (умножают балл): " + "; ".join(f"{r.label} ×{r.factor:.2f}" for r in PENALTIES) + ".",
+        "ВЕТО (любое → категория «опасная», балл 0): "
+        + "; ".join(r.label for r in VETOES if r.key in profile.vetoes) + ".",
+        "ШТРАФЫ (умножают балл): "
+        + "; ".join(f"{r.label} ×{r.factor:.2f}"
+                    for r in PENALTIES if r.key in profile.penalties) + ".",
         "ПОТОЛОК ПО ЛИМИТ-ФАКТОРУ: итоговый балл не выше, чем на один уровень над худшей "
         "значимой группой — одна нелётная группа не перекрывается девятью хорошими.",
         "КАТЕГОРИИ по баллу: " + " · ".join(f"{lo}+ {emoji} {label}" for _k, lo, emoji, label in CATEGORIES) + ".",
