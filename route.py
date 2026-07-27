@@ -29,7 +29,7 @@
 import math
 import re
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import criteria
 import engine
@@ -306,6 +306,25 @@ def resample(points, step_km=SAMPLE_STEP_KM, max_samples=MAX_SAMPLES):
     if math.isinf(step):
         step = total_km / (len(samples) - 1) if len(samples) > 1 else total_km
     return samples, step
+
+
+def reverse_samples(samples):
+    """Тот же маршрут в обратную сторону: те же координаты, новый километраж и пеленги.
+
+    Второй ресэмплинг намеренно не делается — он мог бы дать другой набор точек, и
+    сравнивать «туда» с «обратно» было бы не с чем. Погодные данные привязаны к
+    координатам, поэтому вызывающий переиспользует их, просто развернув список.
+    Исходные сэмплы не меняются: возвращаются копии.
+    """
+    total = samples[-1].km
+    out = [replace(s, km=total - s.km) for s in reversed(samples)]
+    for i, s in enumerate(out):
+        a, b = (s, out[i + 1]) if i + 1 < len(out) else (out[i - 1], s)
+        s.track_bearing_deg = haversine(Point(a.lat, a.lon), Point(b.lat, b.lon))[1]
+        s.role = "enroute"
+    out[0].role, out[-1].role = "takeoff", "goal"
+    _set_leg_lengths(out)
+    return out
 
 
 # ---------------------------------------------------------------- рельеф
