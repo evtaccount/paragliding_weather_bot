@@ -363,7 +363,7 @@ def attach_terrain(samples, grid, elevations, step_km):
 
 
 # ---------------------------------------------------------------- маршрутные величины
-MIN_WORKING_ALT_AGL = 300      # ниже пилот не идёт на переход, а ищет площадку
+MIN_WORKING_ALT_AGL = criteria.MIN_WORKING_ALT_AGL  # пороги живут в criteria.py
 MS_TO_KMH = 3.6
 
 
@@ -503,7 +503,7 @@ def time_margin_min(window, eta_h):
 
 
 # ---------------------------------------------------------------- время прибытия
-MIN_GROUND_SPEED_KMH = 8.0     # ниже этого маршрут практически не идётся
+MIN_GROUND_SPEED_KMH = criteria.MIN_GROUND_SPEED_KMH  # пороги живут в criteria.py
 ETA_WARN_MIN = 20              # расхождение времён прилёта, с которого предупреждаем
 
 

@@ -33,6 +33,9 @@ RAIN_DAY_MM = 0.2       # осадки за день → мокрый день
 RAIN_HR_MM = 0.1        # осадки за час → мокрый час
 LCL_M_PER_C = 122       # база облаков: метров на 1 °C спреда T−Td (Bradbury / FAA)
 
+MIN_GROUND_SPEED_KMH = 8.0   # ниже этой путевой маршрут практически не идётся
+MIN_WORKING_ALT_AGL = 300    # ниже пилот не идёт на переход, а ищет площадку
+
 # Отношение порыв/ветер неустойчиво на слабом ветре: 2,1 м/с с порывом 5,6 —
 # это обычный рабочий термический день, а формальный «фактор 2,6» давал вето и
 # красил такой час в ⛔. Правило «порывы >1,5× среднего» из пилотской практики
@@ -142,7 +145,33 @@ GROUPS = {g.key: g for g in (
     Group("extra",      0.02, "длительность окна"),
 )}
 
+# Веса маршрутного профиля. Направление к склону и порывы у земли ушли совсем —
+# их место заняли ветер вдоль курса, рабочий диапазон высот и увеличенный вес гроз.
+# Это и есть содержательная разница между «стою на старте» и «лечу».
+ROUTE_GROUPS = {g.key: g for g in (
+    Group("wind_along",   0.20, "ветер вдоль курса"),
+    Group("thermals",     0.18, "термичка", agg="mean"),
+    Group("working_band", 0.16, "рабочий диапазон высот"),
+    Group("storms",       0.16, "неустойчивость/грозы"),
+    Group("wind_abs",     0.10, "ветер на рабочей высоте"),
+    Group("precip_vis",   0.08, "осадки и видимость"),
+    Group("cloud",        0.06, "облачность"),
+    Group("wind_cross",   0.04, "снос поперёк курса"),
+    Group("extra",        0.02, "окно и запас времени"),
+)}
+
 _ALL = (None, None)  # вся ось — для читаемости таблицы
+
+# Шкала ветра на высоте. Общая для 850 гПа и для среднего ветра рабочего слоя:
+# это одна и та же физика на близких высотах, и две копии чисел разъехались бы.
+_WIND_ALOFT_BANDS = (
+    ("ideal",     ((None, 6.1),)),
+    ("excellent", ((6.1, 8.3),)),
+    ("fair",      ((8.3, 10.6),)),
+    ("marginal",  ((10.6, 12.5),)),
+    ("no_fly",    ((12.5, 13.9),)),
+    ("danger",    ((13.9, None),)),
+)
 
 PARAMS = {p.key: p for p in (
     # --- ветер (0,22) ---------------------------------------------------------
@@ -164,14 +193,7 @@ PARAMS = {p.key: p for p in (
         ("no_fly",    ((10.6, 12.5),)),
         ("danger",    ((12.5, None),)),
     )),
-    Param("wind_850", "wind", "ветер на 850 гПа", "м/с", (
-        ("ideal",     ((None, 6.1),)),
-        ("excellent", ((6.1, 8.3),)),
-        ("fair",      ((8.3, 10.6),)),
-        ("marginal",  ((10.6, 12.5),)),
-        ("no_fly",    ((12.5, 13.9),)),
-        ("danger",    ((13.9, None),)),
-    )),
+    Param("wind_850", "wind", "ветер на 850 гПа", "м/с", _WIND_ALOFT_BANDS),
     # --- порывы (0,15) --------------------------------------------------------
     # Общепринятое правило: порывы >1,5× среднего или >8 узлов над ним — воздух
     # слишком активен для мягкого крыла. Абсолютная дельта важна при слабом
@@ -303,6 +325,46 @@ PARAMS = {p.key: p for p in (
         ("excellent", ((2, 4),)),
         ("ideal",     ((4, None),)),
     ), fmt="{:.1f}"),
+    # --- маршрутные параметры -------------------------------------------------
+    # Шкала асимметрична намеренно: сильный попутный — подарок, сильный встречный
+    # растягивает маршрут и закрывает окно раньше, чем пилот долетит. Уровень
+    # «опасно» ниже −25 км/ч: при воздушной 25 км/ч это отрицательная путевая.
+    Param("wind_along", "wind_along", "ветер вдоль курса", "км/ч", (
+        ("danger",    ((None, -25),)),
+        ("no_fly",    ((-25, -15),)),
+        ("marginal",  ((-15, -8),)),
+        ("fair",      ((-8, 0), (28, None))),
+        ("excellent", ((0, 8), (20, 28))),
+        ("ideal",     ((8, 20),)),
+    ), fmt="{:+.0f}"),
+    # Значение подаётся ПО МОДУЛЮ: снос вправо и влево одинаково требует крабинга.
+    # «Опасно» с 45 км/ч — заметно выше воздушной скорости, курс не удержать.
+    Param("wind_cross", "wind_cross", "снос поперёк курса", "км/ч", (
+        ("ideal",     ((None, 10),)),
+        ("excellent", ((10, 18),)),
+        ("fair",      ((18, 26),)),
+        ("marginal",  ((26, 34),)),
+        ("no_fly",    ((34, 45),)),
+        ("danger",    ((45, None),)),
+    ), fmt="{:.0f}"),
+    Param("working_band", "working_band", "рабочий диапазон высот", "м", (
+        ("danger",    ((None, 0),)),
+        ("no_fly",    ((0, 150),)),
+        ("marginal",  ((150, 300),)),
+        ("fair",      ((300, 600),)),
+        ("excellent", ((600, 1200),)),
+        ("ideal",     ((1200, None),)),
+    ), fmt="{:.0f}"),
+    Param("time_margin", "extra", "запас времени до закрытия окна", "мин", (
+        ("danger",    ((None, 0),)),
+        ("no_fly",    ((0, 20),)),
+        ("marginal",  ((20, 60),)),
+        ("fair",      ((60, 120),)),
+        ("excellent", ((120, 180),)),
+        ("ideal",     ((180, None),)),
+    ), fmt="{:.0f}"),
+    Param("wind_working", "wind_abs", "ветер на рабочей высоте", "м/с",
+          _WIND_ALOFT_BANDS),
 )}
 
 
@@ -392,8 +454,49 @@ class Profile:
         return tuple(k for k in self.params if PARAMS[k].group == gkey)
 
 
-TAKEOFF = Profile("takeoff", "старт", GROUPS, tuple(PARAMS),
-                  tuple(r.key for r in VETOES), tuple(r.key for r in PENALTIES))
+# Наборы параметров перечислены ЯВНО, а не выведены из PARAMS: иначе любой новый
+# параметр молча протекал бы во все профили сразу.
+_LAUNCH_PARAMS = ("wind_10m", "wind_925", "wind_850", "gust_factor", "gust_delta",
+                  "dir_offset", "w_star", "bl_depth", "thermal_index", "cape",
+                  "lifted_index", "cloud_low", "base_clearance", "precip_prob",
+                  "visibility", "shear_100m", "spread", "window_hours")
+
+_ENROUTE_PARAMS = ("wind_along", "wind_cross", "working_band", "wind_working",
+                   "w_star", "bl_depth", "thermal_index", "cape", "lifted_index",
+                   "cloud_low", "precip_prob", "visibility", "window_hours",
+                   "time_margin")
+
+# Вето, применимые везде: погода не спрашивает, стоишь ты или летишь.
+_COMMON_VETOES = ("precip_hour", "precip_prob", "cape_extreme", "cape_cin",
+                  "lifted_index", "visibility", "wind_base")
+# Вето про близость к земле — старт и посадка.
+_GROUND_VETOES = ("wind_launch", "gust_factor", "gust_delta", "shear")
+# Вето, осмысленные только на старте.
+_LAUNCH_ONLY_VETOES = ("lee_side", "base_below_route")
+_ROUTE_VETOES = ("route_terrain_block", "route_no_progress", "route_window_closed")
+
+_ALL_PENALTIES = tuple(r.key for r in PENALTIES)
+
+TAKEOFF = Profile(
+    "takeoff", "старт", GROUPS, _LAUNCH_PARAMS,
+    _COMMON_VETOES + _GROUND_VETOES + _LAUNCH_ONLY_VETOES, _ALL_PENALTIES)
+
+# Финиш — это посадка: приземный ветер и порывы снова важны, направление склона нет.
+# Веса не перенормируются вручную: score_hour делит на сумму выживших групп сам.
+GOAL = Profile(
+    "goal", "финиш",
+    {k: g for k, g in GROUPS.items() if k != "direction"},
+    tuple(k for k in _LAUNCH_PARAMS if k != "dir_offset") + ("time_margin",),
+    _COMMON_VETOES + _GROUND_VETOES, _ALL_PENALTIES)
+
+# На маршруте из штрафов остаётся только расхождение направления по высотам.
+# Два других завязаны на приземный ветер и запас под базой; выдумывать для них
+# маршрутные аналоги значило бы калибровать без источника.
+ENROUTE = Profile(
+    "enroute", "маршрут", ROUTE_GROUPS, _ENROUTE_PARAMS,
+    _COMMON_VETOES + _ROUTE_VETOES, ("dir_misalign",))
+
+PROFILES = {p.key: p for p in (TAKEOFF, ENROUTE, GOAL)}
 
 
 @dataclass
@@ -725,8 +828,10 @@ def _check_table():
     """Таблица должна быть непротиворечивой: веса дают 1,0, интервалы каждого
     параметра не пересекаются и покрывают всю ось. Ошибка здесь — опечатка,
     которая иначе молча оставит параметр без оценки."""
-    w = sum(g.weight for g in GROUPS.values())
-    assert abs(w - 1.0) < 1e-9, f"сумма весов групп {w}, должна быть 1.0"
+    for table, name in ((GROUPS, "GROUPS"), (ROUTE_GROUPS, "ROUTE_GROUPS")):
+        w = sum(g.weight for g in table.values())
+        assert abs(w - 1.0) < 1e-9, f"сумма весов {name} = {w}, должна быть 1.0"
+    known_groups = set(GROUPS) | set(ROUTE_GROUPS)
     for p in PARAMS.values():
         spans = sorted(((lo if lo is not None else float("-inf"),
                          hi if hi is not None else float("inf"))
@@ -736,7 +841,7 @@ def _check_table():
         for (_lo1, hi1), (lo2, _hi2) in zip(spans, spans[1:]):
             assert hi1 == lo2, f"{p.key}: разрыв или наложение интервалов на {hi1}/{lo2}"
         assert {g for g, _ in p.bands} <= set(GRADES), f"{p.key}: неизвестный уровень"
-        assert p.group in GROUPS, f"{p.key}: неизвестная группа {p.group}"
+        assert p.group in known_groups, f"{p.key}: неизвестная группа {p.group}"
 
 
 _check_table()
