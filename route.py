@@ -591,19 +591,73 @@ def _plural(n, one, few, many):
     return many
 
 
+FEASIBILITY_RU = {
+    "completable": "маршрут проходится",
+    "blocked_at_km": "маршрут обрывается",
+    "too_slow": "не успеваешь до закрытия окна",
+    "unknown": "данных не хватает для вердикта",
+}
+
+
+def _wrap(text, indent="   "):
+    """Разбить строку по ширине карточки, каждую часть с отступом."""
+    lines, cur = [], ""
+    for w in text.split():
+        candidate = f"{cur} {w}" if cur else f"{indent}{w}"
+        if len(candidate) > CARD_WIDTH and cur:
+            lines.append(cur)
+            cur = f"{indent}{w}"
+        else:
+            cur = candidate
+    if cur:
+        lines.append(cur)
+    return lines
+
+
 def _rows(points):
     """Колонки: километр, время, МОДУЛЬ составляющей вдоль курса (знак несёт
-    стрелка), абсолютный ветер на рабочей высоте, оценка силы потоков."""
-    out = [" км  время  вдоль  ветер  поток"]
+    стрелка), абсолютный ветер на рабочей высоте и балл точки.
+
+    Эмодзи категории в таблицу не идёт: в моноширинном блоке он вдвое шире цифр
+    и колонки разъезжаются (то же отмечено у engine.hourly_strip). Категория
+    живёт на строке вердикта, где выравнивание не нужно.
+    """
+    scored = any(p.get("score") is not None for p in points)
+    last = "балл" if scored else "поток"
+    out = [f" км  время  вдоль  ветер  {last}"]
     for p in points:
         along = p.get("wind_along_kmh")
         arrow = " " if along is None else ("→" if along >= 0 else "←")
         along_txt = " н/д" if along is None else f"{abs(along):3.0f}"
         deg, spd = p.get("wind_working_alt_dir"), p.get("wind_working_alt_kmh")
         wind = "   н/д" if deg is None or spd is None else f"{engine.card(deg):>3} {spd:2.0f}"
-        w = "  —" if p.get("w_star_ms") is None else f"{p['w_star_ms']:3.1f}"
+        if scored:
+            tail = "  —" if p.get("score") is None else f"{p['score']:3.0f}"
+        else:
+            tail = "  —" if p.get("w_star_ms") is None else f"{p['w_star_ms']:3.1f}"
         eta = p["eta"] or "  —  "      # None = расчёт оборвался на границе суток
-        out.append(f"{p['km']:3.0f}  {eta}  {arrow}{along_txt}  {wind}  {w}")
+        out.append(f"{p['km']:3.0f}  {eta}  {arrow}{along_txt}  {wind}  {tail}")
+    return out
+
+
+def _verdict_lines(v):
+    """Блок вердикта. Когда маршрут не проходится, первой идёт причина и километр:
+    балл в этом случае вторичен."""
+    if not v:
+        return []
+    out = []
+    if v["feasibility"] == "blocked_at_km":
+        out.append(f"⛔ Обрывается на {v['blocked_at_km']:.0f} км:")
+        out += _wrap(v["blocked_reason"] or "причина не определена")
+    else:
+        out.append(f"{v['emoji']} {v['label'].capitalize()} · {v['score']:.0f}")
+        out.append(f"   {FEASIBILITY_RU[v['feasibility']]}")
+    if v.get("flyable_until_km") is not None:
+        out.append(f"   Лётно до {v['flyable_until_km']:.0f} км")
+    b = v.get("bottleneck")
+    if b:
+        out.append(f"   Узкое место: {b['score']} на {b['km']:.0f} км")
+    out.append("")
     return out
 
 
@@ -634,6 +688,7 @@ def render_card(profile):
         head.append(f"⏱ Вылет {r['departure']}")
         head.append("   Прилёт за пределами суток")
     head.append("")
+    head += _verdict_lines(profile.get("verdict"))
     tail = [""]
 
     margins = [p.get("time_margin_min") for p in pts if p.get("time_margin_min") is not None]
@@ -660,6 +715,30 @@ def render_card(profile):
         tail.append("⚠️ Без учёта ветра прилёт был бы")
         tail.append(f"   в {pts[-1]['eta_fixed']} — раньше на "
                     f"{_eta_gap_min(pts):.0f} мин")
+
+    best, scan = profile.get("best_departure"), profile.get("departure_scan") or []
+    if best:
+        tail.append(f"⏱ Лучший вылет {best['departure']} · {best['score']:.0f}")
+        alts = [e for e in scan if e["departure"] != best["departure"]][:3]
+        if alts:
+            tail.append("   " + " · ".join(f"{e['departure']}→{e['score']:.0f}"
+                                           for e in alts))
+    elif scan:
+        # Лучший из непроходимых не показывается: это предложение выбрать,
+        # каким способом не долететь.
+        tail.append("⏱ Ни одно время вылета не даёт")
+        tail.append("   проходимый маршрут")
+
+    storm = next((p for p in pts if p.get("storm_ahead")), None)
+    if storm:
+        s = storm["storm_ahead"]
+        tail.append(f"⚡ {storm['km']:.0f} км: гроза впереди на")
+        tail.append(f"   {s['km']:.0f}-м км, подлёт {s['eta']}")
+
+    rev, v = profile.get("reverse"), profile.get("verdict")
+    if rev and rev.get("better") and v:
+        tail.append(f"↩️ Обратный лучше: {rev['score']:.0f} "
+                    f"против {v['score']:.0f}")
 
     tail.extend(profile.get("notes") or [])
     cnt = r["sample_count"]
