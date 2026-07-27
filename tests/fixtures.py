@@ -100,6 +100,20 @@ def om_1day(date=DATE, sunrise=SUNRISE, sunset=SUNSET, timezone="Asia/Tbilisi", 
     return {"timezone": timezone, "hourly": hourly, "daily": daily}
 
 
+def om_route(n, elevations=None, **overrides):
+    """Ответ open-meteo на мульти-точечный запрос: список из n однодневных тел.
+
+    `elevations` — высота грид-ячейки каждой локации (open-meteo кладёт её в
+    поле `elevation` каждого элемента списка).
+    """
+    out = []
+    for k in range(n):
+        body = om_1day(**overrides)
+        body["elevation"] = (elevations or [1000.0] * n)[k]
+        out.append(body)
+    return out
+
+
 def om_overview(dates, sunrise=SUNRISE, sunset=SUNSET, timezone="Asia/Tbilisi", **overrides):
     """A multi-day response. Overrides are given PER DAY (one value per date) and
     broadcast over that day's 24 hours; a bare scalar applies to every day."""

@@ -16,6 +16,7 @@ Forecast + charts come from the deterministic engine (open-meteo).
 import asyncio
 import datetime as dt
 import html
+import io
 import logging
 import os
 import re
@@ -36,6 +37,8 @@ load_dotenv()  # before guards/forecast read their env vars
 import engine  # noqa: E402
 import forecast  # noqa: E402
 import guards  # noqa: E402
+import route  # noqa: E402
+import settings  # noqa: E402
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("pgbot")
@@ -63,6 +66,11 @@ class AdHoc(StatesGroup):
     """"По координатам": ask coordinates for a one-off forecast."""
     coords = State()
 
+
+class SettingsSpeed(StatesGroup):
+    """/settings → «Ввести свою»: ждём число средней маршрутной скорости."""
+    value = State()
+
 RANGE_ALIASES = {
     "1d": "1d", "day": "1d", "день": "1d",
     "3d": "3d", "3days": "3d", "3дня": "3d",
@@ -80,6 +88,8 @@ HELP = (
     "/twoweeks [старт] — обзор на 2 недели\n"
     "/scan — лётные дни на неделю по всем стартам\n"
     "/forecast <старт> <диапазон> — вручную (1d · 3d · week · 2weeks)\n"
+    "/route [дата] [ЧЧ:ММ] — погода по маршруту (список координат или GPX)\n"
+    "/settings — средняя маршрутная скорость и учёт ветра\n"
     "/model — метеомодель (auto · ecmwf · gfs · icon)\n"
     "/sites — список стартов\n\n"
     "Если старт не указан, а он один — берётся автоматически.\n"
@@ -94,6 +104,8 @@ BOT_COMMANDS = [
     BotCommand(command="twoweeks", description="Обзор на 2 недели"),
     BotCommand(command="scan", description="Лётные дни на неделю по всем стартам"),
     BotCommand(command="forecast", description="Прогноз: <старт> <диапазон>"),
+    BotCommand(command="route", description="Погода по маршруту: список координат или GPX"),
+    BotCommand(command="settings", description="Настройки маршрута"),
     BotCommand(command="model", description="Метеомодель: /model <auto|ecmwf|gfs|icon>"),
     BotCommand(command="sites", description="Список стартов"),
     BotCommand(command="add", description="Добавить старт: <имя> <lat> <lon> <эксп>"),
@@ -407,6 +419,67 @@ async def cb_switch_model(cb: CallbackQuery):
         return
     await cb.answer(f"{engine.model_label(key)} — пересчитываю…")
     await send_forecast(msg, site, rng, date or None)
+
+
+def _settings_text() -> str:
+    cfg = settings.get()
+    wind = "включён" if cfg["wind_correction_enabled"] else "выключен"
+    return ("⚙️ Настройки\n\n"
+            f"Средняя маршрутная скорость: {cfg['avg_route_speed_kmh']:.0f} км/ч\n"
+            f"Учёт ветра во времени прилёта: {wind}")
+
+
+def _settings_keyboard() -> InlineKeyboardMarkup:
+    cfg = settings.get()
+    speeds = [InlineKeyboardButton(text=f"{v}", callback_data=f"sp|{v}") for v in (20, 25, 30)]
+    speeds.append(InlineKeyboardButton(text="Ввести свою", callback_data="sp|custom"))
+    toggle = InlineKeyboardButton(
+        text="Выключить учёт ветра" if cfg["wind_correction_enabled"] else "Включить учёт ветра",
+        callback_data=f"sw|{0 if cfg['wind_correction_enabled'] else 1}")
+    return InlineKeyboardMarkup(inline_keyboard=[speeds, [toggle]])
+
+
+@dp.message(Command("settings"))
+async def cmd_settings(message: Message):
+    await message.answer(_settings_text(), reply_markup=_settings_keyboard())
+
+
+@dp.callback_query(F.data.startswith("sp|"))
+async def cb_set_speed(cb: CallbackQuery, state: FSMContext):
+    value = cb.data.split("|", 1)[1]
+    msg = await cb_message(cb)
+    if value == "custom":
+        await state.set_state(SettingsSpeed.value)
+        if msg:
+            await msg.answer("Введи среднюю маршрутную скорость в км/ч "
+                             f"({settings.SPEED_MIN:.0f}–{settings.SPEED_MAX:.0f}):")
+        return await cb.answer()
+    settings.set_speed(float(value))
+    if msg:
+        await msg.answer(_settings_text(), reply_markup=_settings_keyboard())
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("sw|"))
+async def cb_toggle_wind(cb: CallbackQuery):
+    settings.set_wind_correction(cb.data.split("|", 1)[1] == "1")
+    msg = await cb_message(cb)
+    if msg:
+        await msg.answer(_settings_text(), reply_markup=_settings_keyboard())
+    await cb.answer()
+
+
+@dp.message(SettingsSpeed.value)
+async def settings_speed_value(message: Message, state: FSMContext):
+    try:
+        settings.set_speed(float((message.text or "").replace(",", ".").strip()))
+    except ValueError as e:
+        detail = str(e) if str(e).startswith("средняя") else (
+            "Нужно число, например 25. Это средняя по маршруту с учётом наборов "
+            "в термиках, а не скорость крыла.")
+        return await message.answer(detail)
+    await state.clear()
+    await message.answer(_settings_text(), reply_markup=_settings_keyboard())
 
 
 async def _finish_add(message: Message, name: str, lat: float, lon: float,
@@ -747,6 +820,71 @@ async def adhoc_coords(message: Message, state: FSMContext):
                              "или геоточку с карты. (/cancel — отмена)")
         return
     await _adhoc_got_coords(message, state, *coords)
+
+
+ROUTE_HELP = ("Пришли маршрут списком координат — по точке на строку:\n\n"
+              "/route завтра 11:30\n"
+              "42.4776, 44.4787, старт\n"
+              "42.2104, 44.6890, финиш\n\n"
+              "Дата и время вылета необязательны: без времени берётся начало "
+              "термического окна в первой точке. GPX-файл тоже подойдёт.")
+
+
+def _parse_when(args: str):
+    """«завтра 11:30» → (дата, час вылета). Нераспознанные слова игнорируются."""
+    date, departure = dt.date.today().isoformat(), None
+    for token in (args or "").split():
+        low = token.lower()
+        if low == "сегодня":
+            date = dt.date.today().isoformat()
+        elif low == "завтра":
+            date = (dt.date.today() + dt.timedelta(days=1)).isoformat()
+        elif re.fullmatch(r"\d{4}-\d{2}-\d{2}", token):
+            date = token
+        elif re.fullmatch(r"\d{1,2}:\d{2}", token):
+            h, m = token.split(":")
+            departure = int(h) + int(m) / 60.0
+    return date, departure
+
+
+async def _send_route(message: Message, points, name, date, departure):
+    try:
+        profile = await forecast.get_route(points, name, date, departure)
+    except forecast.ForecastError as e:
+        return await message.answer(str(e))
+    for chunk in _chunks(route.render_card(profile)):
+        await message.answer(chunk)
+
+
+@dp.message(Command("route"), flags={"forecast": True})
+async def cmd_route(message: Message, command: CommandObject):
+    body = "\n".join((message.text or "").splitlines()[1:])
+    if not body.strip():
+        return await message.answer(ROUTE_HELP)
+    date, departure = _parse_when(command.args or "")
+    try:
+        points = route.parse_text(body, first_line_no=2)  # первая строка — сама команда
+    except route.RouteError as e:
+        return await message.answer(f"❌ {e}")
+    await _send_route(message, points, None, date, departure)
+
+
+@dp.message(F.document, flags={"forecast": True})
+async def route_gpx_document(message: Message):
+    doc = message.document
+    if not (doc.file_name or "").lower().endswith(".gpx"):
+        return await message.answer("Я понимаю только GPX-файлы маршрутов.")
+    if (doc.file_size or 0) > route.MAX_GPX_BYTES:
+        return await message.answer(
+            f"❌ файл больше {route.MAX_GPX_BYTES // 1024} КБ — пришли маршрут покороче")
+    buf = io.BytesIO()
+    await message.bot.download(doc, destination=buf)
+    try:
+        points, name = route.parse_gpx(buf.getvalue())
+    except route.RouteError as e:
+        return await message.answer(f"❌ {e}")
+    date, departure = _parse_when(message.caption or "")
+    await _send_route(message, points, name, date, departure)
 
 
 @dp.message()
