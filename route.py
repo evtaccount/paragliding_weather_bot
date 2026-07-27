@@ -243,6 +243,9 @@ class Sample:
     time_margin_min: float | None = None
     w_star_ms: float | None = None
     site_match: str | None = None
+    site_aspect_deg: float | None = None
+    assessment: object | None = None       # criteria.HourAssessment, ставится спекой 2
+    storm_ahead: dict | None = None
     weather: dict = field(default_factory=dict)
 
 
@@ -511,14 +514,14 @@ def thermal_window(date_iso, lat, sunrise, sunset, blh, radiation):
                and (radiation[h] or 0) > RADIATION_WORKING_WM2]
     if not working:
         return None
-    return {"open_hour": working[0], "close_hour": working[-1]}
+    return {"start_hour": working[0], "end_hour": working[-1]}
 
 
 def time_margin_min(window, eta_h):
     """Минуты до конца окна. Конец — граница последнего рабочего часа."""
     if not window or eta_h is None:
         return None
-    return (window["close_hour"] + 1 - eta_h) * 60.0
+    return (window["end_hour"] + 1 - eta_h) * 60.0
 
 
 # ---------------------------------------------------------------- время прибытия
