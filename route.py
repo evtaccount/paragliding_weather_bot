@@ -9,6 +9,8 @@ import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 
+import criteria
+
 MIN_POINTS = 2
 MAX_POINTS = 50           # потолок числа точек на входе
 MAX_GPX_BYTES = 1_048_576  # 1 МБ: чужой трек на сотни тысяч точек не должен класть бота
@@ -335,3 +337,46 @@ def attach_terrain(samples, grid, elevations, step_km):
         s.is_terrain_peak = (bool(window)
                              and s.terrain_point_m >= max(window)
                              and max(window) - min(window) >= PEAK_PROMINENCE_M)
+
+
+# ---------------------------------------------------------------- маршрутные величины
+MIN_WORKING_ALT_AGL = 300      # ниже пилот не идёт на переход, а ищет площадку
+MS_TO_KMH = 3.6
+
+
+def ms_to_kmh(v):
+    return None if v is None else v * MS_TO_KMH
+
+
+def wind_components(speed, dir_from_deg, track_bearing_deg):
+    """Составляющие ветра вдоль и поперёк курса.
+
+    θ — направление, ОТКУДА дует; φ — пеленг курса, КУДА летим.
+        wind_along = −V·cos(θ − φ)   > 0 попутный,   < 0 встречный
+        wind_cross = −V·sin(θ − φ)   > 0 сносит вправо от трека
+    Проверка: ветер с запада (θ=270), курс на восток (φ=90) → θ−φ=180,
+    cos=−1, along=+V, то есть попутный.
+    """
+    if speed is None or dir_from_deg is None:
+        return None, None
+    d = math.radians(dir_from_deg - track_bearing_deg)
+    return -speed * math.cos(d), -speed * math.sin(d)
+
+
+def cloud_base_m(terrain_m, t2m, dew2m):
+    """База термических кучевых над уровнем моря.
+
+    Коэффициент — `criteria.LCL_M_PER_C`, второй копии числа в репозитории нет.
+    Формула неприменима при слоистой облачности; на маршруте это встречается
+    чаще, чем над одним стартом, потому что маршрут пересекает разные массы.
+    """
+    if terrain_m is None or t2m is None or dew2m is None:
+        return None
+    return terrain_m + criteria.LCL_M_PER_C * (t2m - dew2m)
+
+
+def working_band_m(cloud_base, terrain_m):
+    """Высота между безопасной высотой над рельефом и базой облаков."""
+    if cloud_base is None or terrain_m is None:
+        return None
+    return cloud_base - (terrain_m + MIN_WORKING_ALT_AGL)
