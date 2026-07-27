@@ -79,14 +79,16 @@ def _card(deg):
     return ["С","ССВ","СВ","ВСВ","В","ВЮВ","ЮВ","ЮЮВ","Ю","ЮЮЗ","ЮЗ","ЗЮЗ","З","ЗСЗ","СЗ","ССЗ"][round((deg%360)/22.5)%16]
 
 def _wind_arrow(d, cx, cy, from_deg, r, color):
-    """Arrow pointing toward the wind SOURCE bearing, map-oriented (N up, E right).
-    So a wind from the south points down — matches a compass rose over the chart."""
-    a = math.radians(from_deg)
+    """Arrow pointing where the wind BLOWS TO, map-oriented (N up, E right).
+    Input stays the meteorological source bearing (open-meteo wind_direction_*),
+    so a wind from the south (180°) is drawn pointing up, toward the north."""
+    to_deg = (from_deg + 180) % 360
+    a = math.radians(to_deg)
     dx, dy = math.sin(a), -math.cos(a)          # bearing → screen vector
-    hx, hy = cx + dx * r, cy + dy * r           # head, toward source
-    tx, ty = cx - dx * r, cy - dy * r           # tail, downwind
+    hx, hy = cx + dx * r, cy + dy * r           # head, downwind
+    tx, ty = cx - dx * r, cy - dy * r           # tail, toward source
     d.line([tx, ty, hx, hy], fill=color, width=S(2))
-    for wing in (from_deg + 148, from_deg - 148):
+    for wing in (to_deg + 148, to_deg - 148):
         wa = math.radians(wing)
         d.line([hx, hy, hx + math.sin(wa) * r * 0.55, hy - math.cos(wa) * r * 0.55],
                fill=color, width=S(2))
@@ -113,7 +115,7 @@ def meteogram_png(data, site, out, assess=None):
     x0, x1 = S(L), S(W - R)
     xf = lambda h: x0 + (x1 - x0) * (h - h0) / max(1, (h1 - h0))
     d.text((S(40), S(28)), f"{site['name']} — метеограмма {t[0][:10]}", font=_font(24, True), fill=INK, anchor="lm")
-    d.text((S(40), S(56)), f"Светлое время {srh:02d}–{ssh:02d} · ветер в м/с, стрелки — откуда · {data.get('timezone','')}",
+    d.text((S(40), S(56)), f"Светлое время {srh:02d}–{ssh:02d} · ветер в м/с, стрелки — куда дует · {data.get('timezone','')}",
            font=_font(13), fill=MUTED, anchor="lm")
     # Лётное окно берётся из ГОТОВОЙ оценки (engine.assess_day → criteria), а не
     # пересчитывается здесь по своим порогам: раньше карточка и график считали
@@ -311,7 +313,7 @@ def _grid_cell_color(ms, level_label="10 м"):
 
 def wind_grid_png(grid, site, out):
     """Altitude (rows, high→top) × hour (cols) grid. Each cell: colored by wind speed,
-    an arrow (wind source) and the speed number. Launch row highlighted."""
+    an arrow (where the wind blows to) and the speed number. Launch row highlighted."""
     hours = grid["hours"]
     levels = list(reversed(grid["levels"]))  # high altitude on top
     nrows, ncols = len(levels), len(hours)
@@ -326,7 +328,7 @@ def wind_grid_png(grid, site, out):
     yf = lambda r: y0 + ch * r
     d.text((S(36), S(28)), f"{site['name']} — ветер по высотам × часам {grid['date']}",
            font=_font(22, True), fill=INK, anchor="lm")
-    d.text((S(36), S(56)), f"стрелка — откуда · скорость м/с · {grid.get('timezone','')}",
+    d.text((S(36), S(56)), f"стрелка — куда дует · скорость м/с · {grid.get('timezone','')}",
            font=_font(13), fill=MUTED, anchor="lm")
     # hour headers
     for c, h in enumerate(hours):
@@ -360,7 +362,7 @@ def wind_grid_png(grid, site, out):
         d.rectangle([lx, ly - S(7), lx + S(14), ly + S(7)], fill=GRADE_RGB[grade] + (200,))
         d.text((lx + S(20), ly), _criteria.GRADE_LABEL[grade], font=_font(11), fill=MUTED, anchor="lm")
         lx += S(int(11 * len(_criteria.GRADE_LABEL[grade]) * 0.62) + 34)
-    d.text((x0, ly + S(24)), "пороги: у земли, 925 и 850 гПа — свои; выше — по шкале 850 · стрелка — откуда",
+    d.text((x0, ly + S(24)), "пороги: у земли, 925 и 850 гПа — свои; выше — по шкале 850 · стрелка — куда дует",
            font=_font(11), fill=FAINT, anchor="lm")
     return _save(img, out, "05_windgrid.png")
 
