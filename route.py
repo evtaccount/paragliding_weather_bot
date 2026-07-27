@@ -10,6 +10,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 
 import criteria
+import engine
 
 MIN_POINTS = 2
 MAX_POINTS = 50           # потолок числа точек на входе
@@ -380,3 +381,62 @@ def working_band_m(cloud_base, terrain_m):
     if cloud_base is None or terrain_m is None:
         return None
     return cloud_base - (terrain_m + MIN_WORKING_ALT_AGL)
+
+
+# ---------------------------------------------------------------- интерполяция
+def _bracket(series, hour):
+    """(значение часа, значение следующего часа, доля) либо None вне ряда."""
+    if series is None or hour is None or hour < 0:
+        return None
+    i = int(math.floor(hour))
+    if i >= len(series):
+        return None
+    nxt = series[i + 1] if i + 1 < len(series) else series[i]
+    return series[i], nxt, hour - i
+
+
+def interp(series, hour):
+    """Линейная интерполяция непрерывной величины между целыми часами."""
+    br = _bracket(series, hour)
+    if br is None:
+        return None
+    a, b, f = br
+    if a is None:
+        return None
+    if b is None or f == 0:
+        return a
+    return a + f * (b - a)
+
+
+def interp_wind(speeds, dirs, hour):
+    """Ветер на дробный час — ТОЛЬКО через u/v.
+
+    Линейная интерполяция самих углов на переходе через 0°/360° даёт ошибку в
+    сотни градусов: между 350° и 10° она выдаёт 180°, то есть ровно
+    противоположное направление.
+    """
+    bs, bd = _bracket(speeds, hour), _bracket(dirs, hour)
+    if bs is None or bd is None:
+        return None, None
+    (s1, s2, f), (d1, d2, _) = bs, bd
+    if s1 is None or d1 is None:
+        return None, None
+    if s2 is None or d2 is None:
+        s2, d2 = s1, d1
+    u1, v1 = engine._uv(s1, d1)
+    u2, v2 = engine._uv(s2, d2)
+    u, v = u1 + f * (u2 - u1), v1 + f * (v2 - v1)
+    return math.hypot(u, v), (math.degrees(math.atan2(-u, -v)) + 360.0) % 360.0
+
+
+def worst_of_hours(series, hour):
+    """Худшее из двух соседних часов, без интерполяции.
+
+    Осадки за час — накопление, а не мгновенное значение; интерполяция
+    размазывает ливень в морось ровно там, где это опаснее всего.
+    """
+    br = _bracket(series, hour)
+    if br is None:
+        return None
+    vals = [v for v in br[:2] if v is not None]
+    return max(vals) if vals else None
