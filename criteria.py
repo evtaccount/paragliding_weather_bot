@@ -709,6 +709,121 @@ def score_hour(raw, hour=0, profile=TAKEOFF):
     return a
 
 
+# ---------------------------------------------------------------- свёртка маршрута
+# Коэффициент из ТЗ: маршрут — цепь и рвётся по слабому звену, но одна плохая
+# точка не должна обнулять хороший день. Величина компромиссная, измерений нет.
+BOTTLENECK_WEIGHT = 0.6
+TOO_SLOW_MARGIN_MIN = 20.0
+# С какого выигрыша в баллах обратный маршрут стоит отдельной строки. Порог
+# подобран так, чтобы строка не появлялась на шуме округления; измерений нет.
+REVERSE_GAIN = 12.0
+# Грозовые вето — те, что говорят о конвекции, а не о рельефе или ветре.
+STORM_VETOES = ("cape_extreme", "cape_cin", "lifted_index")
+STORM_LOOKAHEAD_KM = 60.0
+
+FEASIBILITY = ("completable", "blocked_at_km", "too_slow", "unknown")
+
+
+@dataclass
+class RouteAssessment:
+    score: float | None
+    category: str
+    emoji: str
+    label: str
+    feasibility: str                     # см. FEASIBILITY
+    bottleneck: dict | None = None       # {"km", "score", "reason"}
+    blocked_at_km: float | None = None
+    blocked_reason: str | None = None
+    flyable_until_km: float | None = None
+    mean_score: float | None = None
+    confidence: float = 0.0
+    warnings: list = field(default_factory=list)
+
+
+def _goal_margin(points):
+    return points[-1]["assessment"].raw.get("time_margin") if points else None
+
+
+def _flyable_until(points, blocked):
+    """Километр последней точки перед первым вето — ради этого вето и не обнуляет
+    весь маршрут."""
+    if not points:
+        return None
+    if blocked is None:
+        return points[-1]["km"]
+    # сравнение по идентичности, а не через .index: две точки с одинаковым
+    # содержимым равны по ==, и километр уехал бы на первую попавшуюся
+    i = next(k for k, p in enumerate(points) if p is blocked)
+    return points[i - 1]["km"] if i else 0
+
+
+def score_route(points):
+    """Точки маршрута → оценка маршрута.
+
+    `points` — [{"km", "leg_length_km", "assessment"}]. Свёртка намеренно ничего
+    не знает о том, откуда взялись оценки: её тестируют на заранее заданных баллах.
+
+    Вето на точке НЕ обнуляет маршрут — оно переводит его в «обрывается на N-м км».
+    Пилоту важно знать, что 60 км из 80 проходятся отлично: тогда маршрут
+    перекраивают, а не отменяют день.
+    """
+    blocked = next((p for p in points if p["assessment"].vetoes), None)
+    scored = [p for p in points if p["assessment"].score is not None]
+    thin = (len(scored) != len(points)
+            or any(p["assessment"].confidence < MIN_CONFIDENCE for p in points))
+
+    if not scored:
+        return RouteAssessment(None, *NO_DATA, feasibility="unknown",
+                               flyable_until_km=_flyable_until(points, blocked))
+
+    worst = min(scored, key=lambda p: p["assessment"].score)
+    total = sum(p["leg_length_km"] for p in scored) or 1.0
+    mean = sum(p["assessment"].score * p["leg_length_km"] for p in scored) / total
+    score = BOTTLENECK_WEIGHT * worst["assessment"].score + (1 - BOTTLENECK_WEIGHT) * mean
+
+    margin = _goal_margin(points)
+    if blocked is not None:
+        feasibility = "blocked_at_km"
+    elif margin is not None and margin < TOO_SLOW_MARGIN_MIN:
+        feasibility = "too_slow"
+    elif thin:
+        feasibility = "unknown"
+    else:
+        feasibility = "completable"
+
+    cat, emoji, label = category_of(score)
+    return RouteAssessment(
+        score=round(score, 1), category=cat, emoji=emoji, label=label,
+        feasibility=feasibility,
+        bottleneck={"km": worst["km"], "score": round(worst["assessment"].score),
+                    "reason": worst["assessment"].limiting},
+        blocked_at_km=None if blocked is None else blocked["km"],
+        blocked_reason=None if blocked is None else blocked["assessment"].vetoes[0],
+        flyable_until_km=_flyable_until(points, blocked),
+        mean_score=round(mean, 1),
+        confidence=round(min(p["assessment"].confidence for p in points), 3))
+
+
+def storm_ahead(points, lookahead_km=STORM_LOOKAHEAD_KM):
+    """Для каждой точки — ближайшая точка ВПЕРЕДИ с грозовым вето, либо None.
+
+    На старте гроза в 60 км — не твоя проблема. На 40-м километре — твоя: ты
+    летишь прямо в неё. Поэтому проверка упреждающая, и каждая точка впереди
+    берётся в СВОЁ время прилёта, а не в текущее.
+    """
+    out = []
+    for i, p in enumerate(points):
+        found = None
+        for q in points[i + 1:]:
+            if q["km"] - p["km"] > lookahead_km:
+                break
+            if any(v in STORM_VETOES for v in q["assessment"].vetoes):
+                found = {"km": q["km"], "eta": q.get("eta")}
+                break
+        out.append(found)
+    return out
+
+
 def veto_labels(keys):
     """Ключи вето → русские формулировки (для карточки и промпта)."""
     by_key = {r.key: r.label for r in VETOES}
