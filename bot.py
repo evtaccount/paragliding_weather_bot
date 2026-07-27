@@ -16,6 +16,7 @@ Forecast + charts come from the deterministic engine (open-meteo).
 import asyncio
 import datetime as dt
 import html
+import io
 import logging
 import os
 import re
@@ -87,6 +88,8 @@ HELP = (
     "/twoweeks [старт] — обзор на 2 недели\n"
     "/scan — лётные дни на неделю по всем стартам\n"
     "/forecast <старт> <диапазон> — вручную (1d · 3d · week · 2weeks)\n"
+    "/route [дата] [ЧЧ:ММ] — погода по маршруту (список координат или GPX)\n"
+    "/settings — средняя маршрутная скорость и учёт ветра\n"
     "/model — метеомодель (auto · ecmwf · gfs · icon)\n"
     "/sites — список стартов\n\n"
     "Если старт не указан, а он один — берётся автоматически.\n"
@@ -817,6 +820,71 @@ async def adhoc_coords(message: Message, state: FSMContext):
                              "или геоточку с карты. (/cancel — отмена)")
         return
     await _adhoc_got_coords(message, state, *coords)
+
+
+ROUTE_HELP = ("Пришли маршрут списком координат — по точке на строку:\n\n"
+              "/route завтра 11:30\n"
+              "42.4776, 44.4787, старт\n"
+              "42.2104, 44.6890, финиш\n\n"
+              "Дата и время вылета необязательны: без времени берётся начало "
+              "термического окна в первой точке. GPX-файл тоже подойдёт.")
+
+
+def _parse_when(args: str):
+    """«завтра 11:30» → (дата, час вылета). Нераспознанные слова игнорируются."""
+    date, departure = dt.date.today().isoformat(), None
+    for token in (args or "").split():
+        low = token.lower()
+        if low == "сегодня":
+            date = dt.date.today().isoformat()
+        elif low == "завтра":
+            date = (dt.date.today() + dt.timedelta(days=1)).isoformat()
+        elif re.fullmatch(r"\d{4}-\d{2}-\d{2}", token):
+            date = token
+        elif re.fullmatch(r"\d{1,2}:\d{2}", token):
+            h, m = token.split(":")
+            departure = int(h) + int(m) / 60.0
+    return date, departure
+
+
+async def _send_route(message: Message, points, name, date, departure):
+    try:
+        profile = await forecast.get_route(points, name, date, departure)
+    except forecast.ForecastError as e:
+        return await message.answer(str(e))
+    for chunk in _chunks(route.render_card(profile)):
+        await message.answer(chunk)
+
+
+@dp.message(Command("route"), flags={"forecast": True})
+async def cmd_route(message: Message, command: CommandObject):
+    body = "\n".join((message.text or "").splitlines()[1:])
+    if not body.strip():
+        return await message.answer(ROUTE_HELP)
+    date, departure = _parse_when(command.args or "")
+    try:
+        points = route.parse_text(body, first_line_no=2)  # первая строка — сама команда
+    except route.RouteError as e:
+        return await message.answer(f"❌ {e}")
+    await _send_route(message, points, None, date, departure)
+
+
+@dp.message(F.document, flags={"forecast": True})
+async def route_gpx_document(message: Message):
+    doc = message.document
+    if not (doc.file_name or "").lower().endswith(".gpx"):
+        return await message.answer("Я понимаю только GPX-файлы маршрутов.")
+    if (doc.file_size or 0) > route.MAX_GPX_BYTES:
+        return await message.answer(
+            f"❌ файл больше {route.MAX_GPX_BYTES // 1024} КБ — пришли маршрут покороче")
+    buf = io.BytesIO()
+    await message.bot.download(doc, destination=buf)
+    try:
+        points, name = route.parse_gpx(buf.getvalue())
+    except route.RouteError as e:
+        return await message.answer(f"❌ {e}")
+    date, departure = _parse_when(message.caption or "")
+    await _send_route(message, points, name, date, departure)
 
 
 @dp.message()
