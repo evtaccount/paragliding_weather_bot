@@ -478,3 +478,49 @@ def time_margin_min(window, eta_h):
     if not window or eta_h is None:
         return None
     return (window["close_hour"] + 1 - eta_h) * 60.0
+
+
+# ---------------------------------------------------------------- время прибытия
+MIN_GROUND_SPEED_KMH = 8.0     # ниже этого маршрут практически не идётся
+ETA_WARN_MIN = 20              # расхождение времён прилёта, с которого предупреждаем
+
+
+def ground_speed(va_kmh, along_kmh, cross_kmh):
+    """Путевая скорость вдоль трека с учётом крабинга → (скорость, упёрлись ли).
+
+    Боковой ветер съедает скорость дважды: часть воздушной скорости уходит на
+    компенсацию сноса (угол WCA), и только косинус этого угла работает вперёд.
+    """
+    along = along_kmh or 0.0
+    cross = cross_kmh or 0.0
+    ratio = cross / va_kmh if va_kmh else 0.0
+    limited = abs(ratio) >= 1.0
+    wca = math.asin(max(-1.0, min(1.0, ratio)))
+    gs = va_kmh * math.cos(wca) + along
+    return max(gs, MIN_GROUND_SPEED_KMH), limited
+
+
+def fixed_eta(samples, speed_kmh, departure_h):
+    """Время прибытия по фиксированной скорости — справочное."""
+    for s in samples:
+        s.eta_fixed_h = departure_h + s.km / speed_kmh
+
+
+def march(samples, speed_kmh, wind_for_segment, departure_h):
+    """Время прибытия с учётом ветра — одним проходом вперёд.
+
+    `wind_for_segment(i, hour)` возвращает (вдоль, поперёк) в км/ч для сегмента
+    между сэмплами i и i+1, оценённые на переданный час. Круговой зависимости
+    нет: время каждой точки опирается только на уже посчитанные, итерация до
+    сходимости не нужна. Побочный эффект: при резком усилении ветра ВНУТРИ
+    сегмента время слегка занижается.
+    """
+    samples[0].eta_h = departure_h
+    samples[0].gs_kmh = speed_kmh
+    for i in range(len(samples) - 1):
+        along, cross = wind_for_segment(i, samples[i].eta_h)
+        gs, limited = ground_speed(speed_kmh, along, cross)
+        leg = samples[i + 1].km - samples[i].km
+        samples[i + 1].eta_h = samples[i].eta_h + leg / gs
+        samples[i + 1].gs_kmh = gs
+        samples[i + 1].crab_limited = limited
