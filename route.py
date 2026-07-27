@@ -440,3 +440,41 @@ def worst_of_hours(series, hour):
         return None
     vals = [v for v in br[:2] if v is not None]
     return max(vals) if vals else None
+
+
+# ---------------------------------------------------------------- термическое окно
+BLH_WORKING_M = 500            # ниже пограничного слоя термичка не рабочая
+RADIATION_WORKING_WM2 = 150    # ниже радиации склон не успевает греть
+
+
+def thermal_window(date_iso, lat, sunrise, sunset, blh, radiation):
+    """Окно термической активности в точке маршрута — ПЕРЕСЕЧЕНИЕ двух определений.
+
+    Геометрия солнца даёт астрономическую рамку (экспозиция не передаётся: в
+    воздухе склона нет, и `sun_hours` в этом случае опирается на высоту солнца).
+    Пороги пограничного слоя и радиации внутри рамки отрезают часы, когда
+    конвекция фактически не работает. По отдельности каждое определение врёт в
+    свою сторону: солнечное растягивает окно на весь световой день, пороговое
+    способно открыть окно в шесть утра.
+    """
+    if not blh or not radiation:
+        return None
+    lo, hi = engine.hour_of(sunrise), engine.hour_of(sunset)
+    _rows, sun = engine.sun_hours(date_iso, lat, sunrise, sunset,
+                                  list(range(lo, hi + 1)), None)
+    if not sun:
+        return None
+    working = [h for h in range(sun["start_hour"], sun["end_hour"] + 1)
+               if h < len(blh) and h < len(radiation)
+               and (blh[h] or 0) > BLH_WORKING_M
+               and (radiation[h] or 0) > RADIATION_WORKING_WM2]
+    if not working:
+        return None
+    return {"open_hour": working[0], "close_hour": working[-1]}
+
+
+def time_margin_min(window, eta_h):
+    """Минуты до конца окна. Конец — граница последнего рабочего часа."""
+    if not window or eta_h is None:
+        return None
+    return (window["close_hour"] + 1 - eta_h) * 60.0
