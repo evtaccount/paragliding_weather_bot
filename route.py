@@ -281,3 +281,57 @@ def resample(points, step_km=SAMPLE_STEP_KM, max_samples=MAX_SAMPLES):
     if math.isinf(step):
         step = total_km / (len(samples) - 1) if len(samples) > 1 else total_km
     return samples, step
+
+
+# ---------------------------------------------------------------- рельеф
+TERRAIN_STEP_KM = 1.0          # шаг рельефной сетки для маршрутов от 50 км
+TERRAIN_STEP_SHORT_KM = 0.5    # для маршрутов короче — вдвое чаще
+TERRAIN_SHORT_KM = 50.0
+PEAK_WINDOW_KM = 5.0           # окно поиска локального максимума рельефа
+PEAK_PROMINENCE_M = 100.0      # без этого порога любая точка ровного плато —
+                               # формально максимум своего окна, то есть «вершина»
+
+
+def terrain_step_for(total_km):
+    return TERRAIN_STEP_SHORT_KM if total_km < TERRAIN_SHORT_KM else TERRAIN_STEP_KM
+
+
+def terrain_grid(points, total_km):
+    """Отдельная, более частая сетка для рельефа: [(км, широта, долгота), ...].
+
+    Она гуще погодной намеренно: погоду частить бессмысленно (сетка модели 9–11 км),
+    а рельеф между погодными точками меняется на километр и решает вопрос перехода.
+    """
+    step = terrain_step_for(total_km)
+    out, km = [], 0.0
+    for a, b in zip(points, points[1:]):
+        length = haversine(a, b)[0] / 1000.0
+        n = max(1, int(round(length / step)))
+        for k in range(n):
+            p = _lerp_point(a, b, k / n)
+            out.append((km + length * k / n, p.lat, p.lon))
+        km += length
+    out.append((km, points[-1].lat, points[-1].lon))
+    return out
+
+
+def attach_terrain(samples, grid, elevations, step_km):
+    """Проставить сэмплам высоты. `elevations` — None, если рельеф не получен.
+
+    `terrain_m` — МАКСИМУМ по участку сэмпла, а не высота под точкой: вопрос
+    пилота на переходе решает гребень, а не долина, случайно оказавшаяся под
+    точкой сетки. Высота под точкой остаётся справочной в `terrain_point_m`.
+    """
+    if not elevations or not grid:
+        return
+    half = step_km / 2.0
+    for s in samples:
+        near = [e for (km, _, _), e in zip(grid, elevations) if abs(km - s.km) <= half]
+        s.terrain_m = max(near) if near else None
+        closest = min(range(len(grid)), key=lambda i: abs(grid[i][0] - s.km))
+        s.terrain_point_m = elevations[closest]
+        window = [e for (km, _, _), e in zip(grid, elevations)
+                  if abs(km - s.km) <= PEAK_WINDOW_KM]
+        s.is_terrain_peak = (bool(window)
+                             and s.terrain_point_m >= max(window)
+                             and max(window) - min(window) >= PEAK_PROMINENCE_M)
