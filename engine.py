@@ -18,6 +18,7 @@ Usage:
                            --json forecast.json --out /tmp/pgfc
 """
 import argparse, json, os, shutil, sys, math, datetime as dt
+from urllib.parse import quote
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)  # so `import criteria` / `from charts import ...` work from any cwd
@@ -201,6 +202,20 @@ def build_url(site, rng, date=None):
         return f"{base}&hourly={H_1D}&daily={D_1D}&start_date={date}&end_date={date}"
     n = RANGE_DAYS[rng]
     return f"{base}&hourly={H_OV}&daily={D_OV}&forecast_days={n}"
+
+def route_weather_url(coords, date, tz):
+    """Мульти-точечный запрос погоды на один день. `coords` — список пар (lat, lon).
+
+    Часовой пояс задаётся ЯВНО, а не timezone=auto: при auto каждая локация
+    получает свой пояс, и маршрут через границу поясов даёт точки с разными
+    часами в одной таблице.
+    """
+    lats = ",".join(f"{lat:.4f}" for lat, _ in coords)
+    lons = ",".join(f"{lon:.4f}" for _, lon in coords)
+    return (f"https://api.open-meteo.com/v1/forecast?latitude={lats}&longitude={lons}"
+            f"&wind_speed_unit=ms&timezone={quote(tz)}"
+            f"&models={model_id(get_model_key())}"
+            f"&hourly={H_1D}&daily={D_1D}&start_date={date}&end_date={date}")
 
 # ---------------------------------------------------------------- helpers
 def hour_of(iso): return int(iso[11:13])
@@ -424,6 +439,43 @@ def _bl_levels(H, i, elev, blh):
         if alt is not None and d is not None and elev <= alt <= top:
             out.append((alt, d))
     return out
+
+
+def _levels_with_dir(H, i, elev):
+    """[(высота MSL, скорость, направление ОТКУДА), ...] по всем уровням с данными."""
+    out = []
+    for agl, skey, dkey in ((10, "wind_speed_10m", "wind_direction_10m"),
+                            (80, "wind_speed_80m", "wind_direction_80m"),
+                            (120, "wind_speed_120m", "wind_direction_120m")):
+        s, d = _at(H, skey, i), _at(H, dkey, i)
+        if s is not None and d is not None:
+            out.append((elev + agl, s, d))
+    for hpa in (925, 850, 700):
+        alt = _at(H, f"geopotential_height_{hpa}hPa", i)
+        s = _at(H, f"wind_speed_{hpa}hPa", i)
+        d = _at(H, f"wind_direction_{hpa}hPa", i)
+        if alt is not None and s is not None and d is not None:
+            out.append((alt, s, d))
+    return sorted(out)
+
+
+def mean_wind_vector(H, i, elev, lo_msl, hi_msl):
+    """Средний ветер в слое [lo_msl, hi_msl] → (скорость м/с, направление ОТКУДА).
+
+    Осреднение ВЕКТОРНОЕ (u/v): осреднение модулей завышает ветер там, где
+    направление разворачивается с высотой, — а это ровно те дни, когда разворот
+    и есть главная новость.
+    """
+    levels = _levels_with_dir(H, i, elev)
+    if not levels:
+        return None, None
+    inside = [lv for lv in levels if lo_msl <= lv[0] <= hi_msl]
+    if not inside:  # слой тоньше сетки уровней — берём ближайший к его середине
+        mid = (lo_msl + hi_msl) / 2.0
+        inside = [min(levels, key=lambda lv: abs(lv[0] - mid))]
+    u = sum(_uv(s, d)[0] for _, s, d in inside) / len(inside)
+    v = sum(_uv(s, d)[1] for _, s, d in inside) / len(inside)
+    return round(math.hypot(u, v), 1), round((math.degrees(math.atan2(-u, -v)) + 360.0) % 360.0, 1)
 
 
 def dir_misalign(H, i, elev, blh):
