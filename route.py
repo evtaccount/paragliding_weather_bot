@@ -652,7 +652,9 @@ def _verdict_lines(v):
     else:
         out.append(f"{v['emoji']} {v['label'].capitalize()} · {v['score']:.0f}")
         out.append(f"   {FEASIBILITY_RU[v['feasibility']]}")
-    if v.get("flyable_until_km") is not None:
+    # «Лётно до N км» осмысленно только когда маршрут где-то обрывается: иначе
+    # это повтор общей длины, ради которого пилот листает карточку.
+    if v.get("blocked_at_km") is not None and v.get("flyable_until_km") is not None:
         out.append(f"   Лётно до {v['flyable_until_km']:.0f} км")
     b = v.get("bottleneck")
     if b:
@@ -719,7 +721,8 @@ def render_card(profile):
     best, scan = profile.get("best_departure"), profile.get("departure_scan") or []
     if best:
         tail.append(f"⏱ Лучший вылет {best['departure']} · {best['score']:.0f}")
-        alts = [e for e in scan if e["departure"] != best["departure"]][:3]
+        # Не больше двух альтернатив: третья не влезает в ширину карточки.
+        alts = [e for e in scan if e["departure"] != best["departure"]][:2]
         if alts:
             tail.append("   " + " · ".join(f"{e['departure']}→{e['score']:.0f}"
                                            for e in alts))

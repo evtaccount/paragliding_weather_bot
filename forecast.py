@@ -628,7 +628,8 @@ async def get_route(points, name, date, departure_h=None):
             "blocked_at_km": verdict.blocked_at_km,
             "blocked_reason": criteria.veto_labels([verdict.blocked_reason])[0]
                               if verdict.blocked_reason else None,
-            "flyable_until_km": verdict.flyable_until_km,
+            "flyable_until_km": (None if verdict.flyable_until_km is None
+                                 else round(verdict.flyable_until_km, 1)),
             "mean_score": verdict.mean_score, "confidence": verdict.confidence,
         },
         "departure_scan": scan,

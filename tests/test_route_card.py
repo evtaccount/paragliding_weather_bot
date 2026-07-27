@@ -170,6 +170,25 @@ def test_best_departure_and_alternatives():
     assert "11:00" in text and "11:30" in text
 
 
+def test_a_long_departure_scan_still_fits_the_width():
+    """Скан даёт два десятка вариантов; в карточку влезают не все."""
+    p = with_verdict()
+    p["departure_scan"] = [{"departure": f"{h:02d}:{m:02d}", "score": 85,
+                            "feasibility": "completable"}
+                           for h in range(7, 19) for m in (0, 30)]
+    p["best_departure"] = p["departure_scan"][0]
+    assert max(len(ln) for ln in route.render_card(p).splitlines()) <= route.CARD_WIDTH
+
+
+def test_flyable_until_only_shows_when_the_route_breaks():
+    """Иначе это повтор общей длины маршрута."""
+    assert "Лётно до" not in route.render_card(with_verdict())
+    p = with_verdict()
+    p["verdict"].update({"feasibility": "blocked_at_km", "blocked_at_km": 40,
+                         "blocked_reason": "туман", "flyable_until_km": 20})
+    assert "Лётно до 20 км" in route.render_card(p)
+
+
 def test_no_completable_departure_is_said_plainly():
     p = with_verdict(best_departure=None)
     p["departure_scan"] = [{"departure": "11:00", "score": 30, "feasibility": "blocked_at_km"}]
