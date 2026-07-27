@@ -6,9 +6,11 @@
 """
 import math
 import re
+import xml.etree.ElementTree as ET
 
 MIN_POINTS = 2
 MAX_POINTS = 50           # потолок числа точек на входе
+MAX_GPX_BYTES = 1_048_576  # 1 МБ: чужой трек на сотни тысяч точек не должен класть бота
 
 
 class RouteError(Exception):
@@ -104,3 +106,63 @@ def parse_text(text, first_line_no=1):
         if p is not None:
             points.append(p)
     return _checked_count(points)
+
+
+# ---------------------------------------------------------------- GPX
+def _tag(el):
+    """Локальное имя тега без пространства имён — они у экспортёров разные."""
+    return el.tag.rsplit("}", 1)[-1].lower()
+
+
+def _find_all(root, name):
+    return [el for el in root.iter() if _tag(el) == name]
+
+
+def _child_name(el):
+    for ch in el:
+        if _tag(ch) == "name" and ch.text:
+            return ch.text.strip()
+    return None
+
+
+def _points_from(elements):
+    out = []
+    for el in elements:
+        try:
+            out.append(Point(float(el.get("lat")), float(el.get("lon")), _child_name(el)))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _thin(points, limit):
+    """Равномерное прореживание с сохранением обоих концов."""
+    if len(points) <= limit:
+        return points
+    step = (len(points) - 1) / (limit - 1)
+    idx = sorted({round(i * step) for i in range(limit)} | {0, len(points) - 1})
+    return [points[i] for i in idx][:limit]
+
+
+def parse_gpx(data):
+    """GPX → (точки, имя маршрута). Приоритет: <rte> → <trk> → <wpt>."""
+    if len(data) > MAX_GPX_BYTES:
+        raise RouteError(f"файл больше {MAX_GPX_BYTES // 1024} КБ — пришли маршрут покороче")
+    # xml.etree раскрывает внутренние сущности, поэтому килобайтный файл с
+    # вложенными <!ENTITY> разворачивается в гигабайты и съедает память бота
+    # («billion laughs»). В настоящих GPX объявлений DTD не бывает — режем их
+    # до разбора. Так обходимся без зависимости defusedxml.
+    if b"<!DOCTYPE" in data[:4096].upper() or b"<!ENTITY" in data.upper():
+        raise RouteError("в файле есть объявления DOCTYPE или сущностей — "
+                         "такой GPX не разбираю")
+    try:
+        root = ET.fromstring(data)
+    except ET.ParseError as e:
+        raise RouteError(f"не удалось разобрать GPX: {e}") from None
+
+    name = _child_name(root)
+    for tag in ("rtept", "trkpt", "wpt"):
+        points = _points_from(_find_all(root, tag))
+        if points:
+            return _checked_count(_thin(points, MAX_POINTS)), name
+    raise RouteError("в GPX нет ни маршрута, ни трека, ни путевых точек")
