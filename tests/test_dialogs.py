@@ -360,7 +360,7 @@ async def test_overview_llm_button_passes_no_date(feed, session, an_calls):
 
 
 async def test_analysis_forecast_error_reaches_user(feed, session, monkeypatch):
-    async def fake(site, rng, date=None, deep=False):
+    async def fake(site, rng, date=None, deep=False, model=None):
         raise forecast.ForecastError("нет данных")
     monkeypatch.setattr(forecast, "get_analysis", fake)
     await feed(callback_update("llm|Гудаури|week|"))
@@ -368,7 +368,7 @@ async def test_analysis_forecast_error_reaches_user(feed, session, monkeypatch):
 
 
 async def test_analysis_unexpected_error_reaches_user(feed, session, monkeypatch):
-    async def fake(site, rng, date=None, deep=False):
+    async def fake(site, rng, date=None, deep=False, model=None):
         raise RuntimeError("llm down")
     monkeypatch.setattr(forecast, "get_analysis", fake)
     await feed(callback_update("llm|Гудаури|week|"))
@@ -488,8 +488,8 @@ def wg_calls(monkeypatch):
     """Patch forecast.get_wind_grid; returns recorded (site, date) calls."""
     calls = []
 
-    async def fake(site, date):
-        calls.append((site, date))
+    async def fake(site, date, model=None):
+        calls.append((site, date, model))
         return b"PNGBYTES"
 
     monkeypatch.setattr(forecast, "get_wind_grid", fake)
@@ -512,7 +512,7 @@ async def test_overview_has_no_wind_grid_button(feed, session, fc_calls):
 
 async def test_wind_grid_button_sends_photo(feed, session, wg_calls):
     await feed(callback_update(f"wg|Гудаури|{TODAY}"))
-    assert wg_calls == [("Гудаури", TODAY)]
+    assert wg_calls == [("Гудаури", TODAY, None)]
     assert len(photos(session)) == 1
     assert any(a.text and "высот" in a.text for a in cb_answers(session))
 
@@ -539,7 +539,7 @@ async def test_wind_grid_malformed_callback_acked(feed, session, wg_calls):
 
 
 async def test_wind_grid_error_reaches_user(feed, session, monkeypatch):
-    async def fake(site, date):
+    async def fake(site, date, model=None):
         raise forecast.ForecastError("нет данных по высотам")
     monkeypatch.setattr(forecast, "get_wind_grid", fake)
     await feed(callback_update(f"wg|Гудаури|{TODAY}"))
@@ -633,7 +633,7 @@ async def test_model_invalid_key_lists_options(feed, session):
 async def test_analysis_rendered_as_html_bold(feed, session, monkeypatch):
     from aiogram.methods import SendMessage
 
-    async def fake(site, rng, date=None, deep=False):
+    async def fake(site, rng, date=None, deep=False, model=None):
         return "**Вердикт:** ок\nветер >7 м/с"
 
     monkeypatch.setattr(forecast, "get_analysis", fake)
@@ -644,3 +644,64 @@ async def test_analysis_rendered_as_html_bold(feed, session, monkeypatch):
     assert "<b>Вердикт:</b>" in msg.text     # **bold** → <b>
     assert "**" not in msg.text              # no raw markdown left
     assert "&gt;7" in msg.text               # literal > escaped, safe under HTML
+
+
+# ---------------------------------------------------------------- разовая модель в кнопках
+
+
+async def test_one_off_model_travels_to_every_button(feed, session, fc_calls):
+    """ИИ-разбор и ветер по высотам должны считаться по той же модели, что
+    показана: иначе разбор описывает не ту карточку, которую видит пользователь."""
+    await feed(callback_update(f"mf|ecmwf|Гудаури|1d|{TODAY}"))
+    more = [b.callback_data for b in buttons(kb_for(session, "Ещё:"))]
+    assert f"llm|Гудаури|1d|{TODAY}|e" in more
+    assert f"deep|Гудаури|1d|{TODAY}|e" in more
+    assert f"wg|Гудаури|{TODAY}|e" in more
+
+
+async def test_without_one_off_model_callbacks_are_unchanged(feed, session, fc_calls):
+    """Обычный путь остаётся байт-в-байт: код дописывается только при разовом
+    выборе, иначе он съедал бы запас длины у имён стартов."""
+    await feed(text_update("/today Гудаури"))
+    more = [b.callback_data for b in buttons(kb_for(session, "Ещё:"))]
+    assert f"llm|Гудаури|1d|{TODAY}" in more
+    assert not any(d.endswith("|e") or d.endswith("|a") for d in more)
+
+
+async def test_analysis_button_carries_the_one_off_model(feed, session, an_calls):
+    await feed(callback_update(f"llm|Гудаури|1d|{TODAY}|e"))
+    assert an_calls == [("Гудаури", "1d", TODAY, False, "ecmwf")]
+
+
+async def test_wind_grid_button_carries_the_one_off_model(feed, session, monkeypatch):
+    seen = {}
+
+    async def fake(site, date, model=None):
+        seen["model"] = model
+        return b"png"
+
+    monkeypatch.setattr(forecast, "get_wind_grid", fake)
+    await feed(callback_update(f"wg|Гудаури|{TODAY}|i"))
+    assert seen["model"] == "icon"
+
+
+async def test_day_picker_carries_the_one_off_model(feed, session, fc_calls):
+    await feed(callback_update(f"pd|Гудаури|{TODAY}|g"))
+    assert fc_calls == [("Гудаури", "1d", TODAY, "gfs")]
+
+
+async def test_unknown_model_code_falls_back_to_global(feed, session, an_calls):
+    """Устаревшая кнопка из старого сообщения не должна ронять обработчик."""
+    await feed(callback_update(f"llm|Гудаури|1d|{TODAY}|z"))
+    assert an_calls == [("Гудаури", "1d", TODAY, False, None)]
+
+
+def test_every_model_button_fits_the_callback_limit():
+    """Код модели съедает 2 байта из 64. Проверяем на реальных именах стартов."""
+    for site in [s["name"] for s in engine.load_sites()]:
+        for code in engine.MODEL_CODES.values():
+            for data in (f"llm|{site}|2weeks|2026-07-29|{code}",
+                         f"deep|{site}|2weeks|2026-07-29|{code}",
+                         f"wg|{site}|2026-07-29|{code}",
+                         f"pd|{site}|2026-07-29|{code}"):
+                assert len(data.encode("utf-8")) <= 64, data

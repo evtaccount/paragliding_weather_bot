@@ -162,6 +162,27 @@ def _btn(text: str, data: str) -> InlineKeyboardButton | None:
     return InlineKeyboardButton(text=text, callback_data=data)
 
 
+def _model_sfx(model: str | None) -> str:
+    """Хвост callback_data с кодом разовой модели. Пусто без разового выбора —
+    обычный путь не должен терять запас длины у имён стартов."""
+    return f"|{engine.model_code(model)}" if model else ""
+
+
+def _split_cb(data: str, n: int):
+    """Разбор callback_data на n полей плюс необязательный код модели последним.
+
+    Полный split, а не maxsplit: с ограничением дописанный код попал бы в поле
+    даты. Символ «|» в именах стартов запрещён при /add, поэтому полей ровно
+    столько, сколько положено. Возвращает (None, None) при неверном числе полей.
+    """
+    parts = data.split("|")
+    if len(parts) == n:
+        return parts, None
+    if len(parts) == n + 1:
+        return parts[:n], engine.model_for_code(parts[n])
+    return None, None
+
+
 _COORD_RE = re.compile(r"[-+]?\d+(?:[.,]\d+)?")
 
 
@@ -191,21 +212,22 @@ async def cb_message(cb: CallbackQuery) -> Message | None:
 _WD = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
 
 
-def _day_picker_kb(site: str, rng: str) -> InlineKeyboardMarkup | None:
+def _day_picker_kb(site: str, rng: str, model: str | None = None) -> InlineKeyboardMarkup | None:
     """Buttons for each day of an overview period → detailed 1-day forecast.
 
     Dates come from the cached overview facts (site-local, straight from the
     open-meteo response) — the server's own "today" can differ from the site's
     around midnight. Cold cache → fall back to server-local dates.
     """
-    dates = forecast.cached_dates(site, rng)
+    dates = forecast.cached_dates(site, rng, model=model)
     if dates is None:
         today = dt.date.today()
         dates = [(today + dt.timedelta(days=i)).isoformat() for i in range(engine.RANGE_DAYS[rng])]
+    sfx = _model_sfx(model)
     rows, row = [], []
     for iso in dates:
         d = dt.date.fromisoformat(iso)
-        btn = _btn(f"{_WD[d.weekday()]} {d.day:02d}.{d.month:02d}", f"pd|{site}|{iso}")
+        btn = _btn(f"{_WD[d.weekday()]} {d.day:02d}.{d.month:02d}", f"pd|{site}|{iso}{sfx}")
         if btn is None:
             continue
         row.append(btn)
@@ -304,19 +326,20 @@ async def send_forecast(message: Message, site: str, rng: str, date: str | None 
     elif files:
         await message.answer_media_group([InputMediaPhoto(media=f) for f in files])
     # LLM analysis is off by default — offer it on demand.
-    row = [_btn("🧠 Разбор от ИИ", f"llm|{site}|{rng}|{date or ''}")]
+    sfx = _model_sfx(model)
+    row = [_btn("🧠 Разбор от ИИ", f"llm|{site}|{rng}|{date or ''}{sfx}")]
     if rng == "1d":  # deep analysis (surrounding points + previous day) — 1-day only
-        row.append(_btn("📊 Глубокий разбор", f"deep|{site}|{rng}|{date or ''}"))
+        row.append(_btn("📊 Глубокий разбор", f"deep|{site}|{rng}|{date or ''}{sfx}"))
     row = [b for b in row if b is not None]
     kb_rows = [row] if row else []
     if rng == "1d":  # wind aloft grid (altitude × hour) — 1-day only
-        wg = _btn("🌬 Ветер по высотам", f"wg|{site}|{date or ''}")
+        wg = _btn("🌬 Ветер по высотам", f"wg|{site}|{date or ''}{sfx}")
         if wg is not None:
             kb_rows.append([wg])
     if kb_rows:
         await message.answer("Ещё:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows))
     if rng != "1d":  # overview → let the user drill into a single day
-        kb = _day_picker_kb(site, rng)
+        kb = _day_picker_kb(site, rng, model)
         if kb is not None:
             await message.answer("📅 Подробно по дню:", reply_markup=kb)
     eff = model or engine.get_model_key()
@@ -707,16 +730,16 @@ async def cb_analysis(cb: CallbackQuery):
     msg = await cb_message(cb)
     if msg is None:
         return
-    try:
-        kind, site, rng, date = cb.data.split("|", 3)
-    except ValueError:
+    parts, model = _split_cb(cb.data, 4)
+    if parts is None:
         await cb.answer()
         return
+    kind, site, rng, date = parts
     deep = kind == "deep"
     await cb.answer("Считаю глубокий разбор…" if deep else "Считаю разбор…")
     try:
         async with ChatActionSender.typing(bot=msg.bot, chat_id=msg.chat.id):
-            text = await forecast.get_analysis(site, rng, date or None, deep=deep)
+            text = await forecast.get_analysis(site, rng, date or None, deep=deep, model=model)
     except forecast.ForecastError as e:
         await msg.answer(f"⚠️ {e}")
         return
@@ -735,8 +758,12 @@ async def cb_pick_day(cb: CallbackQuery, state: FSMContext):
     msg = await cb_message(cb)
     if msg is None:
         return
+    parts, model = _split_cb(cb.data, 3)
+    if parts is None:
+        await cb.answer()
+        return
+    _, site, date = parts
     try:
-        _, site, date = cb.data.split("|", 2)
         day = dt.date.fromisoformat(date)
     except ValueError:
         await cb.answer()
@@ -750,7 +777,7 @@ async def cb_pick_day(cb: CallbackQuery, state: FSMContext):
         await state.clear()  # передумал вводить координаты — выбрал день
     await cb.answer(f"Прогноз на {date}…")
     # keep the picker in place — the user may want another day too
-    await send_forecast(msg, site, "1d", date)
+    await send_forecast(msg, site, "1d", date, model=model)
 
 
 @dp.callback_query(F.data.startswith("wg|"), flags={"forecast": True})
@@ -759,8 +786,12 @@ async def cb_wind_grid(cb: CallbackQuery):
     msg = await cb_message(cb)
     if msg is None:
         return
+    parts, model = _split_cb(cb.data, 3)
+    if parts is None:
+        await cb.answer()
+        return
+    _, site, date = parts
     try:
-        _, site, date = cb.data.split("|", 2)
         day = dt.date.fromisoformat(date)
     except ValueError:
         await cb.answer()
@@ -771,7 +802,7 @@ async def cb_wind_grid(cb: CallbackQuery):
     await cb.answer("Считаю ветер по высотам…")
     try:
         async with ChatActionSender.typing(bot=msg.bot, chat_id=msg.chat.id):
-            png = await forecast.get_wind_grid(site, date)
+            png = await forecast.get_wind_grid(site, date, model=model)
     except forecast.ForecastError as e:
         await msg.answer(f"⚠️ {e}")
         return
