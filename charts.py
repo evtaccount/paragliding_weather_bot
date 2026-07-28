@@ -21,6 +21,8 @@ GOOD  = (63, 143, 87)
 WARN  = (194, 94, 18)
 RAIN  = (194, 58, 82)
 BEST  = (47, 143, 82)
+TERRAIN = (150, 142, 128)   # заливка рельефа на разрезе маршрута
+BAND    = (110, 170, 210)   # заливка рабочего коридора
 
 # Цвет уровня оценки. Ключи — уровни criteria; сами пороги живут только там,
 # здесь остаётся исключительно палитра.
@@ -404,3 +406,212 @@ def overview_png(rows, site, rng, out):
         tail = f"{r['tmax']:.0f}°" + (f" · {r['precip']:.1f}мм" if r["precip"] > _criteria.RAIN_DAY_MM else "")
         d.text((cx, y1 + S(52)), tail, font=_font(11), fill=FAINT, anchor="mm")
     return _save(img, out, "04_overview.png")
+
+# ---------------------------------------------------------------- разрез маршрута
+ARROWS_MAX = 12             # больше стрелок в ряд слипаются в кашу
+
+
+def _arrow_indexes(n):
+    """Индексы точек, у которых рисуется стрелка ветра."""
+    step = max(1, math.ceil(n / ARROWS_MAX))
+    return list(range(0, n, step))
+
+
+def _runs(xs, ys):
+    """Непрерывные куски (x, y), обрывающиеся на None.
+
+    Соединять через пропуск нельзя: это рисование данных, которых нет.
+    """
+    out, cur = [], []
+    for x, y in zip(xs, ys):
+        if y is None:
+            if len(cur) > 1:
+                out.append(cur)
+            cur = []
+        else:
+            cur.append((x, y))
+    if len(cur) > 1:
+        out.append(cur)
+    return out
+
+
+def _ends(xs, ys):
+    """Левый и правый концы серии — (x, y) первого и последнего не-None."""
+    live = [(x, y) for x, y in zip(xs, ys) if y is not None]
+    return (live[0], live[-1]) if live else (None, None)
+
+
+def _collapsed_segments(floor, top):
+    """Индексы участков, где рабочего коридора нет: верх не выше пола.
+
+    Участок с неизвестными концами не считается схлопнутым — «неизвестно» и
+    «негде лететь» это разные вещи, и путать их в сторону тревоги тоже плохо.
+    """
+    out = []
+    for i in range(len(floor) - 1):
+        f0, f1, t0, t1 = floor[i], floor[i + 1], top[i], top[i + 1]
+        if None in (f0, f1, t0, t1):
+            continue
+        if t0 <= f0 or t1 <= f1:
+            out.append(i)
+    return out
+
+
+def _terrain_at(tkm, telev, km):
+    """Высота рельефа по мелкой сетке в заданном километре.
+
+    Отметки ставятся именно на неё, а не на terrain_m точки: terrain_m —
+    максимум по участку, и треугольник по нему повис бы над землёй.
+    """
+    i = min(range(len(tkm)), key=lambda k: abs(tkm[k] - km))
+    return telev[i]
+
+
+def route_section_png(profile, out):
+    """Разрез вдоль маршрута: рельеф, безопасная высота, рабочий коридор,
+    потолок термиков и база, ветер, время прилёта и лента лётности.
+
+    None, если рельефа нет: без него на картинке остаётся пустая рамка.
+    """
+    terrain = profile.get("terrain") or {}
+    tkm, telev = terrain.get("km") or [], terrain.get("elevations") or []
+    if not tkm or not telev:
+        return None
+    pts, r = profile["points"], profile["route"]
+    total = r.get("total_km") or tkm[-1] or 1.0
+
+    skm = [p["km"] for p in pts]
+    floor = [None if p.get("terrain_m") is None
+             else p["terrain_m"] + _criteria.MIN_WORKING_ALT_AGL for p in pts]
+    base = [p.get("cloud_base_m") for p in pts]
+    ceil = [p.get("thermal_ceiling_m") for p in pts]
+    top = [None if b is None and c is None
+           else min(v for v in (b, c) if v is not None) for b, c in zip(base, ceil)]
+
+    W, Ht = 1040, 660
+    img, d = _canvas(W, Ht)
+    L, R = 74, 30
+    x0, x1 = S(L), S(W - R)
+    y0, y1 = S(118), S(Ht - 176)
+    highs = [v for v in list(base) + list(ceil) + list(floor) if v is not None]
+    zmn = min(telev) - 100
+    zmx = max(highs + [max(telev)]) + 200
+    # Поле по краям: крайние точки стоят на 0 и на total, и без отступа их
+    # подписи налезают на названия строк слева и вылезают за холст справа.
+    pad = S(26)
+    xf = lambda km: x0 + pad + (x1 - x0 - 2 * pad) * km / max(total, 0.001)
+    yf = lambda z: y1 - (y1 - y0) * (z - zmn) / max(zmx - zmn, 1.0)
+
+    title = r.get("name") or "Маршрут"
+    d.text((S(40), S(28)), f"{title} — разрез маршрута {r['date']}",
+           font=_font(23, True), fill=INK, anchor="lm")
+    d.text((S(40), S(56)),
+           f"вылет {r.get('departure') or '—'} · {total:.0f} км · "
+           f"стрелки — куда дует · {r.get('timezone', '')}",
+           font=_font(13), fill=MUTED, anchor="lm")
+
+    for z in range(int((zmn // 500 + 1) * 500), int(zmx), 500):
+        yy = yf(z)
+        d.line([x0, yy, x1, yy], fill=GRID, width=1)
+        d.text((x0 - S(10), yy), f"{z}", font=_font(12), fill=FAINT, anchor="rm")
+    d.text((x0 - S(10), y0 - S(4)), "м MSL", font=_font(11), fill=FAINT, anchor="rb")
+
+    # Рабочий коридор — по трапеции на каждый участок между расчётными точками.
+    # Это главное, ради чего картинка рисуется: где он схлопывается, видно сразу.
+    collapsed = _collapsed_segments(floor, top)
+    for i in range(len(pts) - 1):
+        f0, f1, t0, t1 = floor[i], floor[i + 1], top[i], top[i + 1]
+        if None in (f0, f1, t0, t1):
+            continue
+        quad = [(xf(skm[i]), yf(f0)), (xf(skm[i + 1]), yf(f1)),
+                (xf(skm[i + 1]), yf(t1)), (xf(skm[i]), yf(t0))]
+        bad = i in collapsed
+        d.polygon(quad, fill=(RAIN if bad else BAND) + (56 if bad else 40,))
+        # Подписывается только ПЕРВЫЙ схлопнутый участок: дальше это видно по
+        # цвету, а повторные подписи на соседних участках налезают друг на друга.
+        if collapsed and i == collapsed[0]:
+            d.text(((xf(skm[i]) + xf(skm[i + 1])) / 2, yf(max(f0, f1)) - S(10)),
+                   f"коридора нет с {skm[i]:.0f} км", font=_font(11, True),
+                   fill=RAIN, anchor="mm")
+
+    ground = [(xf(km), yf(z)) for km, z in zip(tkm, telev)]
+    d.polygon(ground + [(xf(tkm[-1]), y1), (xf(tkm[0]), y1)], fill=TERRAIN + (210,))
+
+    # Пол рабочего коридора: ниже него working_band уходит в минус и срабатывает
+    # вето. Порог берётся из criteria, своей копии здесь не заводится.
+    for run in _runs(skm, floor):
+        for a, b in zip(run, run[1:]):
+            d.line([xf(a[0]), yf(a[1]), xf(b[0]), yf(b[1])], fill=MUTED, width=S(1))
+    # Подписи ставятся у КОНЦОВ линий, а не у их максимумов: линия наклонная, и
+    # подпись у максимума оказывается в стороне от того места, куда указывает.
+    _lo, hi = _ends(skm, floor)
+    if hi:
+        d.text((xf(hi[0]), yf(hi[1]) - S(6)),
+               f"безопасная высота (+{_criteria.MIN_WORKING_ALT_AGL} м)",
+               font=_font(11), fill=MUTED, anchor="rb")
+
+    for run in _runs(skm, ceil):
+        d.line([(xf(x), yf(y)) for x, y in run], fill=GUST, width=S(3), joint="curve")
+    for run in _runs(skm, base):
+        d.line([(xf(x), yf(y)) for x, y in run], fill=WIND, width=S(3), joint="curve")
+    lo, _hi = _ends(skm, ceil)
+    if lo:
+        d.text((xf(lo[0]), yf(lo[1]) - S(8)), "потолок термиков",
+               font=_font(12, True), fill=GUST, anchor="lb")
+    _lo, hi = _ends(skm, base)
+    if hi:
+        d.text((xf(hi[0]), yf(hi[1]) + S(8)), "база облаков",
+               font=_font(12, True), fill=WIND, anchor="rt")
+
+    # Отметки: обрыв важнее узкого места, узкое место важнее поворотной точки.
+    v = profile.get("verdict") or {}
+    marked = set()
+    for km, colour, label in (
+            (v.get("blocked_at_km"), RAIN, "обрыв"),
+            ((v.get("bottleneck") or {}).get("km"), WARN, "узкое место")):
+        if km is None or round(km, 1) in marked:
+            continue
+        marked.add(round(km, 1))
+        d.line([xf(km), y0, xf(km), y1], fill=colour, width=S(2))
+        d.text((xf(km), y0 - S(8)), f"{label}, {km:.0f} км",
+               font=_font(11, True), fill=colour, anchor="mb")
+    for p in pts:
+        if not p.get("is_turnpoint") or round(p["km"], 1) in marked:
+            continue
+        marked.add(round(p["km"], 1))
+        gy = yf(_terrain_at(tkm, telev, p["km"]))
+        d.polygon([(xf(p["km"]), gy - S(9)), (xf(p["km"]) - S(5), gy),
+                   (xf(p["km"]) + S(5), gy)], fill=INK)
+        if p.get("name"):
+            d.text((xf(p["km"]), gy - S(12)), p["name"], font=_font(11),
+                   fill=INK, anchor="mb")
+
+    # Полосы под панелью: стрелки ветра, километры, время прилёта, лента лётности.
+    ya = y1 + S(26)
+    for i in _arrow_indexes(len(pts)):
+        p = pts[i]
+        if p.get("wind_working_alt_dir") is not None:
+            _wind_arrow(d, xf(p["km"]), ya, p["wind_working_alt_dir"], S(9), WIND)
+            d.text((xf(p["km"]), ya + S(20)),
+                   f"{p.get('wind_working_alt_kmh') or 0:.0f}",
+                   font=_font(11), fill=MUTED, anchor="mm")
+        d.text((xf(p["km"]), ya + S(40)), f"{p['km']:.0f}",
+               font=_font(12), fill=FAINT, anchor="mm")
+        d.text((xf(p["km"]), ya + S(58)), p.get("eta") or "—",
+               font=_font(11), fill=FAINT, anchor="mm")
+    d.text((x0 - S(10), ya), "ветер", font=_font(11), fill=FAINT, anchor="rm")
+    d.text((x0 - S(10), ya + S(40)), "км", font=_font(11), fill=FAINT, anchor="rm")
+    d.text((x0 - S(10), ya + S(58)), "время", font=_font(11), fill=FAINT, anchor="rm")
+
+    ry0, ry1 = S(Ht - 42), S(Ht - 22)
+    for i, p in enumerate(pts):
+        lo = skm[i] if i == 0 else (skm[i - 1] + skm[i]) / 2
+        hi = skm[i] if i == len(pts) - 1 else (skm[i] + skm[i + 1]) / 2
+        d.rectangle([xf(lo), ry0, xf(hi), ry1],
+                    fill=GRADE_RGB.get(p.get("category"), MUTED) + (190,))
+        if p.get("vetoes"):
+            d.text(((xf(lo) + xf(hi)) / 2, (ry0 + ry1) / 2), "×",
+                   font=_font(11, True), fill=BG, anchor="mm")
+    d.text((x0 - S(10), (ry0 + ry1) / 2), "лётность", font=_font(11),
+           fill=FAINT, anchor="rm")
+    return _save(img, out, "06_route_section.png")
