@@ -194,6 +194,75 @@ def parse_gpx(data):
     raise RouteError("в GPX нет ни маршрута, ни трека, ни путевых точек")
 
 
+# ---------------------------------------------------------------- KML
+def _kml_coords(text):
+    """«долгота,широта[,высота] ...» → [(широта, долгота), ...].
+
+    Порядок в KML обратный GPX, и это главная ловушка формата: перепутать —
+    значит молча улететь в другое полушарие. Высота игнорируется: рельеф
+    берётся из DEM, а в файлах она бывает то над геоидом, то над эллипсоидом.
+    """
+    out = []
+    for chunk in (text or "").split():
+        parts = chunk.split(",")
+        if len(parts) < 2:
+            continue
+        try:
+            lon, lat = float(parts[0]), float(parts[1])
+        except ValueError:
+            continue
+        out.append((lat, lon))
+    return out
+
+
+def _kml_points(el, name=None):
+    out = []
+    for c in el.iter():
+        if _tag(c) == "coordinates":
+            out += [Point(lat, lon, name) for lat, lon in _kml_coords(c.text)]
+    return out
+
+
+def parse_kml(data):
+    """KML → (точки, имя маршрута). Приоритет: <LineString> → <Point> → любые
+    <coordinates> — та же логика «маршрут важнее трека важнее точек», что у GPX."""
+    if len(data) > MAX_GPX_BYTES:
+        raise RouteError(f"файл больше {MAX_GPX_BYTES // 1024} КБ — пришли маршрут покороче")
+    # Та же защита от «billion laughs», что и в parse_gpx: килобайтный файл с
+    # вложенными <!ENTITY> разворачивается в гигабайты и съедает память бота.
+    if b"<!DOCTYPE" in data[:4096].upper() or b"<!ENTITY" in data.upper():
+        raise RouteError("в файле есть объявления DOCTYPE или сущностей — "
+                         "такой KML не разбираю")
+    try:
+        root = ET.fromstring(data)
+    except ET.ParseError as e:
+        raise RouteError(f"не удалось разобрать KML: {e}") from None
+
+    marks = _find_all(root, "placemark")
+    name = next((_child_name(d) for d in _find_all(root, "document")
+                 if _child_name(d)), None)
+    if name is None:
+        name = next((_child_name(pm) for pm in marks if _child_name(pm)), None)
+
+    line = []
+    for ls in _find_all(root, "linestring"):
+        line += _kml_points(ls)
+    if line:
+        return _checked_count(_thin(line, MAX_POINTS)), name
+
+    pins = []
+    for pm in marks:
+        for pt in (el for el in pm.iter() if _tag(el) == "point"):
+            pins += _kml_points(pt, _child_name(pm))
+    if pins:
+        return _checked_count(_thin(pins, MAX_POINTS)), name
+
+    loose = _kml_points(root)
+    if loose:
+        return _checked_count(_thin(loose, MAX_POINTS)), name
+    raise RouteError("в KML нет ни линии маршрута, ни точек")
+
+
 # ---------------------------------------------------------------- геометрия
 EARTH_R_M = 6371008.8          # средний радиус Земли (IUGG)
 SAMPLE_STEP_KM = 10.0          # разрешение глобальных моделей open-meteo — 9–11 км;

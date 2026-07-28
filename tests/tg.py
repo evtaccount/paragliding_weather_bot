@@ -37,6 +37,18 @@ def dice_update(uid: int = 1) -> Update:
     return Update.model_validate({"update_id": next(_ids), "message": m})
 
 
+def document_update(file_name: str, file_size: int = 100, caption: str | None = None,
+                    uid: int = 1) -> Update:
+    """A sent file. The bytes themselves come from a patched Bot.download —
+    Telegram hands over a file_id, not the content."""
+    m = _base_msg(uid)
+    m["document"] = {"file_id": "f1", "file_unique_id": "u1",
+                     "file_name": file_name, "file_size": file_size}
+    if caption is not None:
+        m["caption"] = caption
+    return Update.model_validate({"update_id": next(_ids), "message": m})
+
+
 def callback_update(data: str, uid: int = 1, accessible: bool = True) -> Update:
     """Inline-button press. accessible=False models a stale (>48h) source message —
     Telegram omits it, aiogram exposes cb.message as None."""

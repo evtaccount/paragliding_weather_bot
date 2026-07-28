@@ -839,7 +839,7 @@ ROUTE_HELP = ("Пришли маршрут списком координат —
               "42.4776, 44.4787, старт\n"
               "42.2104, 44.6890, финиш\n\n"
               "Дата и время вылета необязательны: без времени берётся начало "
-              "термического окна в первой точке. GPX-файл тоже подойдёт.")
+              "термического окна в первой точке. Файл GPX или KML тоже подойдёт.")
 
 
 def _parse_when(args: str):
@@ -1011,18 +1011,25 @@ async def cb_saved_route(cb: CallbackQuery):
     await _send_route(msg, pts, name, dt.date.today().isoformat(), None)
 
 
+_DOC_PARSERS = ((".gpx", route.parse_gpx), (".kml", route.parse_kml))
+
+
 @dp.message(F.document, flags={"forecast": True})
-async def route_gpx_document(message: Message):
+async def route_document(message: Message):
     doc = message.document
-    if not (doc.file_name or "").lower().endswith(".gpx"):
-        return await message.answer("Я понимаю только GPX-файлы маршрутов.")
+    fname = (doc.file_name or "").lower()
+    if fname.endswith(".kmz"):
+        return await message.answer("KMZ — это архив. Распакуй и пришли .kml")
+    parser = next((p for ext, p in _DOC_PARSERS if fname.endswith(ext)), None)
+    if parser is None:
+        return await message.answer("Я понимаю маршруты в форматах GPX и KML.")
     if (doc.file_size or 0) > route.MAX_GPX_BYTES:
         return await message.answer(
             f"❌ файл больше {route.MAX_GPX_BYTES // 1024} КБ — пришли маршрут покороче")
     buf = io.BytesIO()
     await message.bot.download(doc, destination=buf)
     try:
-        points, name = route.parse_gpx(buf.getvalue())
+        points, name = parser(buf.getvalue())
     except route.RouteError as e:
         return await message.answer(f"❌ {e}")
     date, departure = _parse_when(message.caption or "")
