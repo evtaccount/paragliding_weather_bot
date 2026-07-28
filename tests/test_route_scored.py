@@ -130,3 +130,55 @@ async def test_reverse_is_flagged_better_only_past_the_threshold(api):
     p = await forecast.get_route(PTS, "Тест", DATE, departure_h=11.5)
     gain = (p["reverse"]["score"] or 0) - (p["verdict"]["score"] or 0)
     assert p["reverse"]["better"] is (gain >= criteria.REVERSE_GAIN)
+
+
+# ---------------------------------------------------------------- поля для спеки 3
+async def test_profile_carries_the_fine_terrain_grid(api):
+    """Разрезу нужен рельеф МЕЖДУ расчётными точками, а не только под ними."""
+    p = await forecast.get_route(PTS, "Тест", DATE, departure_h=11.5)
+    t = p["terrain"]
+    assert len(t["km"]) == len(t["elevations"])
+    assert t["km"][0] == 0.0
+    assert t["km"] == sorted(t["km"])
+    assert t["km"][-1] == pytest.approx(p["route"]["total_km"], rel=1e-3)
+
+
+async def test_terrain_grid_is_finer_than_the_weather_points(api):
+    p = await forecast.get_route(PTS, "Тест", DATE, departure_h=11.5)
+    assert len(p["terrain"]["km"]) > len(p["points"])
+
+
+async def test_no_terrain_means_no_grid(monkeypatch):
+    async def fake_weather(url):
+        return om_route(_n(url))
+
+    async def fake_terrain(coords):
+        return None
+
+    monkeypatch.setattr(forecast, "_fetch_route_weather", fake_weather)
+    monkeypatch.setattr(forecast, "fetch_terrain", fake_terrain)
+    p = await forecast.get_route(PTS, "Тест", DATE, departure_h=11.5)
+    assert p["terrain"] is None
+
+
+async def test_points_carry_turnpoint_ceiling_and_subscores(api):
+    p = await forecast.get_route(PTS, "Тест", DATE, departure_h=11.5)
+    first, middle = p["points"][0], p["points"][1]
+    assert first["is_turnpoint"] is True
+    assert middle["is_turnpoint"] is False
+    assert first["thermal_ceiling_m"] > first["terrain_m"]
+    assert first["subs"] and first["groups"]
+
+
+async def test_ceiling_is_none_without_terrain(monkeypatch):
+    """Потолок считается ОТ рельефа: нет рельефа — нет и потолка, а не ноль."""
+    async def fake_weather(url):
+        return om_route(_n(url))
+
+    async def fake_terrain(coords):
+        return None
+
+    monkeypatch.setattr(forecast, "_fetch_route_weather", fake_weather)
+    monkeypatch.setattr(forecast, "fetch_terrain", fake_terrain)
+    p = await forecast.get_route(PTS, "Тест", DATE, departure_h=11.5)
+    assert all(pt["thermal_ceiling_m"] is None for pt in p["points"])

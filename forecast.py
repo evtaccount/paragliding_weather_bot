@@ -402,6 +402,19 @@ def _wind_at(sample, body, hour):
     return route.ms_to_kmh(ms), deg
 
 
+def _ceiling_m(s):
+    """Потолок термиков в метрах MSL: рельеф плюс глубина пограничного слоя.
+
+    Берётся terrain_m (максимум по участку), а не terrain_point_m — тот же
+    консервативный выбор, что уже сделан для working_band_m. Иначе потолок и
+    рабочий коридор считались бы от разных отметок.
+    """
+    blh = (s.weather or {}).get("boundary_layer_height")
+    if s.terrain_m is None or blh is None:
+        return None
+    return round(s.terrain_m + blh)
+
+
 def _point_dict(s):
     return {
         "km": round(s.km, 1), "leg_length_km": round(s.leg_length_km, 1), "role": s.role,
@@ -428,6 +441,10 @@ def _point_dict(s):
         "limiting": None if s.assessment is None else s.assessment.limiting_label,
         "vetoes": [] if s.assessment is None else criteria.veto_labels(s.assessment.vetoes),
         "storm_ahead": s.storm_ahead,
+        "is_turnpoint": s.is_turnpoint,
+        "thermal_ceiling_m": _ceiling_m(s),
+        "subs": {} if s.assessment is None else s.assessment.subs,
+        "groups": {} if s.assessment is None else s.assessment.groups,
     }
 
 
@@ -621,6 +638,12 @@ async def get_route(points, name, date, departure_h=None):
             "model": engine.model_label(engine.get_model_key()),
         },
         "points": [_point_dict(s) for s in work],
+        # Мелкая сетка рельефа отдаётся ЦЕЛИКОМ и со своим километражом.
+        # terrain_grid делит каждое плечо на целое число равных частей, поэтому
+        # шаг у разных плеч разный и «i * step_km» дал бы неверный километраж —
+        # рельеф на разрезе молча съехал бы относительно погоды.
+        "terrain": ({"km": [round(km, 3) for km, _lat, _lon in grid],
+                     "elevations": elev} if elev else None),
         "verdict": {
             "score": verdict.score, "category": verdict.category,
             "label": verdict.label, "emoji": verdict.emoji,
