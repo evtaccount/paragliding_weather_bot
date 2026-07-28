@@ -1022,6 +1022,79 @@ async def cb_route_point(cb: CallbackQuery):
     await msg.answer(text or "Точка не найдена — посчитай маршрут заново.")
 
 
+@dp.callback_query(F.data.regexp(r"^rt\|[^|]+\|sec$"))
+async def cb_route_section(cb: CallbackQuery):
+    _prefix, token, _action = cb.data.split("|")
+    await cb.answer()
+    msg = await cb_message(cb)
+    if msg is None:
+        return
+    entry = _route_cache.get(token)
+    if entry is None:
+        return await msg.answer("Маршрут устарел, посчитай заново: /route")
+    try:
+        png = await forecast.get_route_section(
+            entry["points"], entry["name"], entry["date"], entry["departure"])
+    except forecast.ForecastError as e:
+        return await msg.answer(str(e))
+    await msg.answer_photo(BufferedInputFile(png, filename="route_section.png"))
+
+
+_DEPARTURE_BUTTONS = 12     # клавиатура из двух десятков времён нечитаема
+
+
+def _departure_keyboard(token, scan):
+    """Времена вылета из скана, прорежённые до читаемого числа кнопок."""
+    step = max(1, math.ceil(len(scan) / _DEPARTURE_BUTTONS))
+    rows, row = [], []
+    for e in scan[::step][:_DEPARTURE_BUTTONS]:
+        mark = "🟢" if e["feasibility"] == "completable" else "·"
+        btn = _btn(f"{mark} {e['departure']}", f"rt|{token}|dep|{e['departure']}")
+        if btn is None:
+            continue
+        row.append(btn)
+        if len(row) == 4:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
+
+
+@dp.callback_query(F.data.regexp(r"^rt\|[^|]+\|dep$"))
+async def cb_route_departures(cb: CallbackQuery):
+    _prefix, token, _action = cb.data.split("|")
+    profile = await _profile_from_token(cb, token)
+    if profile is None:
+        return
+    await cb.answer()
+    msg = await cb_message(cb)
+    if msg is None:
+        return
+    scan = profile.get("departure_scan") or []
+    if not scan:
+        return await msg.answer("Скан времён вылета пуст — "
+                                "термическое окно не открывается.")
+    await msg.answer("Во сколько вылетаем?",
+                     reply_markup=_departure_keyboard(token, scan))
+
+
+@dp.callback_query(F.data.regexp(r"^rt\|[^|]+\|dep\|"))
+async def cb_route_departure_pick(cb: CallbackQuery):
+    _prefix, token, _action, hhmm = cb.data.split("|", 3)
+    entry = _route_cache.get(token)
+    if entry is None:
+        return await cb.answer("Маршрут устарел, посчитай заново: /route",
+                               show_alert=True)
+    await cb.answer()
+    msg = await cb_message(cb)
+    if msg is None:
+        return
+    h, m = hhmm.split(":")
+    await _send_route(msg, entry["points"], entry["name"], entry["date"],
+                      int(h) + int(m) / 60.0)
+
+
 @dp.callback_query(F.data.startswith("rr|"))
 async def cb_saved_route(cb: CallbackQuery):
     name = cb.data.split("|", 1)[1]

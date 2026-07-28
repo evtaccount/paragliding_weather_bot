@@ -5,7 +5,8 @@ import bot as botmod
 import forecast
 import route
 from fixtures import om_route
-from tg import buttons, callback_update, cb_answers, keyboards, text_update, texts
+from tg import (buttons, callback_update, cb_answers, keyboards, photos,
+                text_update, texts)
 
 BODY = ("/route\n"
         "42.4776, 44.4787, старт\n"
@@ -109,3 +110,78 @@ async def test_an_unknown_kilometre_is_reported(feed, session, api):
     await feed(text_update(BODY))
     await feed(callback_update(f"rt|{_last_token()}|pt|999"))
     assert "не найдена" in texts(session)[-1]
+
+
+# ---------------------------------------------------------------- разрез
+async def test_the_section_button_sends_a_photo(feed, session, api):
+    await feed(text_update(BODY))
+    await feed(callback_update(f"rt|{_last_token()}|sec"))
+    assert photos(session)
+
+
+async def test_the_section_costs_no_new_api_calls(feed, api):
+    """Погода уже в кэше: кнопка не должна ходить в open-meteo заново."""
+    await feed(text_update(BODY))
+    before = dict(api)
+    await feed(callback_update(f"rt|{_last_token()}|sec"))
+    assert api == before
+
+
+async def test_without_terrain_the_button_explains_itself(feed, session, monkeypatch):
+    async def fake_weather(url):
+        return om_route(_n(url))
+
+    async def no_terrain(coords):
+        return None
+
+    monkeypatch.setattr(forecast, "_fetch_route_weather", fake_weather)
+    monkeypatch.setattr(forecast, "fetch_terrain", no_terrain)
+    await feed(text_update(BODY))
+    await feed(callback_update(f"rt|{_last_token()}|sec"))
+    assert "рельеф" in texts(session)[-1].lower()
+    assert not photos(session)
+
+
+async def test_a_lost_token_on_the_section_button_says_so(feed, session, api):
+    await feed(callback_update("rt|неттакого|sec"))
+    assert "устарел" in texts(session)[-1]
+
+
+# ---------------------------------------------------------------- время вылета
+async def test_the_departure_button_offers_times(feed, session, api):
+    await feed(text_update(BODY))
+    await feed(callback_update(f"rt|{_last_token()}|dep"))
+    labels = [b.text for b in buttons(keyboards(session)[-1])]
+    assert any(":" in t for t in labels)
+
+
+async def test_picking_a_time_recomputes_the_card(feed, session, api):
+    await feed(text_update(BODY))
+    await feed(callback_update(f"rt|{_last_token()}|dep|13:00"))
+    card = [t for t in texts(session) if "🗺" in t][-1]
+    assert "13:00" in card
+
+
+async def test_the_recomputed_card_keeps_its_buttons(feed, session, api):
+    await feed(text_update(BODY))
+    await feed(callback_update(f"rt|{_last_token()}|dep|13:00"))
+    assert any("Разрез" in b.text for b in buttons(keyboards(session)[-1]))
+
+
+async def test_the_time_list_is_capped(feed, session, api):
+    """Скан даёт два десятка вариантов; клавиатура из двадцати кнопок нечитаема."""
+    await feed(text_update(BODY))
+    await feed(callback_update(f"rt|{_last_token()}|dep"))
+    assert len(buttons(keyboards(session)[-1])) <= botmod._DEPARTURE_BUTTONS
+
+
+async def test_completable_times_are_marked(feed, session, api):
+    await feed(text_update(BODY))
+    await feed(callback_update(f"rt|{_last_token()}|dep"))
+    labels = [b.text for b in buttons(keyboards(session)[-1])]
+    assert any("🟢" in t or "·" in t for t in labels)
+
+
+async def test_a_lost_token_on_the_departure_button_says_so(feed, session, api):
+    await feed(callback_update("rt|неттакого|dep"))
+    assert "устарел" in cb_answers(session)[-1].text

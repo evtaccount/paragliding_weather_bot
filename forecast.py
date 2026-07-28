@@ -663,6 +663,21 @@ async def get_route(points, name, date, departure_h=None):
     }
 
 
+async def get_route_section(points, name, date, departure_h=None) -> bytes:
+    """PNG-разрез вдоль маршрута. Профиль пересчитывается поверх тёплого кэша,
+    поэтому кнопка не стоит ни одного нового запроса к open-meteo."""
+    profile = await get_route(points, name, date, departure_h)
+    out = tempfile.mkdtemp(prefix="pgrs_")
+    try:
+        import charts
+        path = charts.route_section_png(profile, out)
+        if path is None:
+            raise ForecastError("Разрез недоступен: рельеф не загрузился.")
+        return pathlib.Path(path).read_bytes()
+    finally:
+        shutil.rmtree(out, ignore_errors=True)
+
+
 async def get_analysis(site_name: str, rng: str, date: str | None = None, deep: bool = False) -> str:
     """LLM analysis over the cached facts.
 
