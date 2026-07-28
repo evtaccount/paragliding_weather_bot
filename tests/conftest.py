@@ -69,6 +69,21 @@ def write_sites(sites: list[dict]):
 
 
 @pytest.fixture(autouse=True)
+def no_ceiling_request(monkeypatch):
+    """Побочный запрос за потолком заглушён по умолчанию.
+
+    Он ходит из _fetch_build и _ensure_route_weather, которые тесты мокают
+    по отдельности, — без этой заглушки каждый такой тест уходил бы в сеть и
+    висел до 30-секундного таймаута httpx. Тесты самой подстановки
+    переопределяют заглушку своим моком.
+    """
+    async def none(url):
+        return None
+
+    monkeypatch.setattr(forecast, "_fetch_ceiling", none)
+
+
+@pytest.fixture(autouse=True)
 def fresh_state():
     """Default sites on disk, empty caches/ad-hoc registry, empty FSM storage."""
     write_sites(DEFAULT_SITES["sites"])
@@ -107,11 +122,11 @@ def feed(tg_bot):
 
 @pytest.fixture()
 def fc_calls(monkeypatch):
-    """Patch forecast.get_forecast; returns the recorded (site, rng, date) calls."""
+    """Patch forecast.get_forecast; returns the recorded (site, rng, date, model) calls."""
     calls = []
 
-    async def fake(site, rng, date=None):
-        calls.append((site, rng, date))
+    async def fake(site, rng, date=None, model=None):
+        calls.append((site, rng, date, model))
         return f"CARD {site} {rng} {date}", [b"png"]
 
     monkeypatch.setattr(forecast, "get_forecast", fake)
@@ -120,11 +135,11 @@ def fc_calls(monkeypatch):
 
 @pytest.fixture()
 def an_calls(monkeypatch):
-    """Patch forecast.get_analysis; returns the recorded (site, rng, date, deep) calls."""
+    """Patch forecast.get_analysis; returns the recorded (site, rng, date, deep, model) calls."""
     calls = []
 
-    async def fake(site, rng, date=None, deep=False):
-        calls.append((site, rng, date, deep))
+    async def fake(site, rng, date=None, deep=False, model=None):
+        calls.append((site, rng, date, deep, model))
         return "АНАЛИЗ ГОТОВ"
 
     monkeypatch.setattr(forecast, "get_analysis", fake)

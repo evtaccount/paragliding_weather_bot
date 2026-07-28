@@ -43,3 +43,29 @@ def test_facts_1day_nulls_missing_and_reports_model():
 def test_facts_1day_full_keeps_ceiling():
     f = engine.facts_1day(_data(), _site())
     assert f["thermal_ceiling_m_agl"] is not None and f["freezing_level_m"] is not None
+
+
+# ---------------------------------------------------------------- подпись модели
+
+
+def test_model_note_reports_borrowed_ceiling():
+    """Подпись должна признаваться, что потолок не от выбранной модели: иначе
+    ИИ-разбор припишет число ECMWF, который его вообще не считает."""
+    data = {"_model_key": "ecmwf", "_ceiling_model": "gfs"}
+    assert engine._model_note(data) == "ECMWF (потолок GFS)"
+
+
+def test_model_note_plain_when_ceiling_is_own():
+    assert engine._model_note({"_model_key": "gfs", "_ceiling_model": "gfs"}) == "GFS"
+
+
+def test_model_note_plain_without_splice():
+    """Побочный запрос не удался — штампа нет, оговорки тоже."""
+    assert engine._model_note({"_model_key": "ecmwf"}) == "ECMWF"
+
+
+def test_model_note_falls_back_to_global(monkeypatch):
+    """Прямой вызов из CLI и старых тестов: данных без штампа быть не должно,
+    но падать на них нельзя."""
+    monkeypatch.setattr(engine, "get_model_key", lambda: "icon")
+    assert engine._model_note({}) == "ICON"
