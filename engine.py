@@ -396,6 +396,21 @@ def _series_available(H, key):
     return bool(v) and any(x is not None for x in v)
 
 
+def _model_note(data):
+    """Подпись модели для карточки и фактов.
+
+    Потолок берётся из отдельной модели, и об этом надо сказать прямо: без
+    оговорки читатель (и LLM) припишет число выбранной модели, у которой его нет.
+    Штампы кладёт слой forecast; их отсутствие означает прямой вызов мимо него.
+    """
+    key = data.get("_model_key") or get_model_key()
+    label = model_label(key)
+    ceiling = data.get("_ceiling_model")
+    if ceiling and ceiling != key:
+        return f"{label} (потолок {model_label(ceiling)})"
+    return label
+
+
 # ---------------------------------------------------------------- derived metrics
 # open-meteo даёт сырые поля; критериям из criteria.py нужны производные величины.
 # Всё считается локально. Где величины нет и честно посчитать её нельзя — None,
@@ -805,7 +820,7 @@ def report_1day(data, site, out, assessment=None):
         verdict += f" — {round(assess.score)}/100"
     card_lines = [
         f"🪂 {site['name']}{(' (' + card(aspect) + ')') if aspect is not None else ''} — прогноз на {fmt_date(t[0])}",
-        f"📍 {site['lat']:.3f}, {site['lon']:.3f} · {elev} м · {data.get('timezone','')} · {model_label(get_model_key())}",
+        f"📍 {site['lat']:.3f}, {site['lon']:.3f} · {elev} м · {data.get('timezone','')} · {_model_note(data)}",
         "",
         verdict,
     ]
@@ -1014,7 +1029,7 @@ def facts_1day(data, site, assessment=None):
 
     return {
         "site": {"name": site["name"], "aspect": card(aspect) if aspect is not None else None, "aspect_deg": aspect,
-                 "elevation_m": elev, "timezone": data.get("timezone"), "model": model_label(get_model_key())},
+                 "elevation_m": elev, "timezone": data.get("timezone"), "model": _model_note(data)},
         "date": t[0][:10],
         "daylight_hours": f"{hour_of(sr):02d}-{hour_of(ss):02d}",
         "thermal_window": thermal_window,
