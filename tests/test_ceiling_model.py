@@ -114,3 +114,64 @@ async def test_route_weather_skips_side_request_when_gfs_selected(monkeypatch):
     forecast._rcache.clear()
 
     await forecast._ensure_route_weather([Sample(km=0.0, lat=42.0, lon=44.0)], "2026-07-29")
+
+
+# ---------------------------------------------------------------- разовая модель
+
+
+def test_cache_key_separates_models():
+    """Разовый рендер не должен вытеснять запись глобальной модели и наоборот."""
+    import engine
+    engine.set_model_key("auto")
+    _s, _d, glob = forecast._resolve("Гудаури", "1d", "2026-07-29")
+    _s, _d, once = forecast._resolve("Гудаури", "1d", "2026-07-29", model="ecmwf")
+    assert glob != once
+    assert glob[3] == "auto" and once[3] == "ecmwf"
+    assert engine.get_model_key() == "auto"  # _resolve ничего не пишет
+
+
+async def test_get_forecast_passes_model_down(monkeypatch):
+    seen = {}
+
+    async def fake_build(site, rng, date, model=None):
+        seen["model"] = model
+        return "CARD", [], {}, "FB", [], None
+
+    monkeypatch.setattr(forecast, "_fetch_build", fake_build)
+    await forecast.get_forecast("Гудаури", "1d", "2026-07-29", model="icon")
+    assert seen["model"] == "icon"
+
+
+async def test_analysis_uses_the_same_model_as_the_card(monkeypatch):
+    """Разбор должен описывать ту карточку, которую видит пользователь."""
+    seen = []
+
+    async def fake_build(site, rng, date, model=None):
+        seen.append(model)
+        return "CARD", [], {"a": 1}, "CARD tail", [], {"grid": True}
+
+    monkeypatch.setattr(forecast, "_fetch_build", fake_build)
+    await forecast.get_analysis("Гудаури", "1d", "2026-07-29", model="ecmwf")
+    assert seen == ["ecmwf"]
+
+
+async def test_wind_grid_uses_the_same_model_as_the_card(monkeypatch):
+    import pathlib
+
+    import charts
+
+    seen = []
+
+    async def fake_build(site, rng, date, model=None):
+        seen.append(model)
+        return "CARD", [], {}, "FB", [], {"levels": [], "hours": []}
+
+    def fake_png(grid, site, out):
+        path = pathlib.Path(out) / "grid.png"
+        path.write_bytes(b"PNG")
+        return str(path)
+
+    monkeypatch.setattr(forecast, "_fetch_build", fake_build)
+    monkeypatch.setattr(charts, "wind_grid_png", fake_png)
+    assert await forecast.get_wind_grid("Гудаури", "2026-07-29", model="icon") == b"PNG"
+    assert seen == ["icon"]

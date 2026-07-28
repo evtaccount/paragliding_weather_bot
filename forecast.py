@@ -119,7 +119,7 @@ def _daytime_summary(hourly: dict, lo: int = 9, hi: int = 18) -> dict:
             "precip_mm": round(sum(p[i] for i in idx), 1)}
 
 
-async def _detail_context(site: dict, date: str) -> dict:
+async def _detail_context(site: dict, date: str, model: str | None = None) -> dict:
     """Extra data for the DEEP analysis: a 4-point ring around the launch (one
     multi-location request) + the previous day at the launch. Best-effort — a failed
     sub-fetch just omits that piece. This DOES query open-meteo (new data, by design)."""
@@ -147,7 +147,7 @@ async def _detail_context(site: dict, date: str) -> dict:
 
         try:
             prev = (dt.date.fromisoformat(date) - dt.timedelta(days=1)).isoformat()
-            r = await client.get(engine.build_url(site, "1d", prev))
+            r = await client.get(engine.build_url(site, "1d", prev, model=model))
             r.raise_for_status()
             ctx["previous_day"] = engine.brief_1day(r.json(), site)
         except Exception as e:  # noqa: BLE001
@@ -167,7 +167,7 @@ def register_adhoc(lat: float, lon: float, elev: int) -> str:
     return name
 
 
-def _resolve(site_name: str, rng: str, date: str | None):
+def _resolve(site_name: str, rng: str, date: str | None, model: str | None = None):
     if rng not in engine.RANGE_DAYS:
         raise ForecastError(f"Неизвестный диапазон: {rng}")
     try:
@@ -181,13 +181,14 @@ def _resolve(site_name: str, rng: str, date: str | None):
             raise ForecastError(f"Старт не найден: {site_name}. /sites — список.")
     if rng == "1d" and not date:
         date = dt.date.today().isoformat()
-    return site, date, (site["name"], rng, date, engine.get_model_key())
+    return site, date, (site["name"], rng, date, model or engine.get_model_key())
 
 
-def cached_dates(site_name: str, rng: str, date: str | None = None) -> list[str] | None:
+def cached_dates(site_name: str, rng: str, date: str | None = None,
+                 model: str | None = None) -> list[str] | None:
     """Dates (site-local) of a cached overview — for the day-picker. None on a cold cache."""
     try:
-        _site, _date, key = _resolve(site_name, rng, date)
+        _site, _date, key = _resolve(site_name, rng, date, model)
     except ForecastError:
         return None
     entry = _fcache.get(key)
@@ -324,18 +325,22 @@ async def _ensure(site: dict, rng: str, date: str | None, key: tuple, model: str
     return card, pngs, facts, fallback, rows, grid
 
 
-async def get_forecast(site_name: str, rng: str, date: str | None = None):
-    """Factual card + charts. No LLM. rng: 1d | 3d | week | 2weeks."""
-    site, date, key = _resolve(site_name, rng, date)
-    card, pngs, _facts, _fallback, _rows, _grid = await _ensure(site, rng, date, key)
+async def get_forecast(site_name: str, rng: str, date: str | None = None,
+                       model: str | None = None):
+    """Factual card + charts. No LLM. rng: 1d | 3d | week | 2weeks.
+
+    `model` — разовый выбор кнопкой под прогнозом; глобальную настройку не трогает.
+    """
+    site, date, key = _resolve(site_name, rng, date, model)
+    card, pngs, _facts, _fallback, _rows, _grid = await _ensure(site, rng, date, key, model)
     return card, pngs
 
 
-async def get_wind_grid(site_name: str, date: str) -> bytes:
+async def get_wind_grid(site_name: str, date: str, model: str | None = None) -> bytes:
     """PNG of the altitude × hour wind grid for a single day. Reuses the warm 1d cache
     (no re-fetch) and builds the image on demand — /today never pays for it unused."""
-    site, date, key = _resolve(site_name, "1d", date)
-    _card, _pngs, _facts, _fallback, _rows, grid = await _ensure(site, "1d", date, key)
+    site, date, key = _resolve(site_name, "1d", date, model)
+    _card, _pngs, _facts, _fallback, _rows, grid = await _ensure(site, "1d", date, key, model)
     if not grid:
         raise ForecastError("Данные по высотам недоступны для этого дня.")
     out = tempfile.mkdtemp(prefix="pgwg_")
@@ -830,7 +835,8 @@ async def get_route_analysis(points, name, date, departure_h=None) -> str:
     return route.render_analysis(answer)
 
 
-async def get_analysis(site_name: str, rng: str, date: str | None = None, deep: bool = False) -> str:
+async def get_analysis(site_name: str, rng: str, date: str | None = None, deep: bool = False,
+                       model: str | None = None) -> str:
     """LLM analysis over the cached facts.
 
     deep=False — reuse the data get_forecast already fetched; NO open-meteo re-request
@@ -840,7 +846,7 @@ async def get_analysis(site_name: str, rng: str, date: str | None = None, deep: 
 
     Falls back to the deterministic rule text when Gemini is unavailable.
     """
-    site, date, base_key = _resolve(site_name, rng, date)
+    site, date, base_key = _resolve(site_name, rng, date, model)
     mode = "deep" if deep else "fast"
     acache_key = base_key + (mode,)
     now = time.monotonic()
@@ -849,7 +855,7 @@ async def get_analysis(site_name: str, rng: str, date: str | None = None, deep: 
         log.info("analysis cache hit: %s", acache_key)
         return _acache[acache_key][1]
 
-    card, _pngs, facts, fallback, _rows, _grid = await _ensure(site, rng, date, base_key)
+    card, _pngs, facts, fallback, _rows, _grid = await _ensure(site, rng, date, base_key, model)
     rules_tail = fallback[len(card):].strip() or fallback  # deterministic verdict tail
 
     if not analysis.available():
@@ -858,7 +864,7 @@ async def get_analysis(site_name: str, rng: str, date: str | None = None, deep: 
 
     payload = facts
     if deep:  # additional data — this DOES query open-meteo
-        ctx = await _detail_context(site, date)
+        ctx = await _detail_context(site, date, model)
         payload = {**facts, "context": ctx}
 
     t0 = time.monotonic()
