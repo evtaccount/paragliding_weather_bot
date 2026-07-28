@@ -581,6 +581,57 @@ CAPE_WATCH = 800.0             # с этого значения гроза ст�
 LI_WATCH = -2.0
 
 
+# ---------------------------------------------------------------- характерные точки
+KEY_POINT_LIMIT = 8            # длиннее ряд кнопок в Telegram не читается
+_KM_EPS = 0.05                 # километраж округлён до десятой, сравнивать точно нельзя
+
+# Вид точки → метка, в порядке убывания важности. Точка, подходящая под несколько
+# видов, показывается ОДИН раз — с меткой самого важного из них.
+_KEY_MARKS = (("blocked", "⛔"), ("bottleneck", "⚠"), ("takeoff", "△"),
+              ("goal", "⚑"), ("turnpoint", "◆"), ("peak", "▲"))
+# Кого выбрасывать первым, когда точек больше лимита: с хвоста этого списка.
+_KEY_KEEP_ORDER = ("takeoff", "goal", "blocked", "bottleneck", "turnpoint", "peak")
+
+
+def _kinds_of(p, blocked, bottleneck):
+    kinds = set()
+    if blocked is not None and abs(p["km"] - blocked) < _KM_EPS:
+        kinds.add("blocked")
+    if bottleneck is not None and abs(p["km"] - bottleneck) < _KM_EPS:
+        kinds.add("bottleneck")
+    if p.get("role") in ("takeoff", "goal"):
+        kinds.add(p["role"])
+    elif p.get("is_turnpoint"):
+        kinds.add("turnpoint")
+    if p.get("is_terrain_peak"):
+        kinds.add("peak")
+    return kinds
+
+
+def key_points(profile):
+    """Точки, ради которых стоит открывать подробности: старт, финиш, обрыв,
+    узкое место, поворотные и вершины рельефа.
+
+    Не больше KEY_POINT_LIMIT: расчётных точек бывает полсотни, и вываливать их
+    все кнопками — значит не помочь выбрать, а переложить выбор на пилота.
+    """
+    pts = profile.get("points") or []
+    v = profile.get("verdict") or {}
+    blocked = v.get("blocked_at_km")
+    bottleneck = (v.get("bottleneck") or {}).get("km")
+    found = []
+    for p in pts:
+        kinds = _kinds_of(p, blocked, bottleneck)
+        if kinds:
+            mark = next(m for k, m in _KEY_MARKS if k in kinds)
+            found.append({"km": p["km"], "mark": mark, "kinds": kinds})
+    if len(found) <= KEY_POINT_LIMIT:
+        return found
+    rank = {k: i for i, k in enumerate(_KEY_KEEP_ORDER)}
+    keep = sorted(found, key=lambda f: min(rank[k] for k in f["kinds"]))[:KEY_POINT_LIMIT]
+    return sorted(keep, key=lambda f: f["km"])
+
+
 def _signed(v):
     """Число со знаком минус-тире, без выравнивания: «+330», «−25»."""
     return "н/д" if v is None else f"{'−' if v < 0 else '+'}{abs(v):.0f}"
