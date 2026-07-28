@@ -60,8 +60,8 @@ def test_cache_key_includes_model(monkeypatch):
 
     calls = []
 
-    async def fake_build(site, rng, date):
-        calls.append((engine.get_model_key(), rng))
+    async def fake_build(site, rng, date, model=None):
+        calls.append((model or engine.get_model_key(), rng))
         return "card", [], {}, "fb", [], None  # 6-tuple _fetch_build contract
 
     monkeypatch.setattr(forecast, "_fetch_build", fake_build)

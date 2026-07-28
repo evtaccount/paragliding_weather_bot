@@ -203,9 +203,67 @@ def _purge(now: float):
             del cache[k]
 
 
-async def _fetch_build(site: dict, rng: str, date: str | None):
-    """Fetch open-meteo once and build (card, png_bytes, facts, fallback_text, rows, grid)."""
-    url = engine.build_url(site, rng, date)
+def _ceiling_series(body, gfs_body):
+    """GFS-серия пограничного слоя, пригодная для подстановки в body. Иначе None.
+
+    Серии кладутся индекс в индекс: массивы time обязаны совпасть целиком.
+    Проверено, что при одинаковых координатах и диапазоне open-meteo отдаёт
+    одну и ту же сетку часов независимо от модели.
+    """
+    try:
+        H, G = body["hourly"], gfs_body["hourly"]
+    except (TypeError, KeyError):
+        return None
+    series = G.get(engine.CEILING_VAR)
+    if not series or H.get("time") != G.get("time"):
+        return None
+    return series
+
+
+def _splice_ceiling(body, gfs_body):
+    """Подставить потолок из GFS в один ответ. True, если подстановка прошла."""
+    series = _ceiling_series(body, gfs_body)
+    if series is None:
+        return False
+    body["hourly"][engine.CEILING_VAR] = series
+    return True
+
+
+def _splice_ceiling_all(bodies, gfs_bodies):
+    """Подставить потолок во ВСЕ точки маршрута или ни в одну.
+
+    Частичная подстановка молча смешала бы модели по участкам: у одной точки
+    потолок GFS, у соседней — выбранной модели, и разрыв в профиле читался бы
+    как метеорология, а не как артефакт запроса.
+    """
+    if gfs_bodies is None or len(gfs_bodies) != len(bodies):
+        return False
+    series = [_ceiling_series(b, g) for b, g in zip(bodies, gfs_bodies)]
+    if any(s is None for s in series):
+        return False
+    for b, s in zip(bodies, series):
+        b["hourly"][engine.CEILING_VAR] = s
+    return True
+
+
+async def _fetch_ceiling(url):
+    """Побочный запрос за потолком. None при любой неудаче: потолок приятен,
+    но не стоит того, чтобы из-за него не вышел весь прогноз."""
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as e:  # noqa: BLE001 — потолок best-effort
+        log.warning("ceiling fetch failed: %s", e)
+        return None
+    if isinstance(data, dict) and data.get("error"):
+        log.warning("ceiling fetch: open-meteo %s", data.get("reason"))
+        return None
+    return data
+
+
+async def _fetch_main(url):
     try:
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.get(url)
@@ -215,6 +273,24 @@ async def _fetch_build(site: dict, rng: str, date: str | None):
         raise ForecastError(f"Не удалось получить прогноз от open-meteo: {e}")
     if data.get("error"):
         raise ForecastError(f"open-meteo: {data.get('reason', 'ошибка запроса')}")
+    return data
+
+
+async def _fetch_build(site: dict, rng: str, date: str | None, model: str | None = None):
+    """Fetch open-meteo once and build (card, png_bytes, facts, fallback_text, rows, grid).
+
+    Потолок всегда берётся из GFS отдельным узким запросом — конкурентно с
+    основным, поэтому задержка не растёт. Когда выбрана сама GFS, запроса нет.
+    """
+    key = model or engine.get_model_key()
+    main = _fetch_main(engine.build_url(site, rng, date, model=key))
+    if key == engine.CEILING_MODEL_KEY:
+        data, gfs = await main, None
+    else:
+        data, gfs = await asyncio.gather(main, _fetch_ceiling(engine.ceiling_url(site, rng, date)))
+    data["_model_key"] = key
+    if _splice_ceiling(data, gfs):
+        data["_ceiling_model"] = engine.CEILING_MODEL_KEY
 
     out = tempfile.mkdtemp(prefix="pgfc_")
     try:
@@ -237,13 +313,13 @@ async def _fetch_build(site: dict, rng: str, date: str | None):
     return card, pngs, facts, fallback, rows, grid
 
 
-async def _ensure(site: dict, rng: str, date: str | None, key: tuple):
+async def _ensure(site: dict, rng: str, date: str | None, key: tuple, model: str | None = None):
     """Return (card, pngs, facts, fallback, rows, grid), fetching only on a cold cache."""
     now = time.monotonic()
     _purge(now)
     if key in _fcache:
         return _fcache[key][1:]
-    card, pngs, facts, fallback, rows, grid = await _fetch_build(site, rng, date)
+    card, pngs, facts, fallback, rows, grid = await _fetch_build(site, rng, date, model)
     _fcache[key] = (now + _TTL, card, pngs, facts, fallback, rows, grid)
     return card, pngs, facts, fallback, rows, grid
 
