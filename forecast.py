@@ -13,6 +13,7 @@ import asyncio
 import copy
 import datetime as dt
 import logging
+import math
 import os
 import pathlib
 import re
@@ -676,6 +677,46 @@ async def get_route_section(points, name, date, departure_h=None) -> bytes:
         return pathlib.Path(path).read_bytes()
     finally:
         shutil.rmtree(out, ignore_errors=True)
+
+
+ROUTE_FACTS_MAX_POINTS = 20   # длиннее — ответ модели обрывается на середине
+
+_FACT_KEYS = ("km", "eta", "role", "leg_length_km", "lat", "lon",
+              "track_bearing_deg", "wind_along_kmh", "wind_cross_kmh",
+              "wind_working_alt_kmh", "wind_working_alt_dir",
+              "effective_ground_speed_kmh", "terrain_m", "cloud_base_m",
+              "thermal_ceiling_m", "working_band_m", "time_margin_min",
+              "is_terrain_peak", "storm_ahead", "weather")
+
+
+def route_facts(profile):
+    """Данные для модели: профиль плюс блок computed с результатом скоринга.
+
+    Не больше ROUTE_FACTS_MAX_POINTS точек. Сначала характерные (старт, финиш,
+    узкое место, обрыв, поворотные, вершины), потом равномерная добивка: на
+    длинном списке ответ модели обрывается на середине.
+    """
+    pts = profile["points"]
+    keep = {k["km"] for k in route.key_points(profile)}
+    rest = [p["km"] for p in pts if p["km"] not in keep]
+    free = ROUTE_FACTS_MAX_POINTS - len(keep)
+    if free > 0 and rest:
+        step = max(1, math.ceil(len(rest) / free))
+        keep |= set(rest[::step][:free])
+    chosen = [p for p in pts if p["km"] in keep][:ROUTE_FACTS_MAX_POINTS]
+    return {
+        "route": profile["route"],
+        "verdict": profile.get("verdict"),
+        "departure_scan": profile.get("departure_scan"),
+        "reverse": profile.get("reverse"),
+        "points": [{**{k: p.get(k) for k in _FACT_KEYS},
+                    "computed": {"score": p.get("score"),
+                                 "category": p.get("category"),
+                                 "limiting": p.get("limiting"),
+                                 "vetoes": p.get("vetoes") or [],
+                                 "subs": p.get("subs") or {}}}
+                   for p in chosen],
+    }
 
 
 async def get_analysis(site_name: str, rng: str, date: str | None = None, deep: bool = False) -> str:
