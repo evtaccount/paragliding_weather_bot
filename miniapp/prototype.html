@@ -1,0 +1,1919 @@
+<title>Лётный прогноз — Mini App</title>
+
+<style>
+/* ══════════════════════════════════════════════════════════════════
+   ТОКЕНЫ
+   Палитра не выдумана: взята из charts.py, чтобы PNG-графики бота и
+   экраны приложения читались как одна система.
+   ground = charts.TERRAIN, air = charts.BAND, шкала оценок = GRADE_RGB.
+   ══════════════════════════════════════════════════════════════════ */
+:root{
+  --surface:#FCFCFB;        /* charts.BG */
+  --panel:#FFFFFF;
+  --sunk:#F3F1EB;
+  --ink:#1C1C1A;            /* charts.INK */
+  --muted:#6A6A63;          /* charts.MUTED */
+  --faint:#9E9E94;          /* charts.FAINT */
+  --rule:#E6E4DD;           /* charts.GRID */
+  --ground:#968E80;         /* charts.TERRAIN */
+  --air:#6EAAD2;            /* charts.BAND */
+  --air-deep:#2F6F8F;
+  --air-wash:rgba(110,170,210,.14);
+
+  --g-ideal:#16613A;
+  --g-excellent:#3F8F57;
+  --g-fair:#C69A1E;
+  --g-marginal:#C25E12;
+  --g-no_fly:#C23A52;
+  --g-danger:#8C1E34;
+  --g-no_data:#9E9E94;
+
+  /* цвета рядов графиков — charts.TEMP / WIND / GUST. Держатся отдельно от
+     шкалы оценок: та отвечает только за лётность, и путать их нельзя */
+  --s-temp:#C25E12;
+  --s-wind:#2F6FE0;
+  --s-gust:#0E8C7C;
+
+  --shadow:0 1px 2px rgba(28,28,26,.06), 0 8px 24px -12px rgba(28,28,26,.18);
+  --r:14px;
+  --step:1.5;
+
+  --f-body:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,system-ui,sans-serif;
+  --f-data:ui-monospace,"SF Mono",SFMono-Regular,Menlo,"DejaVu Sans Mono",monospace;
+}
+@media (prefers-color-scheme:dark){
+  :root{
+    --surface:#14181C; --panel:#1B2127; --sunk:#0F1317;
+    --ink:#E9E7E1; --muted:#98A1A8; --faint:#69727A; --rule:#28313A;
+    --ground:#8A8275; --air:#7FB8E0; --air-deep:#9CC9EA;
+    --air-wash:rgba(127,184,224,.13);
+    --g-ideal:#3E9A69; --g-excellent:#5CB37B; --g-fair:#E0B845;
+    --g-marginal:#E08040; --g-no_fly:#E05B72; --g-danger:#B84A60;
+    --g-no_data:#69727A;
+  --s-temp:#E08040; --s-wind:#7BA4F2; --s-gust:#3FB8A6;
+    --shadow:0 1px 2px rgba(0,0,0,.4), 0 10px 28px -14px rgba(0,0,0,.7);
+  }
+}
+:root[data-theme="dark"]{
+  --surface:#14181C; --panel:#1B2127; --sunk:#0F1317;
+  --ink:#E9E7E1; --muted:#98A1A8; --faint:#69727A; --rule:#28313A;
+  --ground:#8A8275; --air:#7FB8E0; --air-deep:#9CC9EA;
+  --air-wash:rgba(127,184,224,.13);
+  --g-ideal:#3E9A69; --g-excellent:#5CB37B; --g-fair:#E0B845;
+  --g-marginal:#E08040; --g-no_fly:#E05B72; --g-danger:#B84A60;
+  --g-no_data:#69727A;
+  --s-temp:#E08040; --s-wind:#7BA4F2; --s-gust:#3FB8A6;
+  --shadow:0 1px 2px rgba(0,0,0,.4), 0 10px 28px -14px rgba(0,0,0,.7);
+}
+:root[data-theme="light"]{
+  --surface:#FCFCFB; --panel:#FFFFFF; --sunk:#F3F1EB;
+  --ink:#1C1C1A; --muted:#6A6A63; --faint:#9E9E94; --rule:#E6E4DD;
+  --ground:#968E80; --air:#6EAAD2; --air-deep:#2F6F8F;
+  --air-wash:rgba(110,170,210,.14);
+  --g-ideal:#16613A; --g-excellent:#3F8F57; --g-fair:#C69A1E;
+  --g-marginal:#C25E12; --g-no_fly:#C23A52; --g-danger:#8C1E34;
+  --g-no_data:#9E9E94;
+  --s-temp:#C25E12; --s-wind:#2F6FE0; --s-gust:#0E8C7C;
+  --shadow:0 1px 2px rgba(28,28,26,.06), 0 8px 24px -12px rgba(28,28,26,.18);
+}
+
+*,*::before,*::after{box-sizing:border-box}
+body{margin:0;background:var(--sunk);color:var(--ink);font-family:var(--f-body);
+  -webkit-font-smoothing:antialiased;font-size:15px;line-height:1.45}
+button{font:inherit;color:inherit;background:none;border:0;padding:0;cursor:pointer}
+:focus-visible{outline:2px solid var(--air-deep);outline-offset:2px;border-radius:6px}
+
+/* ── оболочка телефона ───────────────────────────────────────────── */
+.stage{min-height:100dvh;display:flex;flex-direction:column;align-items:center;
+  gap:14px;padding:14px 12px 26px}
+.stage__bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+  justify-content:center;width:100%;max-width:420px}
+.stage__note{font-size:11px;letter-spacing:.13em;text-transform:uppercase;
+  color:var(--faint);font-weight:600}
+.tog{display:inline-flex;border:1px solid var(--rule);border-radius:999px;
+  overflow:hidden;background:var(--panel)}
+.tog button{padding:5px 12px;font-size:12px;font-weight:600;color:var(--muted)}
+.tog button[aria-pressed="true"]{background:var(--ink);color:var(--surface)}
+
+/* position:relative обязателен — иначе шторка и затемнение позиционируются
+   от вьюпорта и вылезают за корпус приложения */
+.app{position:relative;width:100%;max-width:420px;height:min(830px,calc(100dvh - 84px));
+  min-height:560px;background:var(--surface);border:1px solid var(--rule);
+  border-radius:22px;box-shadow:var(--shadow);overflow:hidden;
+  display:grid;grid-template-rows:auto 1fr auto}
+
+/* ── контекстная шапка: не исчезает никогда ─────────────────────── */
+.ctx{background:var(--panel);border-bottom:1px solid var(--rule);
+  padding:10px 14px 9px;display:grid;gap:8px}
+.ctx__top{display:flex;align-items:center;gap:8px}
+.site{display:flex;align-items:baseline;gap:7px;min-width:0;flex:1;text-align:left}
+.site__name{font-size:17px;font-weight:680;letter-spacing:-.01em;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.site__asp{font-family:var(--f-data);font-size:11px;color:var(--muted);
+  flex:none;padding:1px 5px;border:1px solid var(--rule);border-radius:5px}
+.site__caret{color:var(--faint);flex:none;font-size:11px}
+.chip{font-family:var(--f-data);font-size:11px;padding:4px 8px;border-radius:7px;
+  border:1px solid var(--rule);color:var(--muted);white-space:nowrap;flex:none}
+.chip--live{border-color:var(--air);color:var(--air-deep);background:var(--air-wash)}
+
+.ctx__date{display:flex;align-items:center;gap:2px}
+.ctx__date button{width:30px;height:28px;display:grid;place-items:center;
+  border-radius:8px;color:var(--muted)}
+.ctx__date button:hover{background:var(--sunk)}
+.ctx__date button[disabled]{opacity:.3;cursor:default}
+.dateline{flex:1;text-align:center;font-family:var(--f-data);font-size:12.5px;
+  letter-spacing:.02em;color:var(--ink)}
+.dateline b{font-weight:700}
+.dateline i{font-style:normal;color:var(--faint)}
+
+/* ── тело: единственная область, которая перерисовывается ───────── */
+.body{overflow-y:auto;overflow-x:hidden;background:var(--sunk);
+  -webkit-overflow-scrolling:touch}
+.view{padding:12px 12px 20px;display:grid;gap:10px}
+.view[hidden]{display:none}
+@keyframes rise{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:none}}
+.view.is-fresh>*{animation:rise .32s cubic-bezier(.22,.7,.3,1) both}
+.view.is-fresh>*:nth-child(1){animation-delay:0ms}
+.view.is-fresh>*:nth-child(2){animation-delay:38ms}
+.view.is-fresh>*:nth-child(3){animation-delay:76ms}
+.view.is-fresh>*:nth-child(4){animation-delay:110ms}
+.view.is-fresh>*:nth-child(n+5){animation-delay:140ms}
+
+.panel{background:var(--panel);border:1px solid var(--rule);border-radius:var(--r);
+  padding:13px 14px}
+.panel--flush{padding:13px 0}
+.lbl{font-size:10px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--faint);font-weight:700}
+.panel__head{display:flex;align-items:baseline;justify-content:space-between;gap:10px}
+
+/* ── прибор 1: полоса дня (ось времени) ─────────────────────────── */
+.verdict{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;
+  margin-top:6px}
+.verdict__win{font-family:var(--f-data);font-size:23px;font-weight:600;
+  letter-spacing:-.02em;line-height:1.1}
+.verdict__sub{font-size:12px;color:var(--muted);margin-top:2px}
+.verdict__score{text-align:right;flex:none}
+.verdict__num{font-family:var(--f-data);font-size:30px;font-weight:700;
+  line-height:1;letter-spacing:-.03em}
+.verdict__cat{font-size:11px;color:var(--muted);margin-top:3px}
+
+.strip{margin-top:14px;padding:0 14px}
+.strip__inner{position:relative}
+.strip__win{position:absolute;top:0;bottom:0;background:var(--air-wash);
+  border-left:1px solid var(--air);border-right:1px solid var(--air);
+  border-radius:3px;pointer-events:none}
+.strip__bars{display:flex;gap:3px;align-items:flex-end;height:104px;position:relative}
+.hr{flex:1;display:flex;flex-direction:column;justify-content:flex-end;
+  align-items:stretch;height:100%;gap:4px;text-align:center;padding:0;
+  border-radius:4px 4px 0 0}
+.hr__val{font-family:var(--f-data);font-size:10.5px;font-weight:650;color:var(--muted)}
+.hr__bar{border-radius:3px 3px 0 0;transition:height .5s cubic-bezier(.22,.7,.3,1);
+  min-height:3px}
+.hr[aria-pressed="true"] .hr__val{color:var(--ink)}
+.hr[aria-pressed="true"] .hr__bar{outline:2px solid var(--ink);outline-offset:1px}
+.strip__axis{display:flex;gap:3px;margin-top:6px}
+.strip__axis span{flex:1;text-align:center;font-family:var(--f-data);font-size:10px;
+  color:var(--faint)}
+.strip__axis span.is-peak{color:var(--ink);font-weight:700}
+.peakmark{position:absolute;bottom:-5px;height:5px;border:1px solid var(--ink);
+  border-top:0;border-radius:0 0 2px 2px;opacity:.45;pointer-events:none}
+
+.hrdetail{margin:12px 14px 0;padding:9px 11px;background:var(--sunk);
+  border-radius:10px;font-size:12.5px;color:var(--muted);min-height:38px}
+.hrdetail b{color:var(--ink);font-family:var(--f-data);font-weight:650}
+
+.limiting{margin:12px 14px 0;padding-top:11px;border-top:1px solid var(--rule);
+  font-size:13px;display:flex;gap:7px;align-items:baseline}
+.limiting__k{color:var(--faint);flex:none}
+
+/* ── прибор 2: столб воздуха (ось высоты) ───────────────────────── */
+.column{margin-top:12px;display:grid;grid-template-columns:30px 76px 1fr;
+  gap:0 12px;height:186px}
+.column__axis{position:relative;font-family:var(--f-data);font-size:9.5px;
+  color:var(--faint);text-align:right}
+.column__axis span{position:absolute;right:0;transform:translateY(-50%);
+  white-space:nowrap}
+.column__draw{position:relative;background:linear-gradient(180deg,
+  var(--air-wash) 0%,transparent 62%);border-radius:6px;overflow:hidden}
+.column__terrain{position:absolute;left:0;right:0;bottom:0;background:var(--ground)}
+.column__band{position:absolute;left:0;right:0;background:var(--air);opacity:.42}
+.column__line{position:absolute;left:0;right:0;height:0;border-top:1.5px solid var(--ink)}
+.column__line--dash{border-top-style:dashed;border-color:var(--air-deep)}
+.column__notes{position:relative;font-size:11.5px}
+.column__note{position:absolute;left:0;right:0;display:grid;gap:0;line-height:1.25}
+.column__note b{font-family:var(--f-data);font-weight:650;font-size:12px;
+  white-space:nowrap}
+.column__note span{color:var(--muted);font-size:10.5px}
+.column__tick{position:absolute;left:-12px;top:7px;width:8px;
+  border-top:1px solid var(--rule)}
+/* выноска: подпись отодвинута от своей высоты, чтобы не налезть на соседнюю */
+.column__lead{position:absolute;left:-12px;width:0;border-left:1px solid var(--rule)}
+
+/* ── факты ──────────────────────────────────────────────────────── */
+.facts{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--rule);
+  border-radius:var(--r);overflow:hidden;border:1px solid var(--rule)}
+.fact{background:var(--panel);padding:10px 12px;display:grid;gap:3px}
+.fact__v{font-family:var(--f-data);font-size:16px;font-weight:650;
+  letter-spacing:-.01em}
+.fact__v small{font-size:11px;font-weight:500;color:var(--muted);letter-spacing:0}
+.fact__note{font-size:11px;color:var(--muted)}
+
+.caveats{font-size:12px;color:var(--muted);line-height:1.5}
+.caveats li{margin-bottom:3px}
+.caveats ul{margin:6px 0 0;padding-left:16px}
+
+.acts{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.act{background:var(--panel);border:1px solid var(--rule);border-radius:12px;
+  padding:11px 12px;text-align:left;display:grid;gap:2px;transition:border-color .15s}
+.act:hover{border-color:var(--air)}
+.act b{font-size:13.5px;font-weight:620}
+.act span{font-size:11px;color:var(--muted)}
+.act--wide{grid-column:1/-1}
+
+/* ── обзор / скан ───────────────────────────────────────────────── */
+.seg{display:flex;background:var(--sunk);border:1px solid var(--rule);
+  border-radius:10px;padding:3px;gap:3px}
+.seg button{flex:1;padding:6px 4px;border-radius:7px;font-size:12.5px;
+  font-weight:600;color:var(--muted)}
+.seg button[aria-pressed="true"]{background:var(--panel);color:var(--ink);
+  box-shadow:0 1px 2px rgba(0,0,0,.07)}
+
+.days{display:grid;gap:1px;background:var(--rule);border:1px solid var(--rule);
+  border-radius:var(--r);overflow:hidden}
+.day{background:var(--panel);padding:10px 12px;display:grid;
+  grid-template-columns:52px 1fr auto;gap:10px;align-items:center;text-align:left;
+  transition:background .15s}
+.day:hover{background:var(--sunk)}
+.day__d{font-family:var(--f-data);font-size:11.5px;line-height:1.25}
+.day__d b{display:block;font-size:12.5px;font-weight:700}
+.day__d i{font-style:normal;color:var(--faint)}
+.day__m{min-width:0}
+.day__bar{height:5px;border-radius:3px;margin-bottom:5px}
+.day__f{font-size:11.5px;color:var(--muted);font-family:var(--f-data);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.day__s{font-family:var(--f-data);font-size:17px;font-weight:700;text-align:right}
+.day__s small{display:block;font-size:9.5px;font-weight:600;letter-spacing:.06em;
+  text-transform:uppercase;color:var(--muted)}
+
+.sitegrp{margin-top:10px}
+.sitegrp__h{display:flex;align-items:baseline;gap:8px;padding:0 2px 7px}
+.sitegrp__h b{font-size:14px;font-weight:660}
+.empty{padding:13px 14px;font-size:12.5px;color:var(--muted);
+  background:var(--panel);border:1px dashed var(--rule);border-radius:var(--r)}
+.empty b{display:block;color:var(--ink);font-size:13.5px;margin-bottom:3px}
+
+/* ── маршрут ────────────────────────────────────────────────────── */
+.map{position:relative;border-radius:var(--r);overflow:hidden;
+  border:1px solid var(--rule);background:var(--panel);aspect-ratio:4/3}
+.map canvas{display:block;width:100%;height:100%}
+.map__pins{position:absolute;inset:0}
+.pin{position:absolute;transform:translate(-50%,-50%);width:26px;height:26px;
+  display:grid;place-items:center}
+.pin i{width:11px;height:11px;border-radius:50%;border:2px solid var(--panel);
+  box-shadow:0 1px 3px rgba(0,0,0,.35);display:block;font-style:normal}
+.pin[aria-pressed="true"] i{width:15px;height:15px;box-shadow:0 0 0 3px var(--air)}
+.map__scale{position:absolute;left:10px;bottom:9px;font-family:var(--f-data);
+  font-size:9.5px;color:var(--ink);background:color-mix(in srgb,var(--panel) 84%,transparent);
+  padding:2px 6px;border-radius:5px;display:flex;align-items:center;gap:5px}
+.map__scale s{display:block;width:36px;height:0;border-top:2px solid var(--ink);
+  text-decoration:none}
+.map__n{position:absolute;right:10px;top:9px;font-family:var(--f-data);font-size:10px;
+  color:var(--ink);background:color-mix(in srgb,var(--panel) 84%,transparent);
+  width:22px;height:22px;border-radius:6px;display:grid;place-items:center;font-weight:700}
+
+.rtable{width:100%;border-collapse:collapse;font-family:var(--f-data);font-size:12px}
+.rtable th{font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--faint);font-weight:700;text-align:right;padding:0 0 6px}
+.rtable th:first-child,.rtable td:first-child{text-align:left}
+.rtable td{padding:6px 0;border-top:1px solid var(--rule);text-align:right;
+  font-variant-numeric:tabular-nums}
+.rtable tr{cursor:pointer}
+.rtable tbody tr:hover td{background:var(--sunk)}
+.rtable tr[aria-selected="true"] td{background:var(--air-wash)}
+.rtable .u{color:var(--muted)}
+.rtable .sc{font-weight:700}
+
+.section{width:100%;height:150px;display:block}
+.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:11px;color:var(--muted);
+  margin-top:9px}
+.legend i{width:11px;height:11px;border-radius:3px;display:inline-block;
+  vertical-align:-1px;margin-right:5px;font-style:normal}
+
+/* ── настройки ──────────────────────────────────────────────────── */
+.rows{background:var(--panel);border:1px solid var(--rule);border-radius:var(--r);
+  overflow:hidden}
+.row{display:flex;align-items:center;gap:12px;padding:11px 13px;width:100%;
+  text-align:left;border-top:1px solid var(--rule)}
+.row:first-child{border-top:0}
+.row__m{flex:1;min-width:0;display:grid;gap:2px}
+.row__t{font-size:14px;font-weight:560}
+.row__s{font-size:11.5px;color:var(--muted)}
+.row__v{font-family:var(--f-data);font-size:13px;color:var(--muted);flex:none}
+.sw{width:42px;height:25px;border-radius:999px;background:var(--rule);
+  position:relative;flex:none;transition:background .2s}
+.sw::after{content:"";position:absolute;top:2.5px;left:2.5px;width:20px;height:20px;
+  border-radius:50%;background:var(--panel);box-shadow:0 1px 3px rgba(0,0,0,.3);
+  transition:transform .2s}
+.sw[aria-checked="true"]{background:var(--g-excellent)}
+.sw[aria-checked="true"]::after{transform:translateX(17px)}
+.stepper{display:flex;align-items:center;gap:9px;flex:none}
+.stepper button{width:29px;height:29px;border:1px solid var(--rule);border-radius:8px;
+  display:grid;place-items:center;font-family:var(--f-data);font-size:15px;color:var(--muted)}
+.stepper button:hover{border-color:var(--air);color:var(--ink)}
+.stepper b{font-family:var(--f-data);font-size:14px;min-width:58px;text-align:center}
+
+/* ── нижняя навигация ───────────────────────────────────────────── */
+.tabs{display:grid;grid-template-columns:repeat(4,1fr);background:var(--panel);
+  border-top:1px solid var(--rule);padding:5px 4px calc(5px + env(safe-area-inset-bottom))}
+.tab{display:grid;justify-items:center;gap:2px;padding:5px 2px;border-radius:10px;
+  color:var(--faint)}
+.tab svg{width:21px;height:21px;stroke:currentColor;fill:none;stroke-width:1.6;
+  stroke-linecap:round;stroke-linejoin:round}
+.tab span{font-size:10px;font-weight:600;letter-spacing:.01em}
+.tab[aria-current="page"]{color:var(--ink)}
+
+/* ── шторка ─────────────────────────────────────────────────────── */
+.scrim{position:absolute;inset:0;background:rgba(12,14,16,.42);opacity:0;
+  pointer-events:none;transition:opacity .24s;z-index:20}
+.scrim.is-open{opacity:1;pointer-events:auto}
+.sheet{position:absolute;left:0;right:0;bottom:0;z-index:21;background:var(--panel);
+  border-radius:20px 20px 0 0;box-shadow:0 -8px 32px -12px rgba(0,0,0,.4);
+  transform:translateY(101%);transition:transform .3s cubic-bezier(.22,.7,.3,1);
+  max-height:88%;display:grid;grid-template-rows:auto 1fr}
+.sheet.is-open{transform:none}
+.sheet__h{padding:13px 16px 10px;border-bottom:1px solid var(--rule);
+  display:flex;align-items:center;gap:12px}
+.sheet__h b{flex:1;font-size:15px;font-weight:660}
+.sheet__x{width:28px;height:28px;border-radius:8px;display:grid;place-items:center;
+  color:var(--muted);background:var(--sunk);font-size:15px;flex:none}
+.sheet__b{overflow-y:auto;padding:13px 16px 22px}
+.sheet__grab{width:34px;height:4px;border-radius:2px;background:var(--rule);
+  margin:7px auto 0}
+
+.pick{display:grid;gap:1px;background:var(--rule);border:1px solid var(--rule);
+  border-radius:12px;overflow:hidden}
+.pick button{background:var(--panel);padding:11px 13px;display:flex;
+  align-items:center;gap:11px;text-align:left}
+.pick b{font-size:14px;font-weight:560;flex:1}
+.pick s{text-decoration:none;font-size:11.5px;color:var(--muted);
+  font-family:var(--f-data);flex:none}
+.pick em{font-style:normal;color:var(--g-excellent);font-weight:700;flex:none}
+.pick button[aria-pressed="true"] b{font-weight:700}
+
+/* ── сетка ветра по высотам ─────────────────────────────────────── */
+/* ширину задают ячейки, а не таблица: с width:100% лишнее место уходило
+   в колонку подписей и сетку сдвигало вправо */
+.wgrid{width:auto;border-collapse:separate;border-spacing:2px;
+  font-family:var(--f-data);font-size:10px}
+.wgrid th{font-size:9px;color:var(--faint);font-weight:700;padding:0 0 3px}
+.wgrid th.lv{width:36px;text-align:right;padding-right:6px;color:var(--muted);
+  white-space:nowrap}
+.wgrid td{width:24px;height:30px;border-radius:4px;text-align:center;
+  vertical-align:middle;color:#fff}
+.wgrid td svg{width:11px;height:11px;display:block;margin:0 auto 1px;
+  stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.wgrid td b{font-size:9.5px;font-weight:700;display:block;line-height:1}
+
+/* ── карточка точки / текстовый блок ────────────────────────────── */
+.kv{display:grid;gap:0;font-family:var(--f-data);font-size:12.5px}
+.kv div{display:flex;justify-content:space-between;gap:12px;padding:5px 0;
+  border-top:1px solid var(--rule)}
+.kv div:first-child{border-top:0}
+.kv span{color:var(--muted)}
+.kv b{font-weight:650;font-variant-numeric:tabular-nums}
+.ptnotes{display:grid;grid-template-columns:52px 1fr;gap:8px 10px;margin-top:4px;
+  align-items:baseline}
+.ptnotes span{font-family:var(--f-data);font-size:11.5px;color:var(--muted);
+  padding-top:2px}
+.ptnotes p{margin:0;font-size:13px;line-height:1.5;padding-bottom:8px;
+  border-bottom:1px solid var(--rule)}
+.ptnotes p:last-child{border-bottom:0;padding-bottom:0}
+.prose{font-size:13.5px;line-height:1.58;color:var(--ink)}
+.prose p{margin:0 0 10px}
+.prose p:last-child{margin:0}
+.prose em{font-style:normal;color:var(--muted)}
+.badge{display:inline-flex;align-items:center;gap:6px;font-family:var(--f-data);
+  font-size:12px;font-weight:650;padding:4px 9px;border-radius:8px;color:#fff}
+.attrib{font-size:10.5px;color:var(--faint);text-align:center;padding:2px 0 0}
+
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation-duration:.001ms !important;
+    transition-duration:.001ms !important}
+}
+</style>
+
+<div class="stage">
+  <div class="stage__bar">
+    <span class="stage__note">Прототип · Mini App</span>
+    <div class="tog" role="group" aria-label="Тема">
+      <button type="button" data-theme-set="light" aria-pressed="false">Светлая</button>
+      <button type="button" data-theme-set="dark" aria-pressed="false">Тёмная</button>
+    </div>
+  </div>
+
+  <div class="app" id="app">
+    <!-- контекст: где я и на какой день. Не исчезает при переходах. -->
+    <header class="ctx">
+      <div class="ctx__top">
+        <button type="button" class="site" id="siteBtn" aria-haspopup="dialog">
+          <span class="site__name" id="siteName">Лалискури</span>
+          <span class="site__asp" id="siteAsp">Ю 180°</span>
+          <span class="site__caret">▾</span>
+        </button>
+        <button type="button" class="chip chip--live" id="modelBtn" aria-haspopup="dialog">GFS · разово</button>
+      </div>
+      <div class="ctx__date">
+        <button type="button" id="dPrev" aria-label="Предыдущий день">◂</button>
+        <div class="dateline" id="dateLine"></div>
+        <button type="button" id="dNext" aria-label="Следующий день">▸</button>
+      </div>
+    </header>
+
+    <main class="body" id="body">
+      <section class="view" id="v-day" aria-label="Прогноз на день"></section>
+      <section class="view" id="v-over" hidden aria-label="Обзор"></section>
+      <section class="view" id="v-route" hidden aria-label="Маршрут"></section>
+      <section class="view" id="v-set" hidden aria-label="Настройки"></section>
+    </main>
+
+    <nav class="tabs" aria-label="Разделы">
+      <button type="button" class="tab" data-tab="day" aria-current="page">
+        <svg viewBox="0 0 24 24"><path d="M2.5 9.5C6 5.5 18 5.5 21.5 9.5"/><path d="M2.5 9.5 12 20l9.5-10.5"/><path d="M12 20V9"/></svg>
+        <span>Прогноз</span>
+      </button>
+      <button type="button" class="tab" data-tab="over">
+        <svg viewBox="0 0 24 24"><path d="M4 20V13"/><path d="M9 20V8"/><path d="M14 20v-5"/><path d="M19 20V4"/></svg>
+        <span>Обзор</span>
+      </button>
+      <button type="button" class="tab" data-tab="route">
+        <svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.4"/><circle cx="18" cy="18" r="2.4"/><path d="M8.4 6H14a3.6 3.6 0 0 1 0 7.2H9a3.6 3.6 0 0 0 0 4.8h6.6"/></svg>
+        <span>Маршрут</span>
+      </button>
+      <button type="button" class="tab" data-tab="set">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2.8v2.4M12 18.8v2.4M21.2 12h-2.4M5.2 12H2.8M18.5 5.5l-1.7 1.7M7.2 16.8l-1.7 1.7M18.5 18.5l-1.7-1.7M7.2 7.2 5.5 5.5"/></svg>
+        <span>Настройки</span>
+      </button>
+    </nav>
+
+    <div class="scrim" id="scrim"></div>
+    <aside class="sheet" id="sheet" role="dialog" aria-modal="true" aria-labelledby="sheetTitle" hidden>
+      <div class="sheet__h">
+        <div class="sheet__grab" aria-hidden="true"></div>
+        <b id="sheetTitle"></b>
+        <button type="button" class="sheet__x" id="sheetX" aria-label="Закрыть">✕</button>
+      </div>
+      <div class="sheet__b" id="sheetBody"></div>
+    </aside>
+  </div>
+</div>
+
+<script>
+"use strict";
+
+/* ══════════════════════════════════════════════════════════════════
+   ДАННЫЕ
+   Числа взяты правдоподобные, форматы — реальные: карточка повторяет
+   engine.report_1day, таблица маршрута — route._rows, карточка точки —
+   route.render_point_card, сетка ветра — engine.wind_grid.
+   ══════════════════════════════════════════════════════════════════ */
+
+const CATS = {
+  ideal:     {lo:85, label:"идеальная",              v:"--g-ideal"},
+  excellent: {lo:70, label:"отличная лётная",        v:"--g-excellent"},
+  fair:      {lo:55, label:"удовлетворительная",     v:"--g-fair"},
+  marginal:  {lo:40, label:"маргинальная",           v:"--g-marginal"},
+  no_fly:    {lo:15, label:"нелётная",               v:"--g-no_fly"},
+  danger:    {lo:0,  label:"опасная",                v:"--g-danger"},
+};
+const CAT_ORDER = ["ideal","excellent","fair","marginal","no_fly","danger"];
+
+function catOf(score){
+  if (score === null || score === undefined) return {key:"no_data", label:"нет данных", v:"--g-no_data"};
+  for (const k of CAT_ORDER) if (score >= CATS[k].lo) return {key:k, ...CATS[k]};
+  return {key:"danger", ...CATS.danger};
+}
+const cssVar = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const colorOf = (score) => cssVar(catOf(score).v);
+
+const CARD16 = ["С","ССВ","СВ","ВСВ","В","ВЮВ","ЮВ","ЮЮВ","Ю","ЮЮЗ","ЮЗ","ЗЮЗ","З","ЗСЗ","СЗ","ССЗ"];
+const compass = (deg) => CARD16[Math.round((((deg % 360) + 360) % 360) / 22.5) % 16];
+const WD = ["ПН","ВТ","СР","ЧТ","ПТ","СБ","ВС"];
+const MON = ["янв","фев","мар","апр","май","июн","июл","авг","сен","окт","ноя","дек"];
+
+const SITES = [
+  {id:"lal", name:"Лалискури", aspect:"Ю", aspectDeg:180, lat:42.089, lon:45.401, elev:686,
+   notes:"Восточная Грузия / приграничье Дагестана. Экспозиция южная."},
+  {id:"gud", name:"Гудаури",   aspect:"ЮЗ", aspectDeg:225, lat:42.478, lon:44.479, elev:2196,
+   notes:"Хребет над Военно-Грузинской дорогой. Старт с гребня."},
+  {id:"pas", name:"Пасанаури", aspect:"В",  aspectDeg:90,  lat:42.210, lon:44.689, elev:1050,
+   notes:"Долина Арагви. Работает на восточном склоне до полудня."},
+];
+
+/* Часы дня: балл считает criteria, здесь — результат. */
+const HOURS = [
+  {h:9,  s:44, t:19.4, w:1.8, g:3.6, d:150, cl:5,  cape:40,  note:"солнце ещё не встало на склон"},
+  {h:10, s:61, t:21.8, w:2.4, g:4.8, d:168, cl:5,  cape:90,  note:"окно открывается, потоки рваные"},
+  {h:11, s:74, t:24.1, w:3.1, g:5.9, d:180, cl:10, cape:180, note:"ровно в лоб, потоки собираются"},
+  {h:12, s:79, t:26.0, w:3.6, g:6.8, d:186, cl:10, cape:260, note:"рабочий час"},
+  {h:13, s:86, t:27.6, w:3.9, g:7.4, d:190, cl:15, cape:340, note:"пик нагрева"},
+  {h:14, s:88, t:28.9, w:4.1, g:7.8, d:194, cl:15, cape:380, note:"лучший час дня"},
+  {h:15, s:77, t:28.4, w:4.6, g:8.9, d:201, cl:20, cape:360, note:"порывы подросли"},
+  {h:16, s:71, t:27.1, w:4.8, g:9.0, d:208, cl:25, cape:300, note:"порывистость на пороге"},
+  {h:17, s:56, t:25.0, w:4.2, g:7.9, d:214, cl:30, cape:180, note:"окно закрывается"},
+  {h:18, s:42, t:22.3, w:3.2, g:5.6, d:220, cl:35, cape:80,  note:"склон в тени"},
+];
+
+const DAY = {
+  siteId:"lal",
+  date:"2026-07-29",
+  score:72,
+  category:"excellent",
+  window:[10,17],
+  peak:[13,15],
+  thermalWindow:[10,17],
+  sunrise:6, sunset:20,
+  limiting:"порывистость (порыв/ветер)",
+  tempRange:[19,29],
+  windRange:[1.8,4.8],
+  gustMax:9.0,
+  flyDir:190,
+  dirVerdict:"в лоб",
+  precip:0,
+  ceilingAgl:1654,
+  ceilingMsl:2340,
+  lclMsl:2530,
+  blue:true,
+  model:"GFS",
+  modelScope:"разово",
+  modelPermanent:"Auto",
+  timezone:"Asia/Tbilisi",
+  caveats:[
+    "голубая термичка — облаков-маркеров не будет, потоки ищутся вслепую",
+    "высота старта взята по гриду модели (686 м); реальный старт может отличаться",
+    "вершины маршрута у старта не заданы — вето «база ниже вершин» не проверяется",
+  ],
+};
+
+/* Ветер по высотам: строки — уровни, столбцы — часы. dir = откуда дует. */
+const WGRID = {
+  levels:[
+    {label:"10 м",  alt:696},
+    {label:"925",   alt:800},
+    {label:"850",   alt:1500},
+    {label:"700",   alt:3100},
+    {label:"600",   alt:4300},
+    {label:"500",   alt:5700},
+  ],
+  hours:[9,10,11,12,13,14,15,16,17,18],
+  /* [скорость м/с, направление °] по уровням × часам */
+  cells:[
+    [[1.8,150],[2.4,168],[3.1,180],[3.6,186],[3.9,190],[4.1,194],[4.6,201],[4.8,208],[4.2,214],[3.2,220]],
+    [[3.1,162],[3.6,172],[4.2,182],[4.6,188],[4.9,192],[5.1,196],[5.6,203],[5.9,209],[5.2,215],[4.1,221]],
+    [[5.4,196],[5.8,200],[6.1,204],[6.4,208],[6.6,211],[6.9,214],[7.4,218],[7.8,222],[7.1,226],[6.2,230]],
+    [[8.2,238],[8.6,241],[9.1,244],[9.4,246],[9.8,248],[10.2,250],[10.8,253],[11.2,256],[10.6,258],[9.8,261]],
+    [[11.4,252],[11.8,254],[12.3,256],[12.7,258],[13.1,260],[13.6,262],[14.2,264],[14.8,266],[14.1,268],[13.2,270]],
+    [[15.2,262],[15.6,264],[16.1,266],[16.6,268],[17.2,270],[17.8,272],[18.4,274],[19.1,276],[18.2,278],[17.1,280]],
+  ],
+};
+
+/* Обзор: две недели по текущему старту. */
+const OVERVIEW = [
+  {date:"2026-07-29", score:72, wmax:4.8, gmax:9.0, dom:190, wmo:"перем. обл.", precip:0,   limiting:"порывистость"},
+  {date:"2026-07-30", score:81, wmax:4.1, gmax:7.2, dom:176, wmo:"в осн. ясно", precip:0,   limiting:null},
+  {date:"2026-07-31", score:64, wmax:5.9, gmax:11.4,dom:205, wmo:"перем. обл.", precip:0,   limiting:"ветер у земли"},
+  {date:"2026-08-01", score:38, wmax:7.8, gmax:14.6,dom:248, wmo:"пасмурно",    precip:2.4, limiting:"осадки"},
+  {date:"2026-08-02", score:22, wmax:9.4, gmax:17.2,dom:262, wmo:"дождь",       precip:8.1, limiting:"ветер у земли"},
+  {date:"2026-08-03", score:57, wmax:5.2, gmax:9.8, dom:198, wmo:"перем. обл.", precip:0.3, limiting:"сдвиг ветра"},
+  {date:"2026-08-04", score:88, wmax:3.4, gmax:6.1, dom:182, wmo:"ясно",        precip:0,   limiting:null},
+  {date:"2026-08-05", score:76, wmax:4.4, gmax:8.2, dom:186, wmo:"в осн. ясно", precip:0,   limiting:null},
+  {date:"2026-08-06", score:69, wmax:5.1, gmax:9.6, dom:194, wmo:"перем. обл.", precip:0,   limiting:"порывистость"},
+  {date:"2026-08-07", score:44, wmax:6.8, gmax:12.9,dom:236, wmo:"пасмурно",    precip:1.1, limiting:"низкая облачность"},
+  {date:"2026-08-08", score:31, wmax:8.1, gmax:15.4,dom:254, wmo:"дождь",       precip:5.6, limiting:"осадки"},
+  {date:"2026-08-09", score:52, wmax:5.6, gmax:10.2,dom:210, wmo:"перем. обл.", precip:0,   limiting:"CAPE"},
+  {date:"2026-08-10", score:74, wmax:4.2, gmax:7.9, dom:188, wmo:"в осн. ясно", precip:0,   limiting:null},
+  {date:"2026-08-11", score:66, wmax:4.9, gmax:9.1, dom:196, wmo:"перем. обл.", precip:0,   limiting:"порывистость"},
+];
+
+/* Скан: лётные дни по всем стартам. Пустые и упавшие старты названы. */
+const SCAN = {
+  sites:[
+    {id:"lal", name:"Лалискури", aspect:"Ю", days:[
+      {date:"2026-07-29", score:72, wmax:4.8, gmax:9.0, dom:190, wmo:"перем. обл.", precip:0, limiting:"порывистость"},
+      {date:"2026-07-30", score:81, wmax:4.1, gmax:7.2, dom:176, wmo:"в осн. ясно", precip:0, limiting:null},
+      {date:"2026-08-03", score:57, wmax:5.2, gmax:9.8, dom:198, wmo:"перем. обл.", precip:0.3, limiting:"сдвиг ветра"},
+      {date:"2026-08-04", score:88, wmax:3.4, gmax:6.1, dom:182, wmo:"ясно", precip:0, limiting:null},
+    ]},
+    {id:"gud", name:"Гудаури", aspect:"ЮЗ", days:[
+      {date:"2026-07-30", score:69, wmax:5.4, gmax:10.1, dom:214, wmo:"перем. обл.", precip:0, limiting:"ветер на 850 гПа"},
+      {date:"2026-08-04", score:79, wmax:4.0, gmax:7.4, dom:206, wmo:"в осн. ясно", precip:0, limiting:null},
+    ]},
+  ],
+  empty:["Пасанаури"],
+  failed:[],
+};
+
+/* Маршрут: пример из README — Гудаури → Пасанаури. */
+const ROUTE = {
+  name:"Гудаури → Пасанаури",
+  date:"2026-07-29",
+  totalKm:34,
+  sampleCount:5,
+  stepKm:10,
+  departure:"12:00",
+  eta:"13:38",
+  etaFixed:"13:22",
+  verdict:{score:61, category:"fair", feasibility:"passes", label:"Удовлетворительная"},
+  bottleneck:{km:20, score:48},
+  marginStart:214, marginFinish:142,
+  bestDeparture:{time:"11:30", score:67},
+  altDepartures:[{time:"12:30", score:58},{time:"13:00", score:52}],
+  reverseScore:54,
+  points:[
+    {km:0,  eta:"12:00", role:"старт",   score:74, along:11,  windDir:225, windKmh:18, wStar:2.4,
+     base:2900, terrain:2196, band:704,  margin:214, ground:14, gust:23, cape:180, li:-0.4, cin:28,
+     cloudLow:10, cloudMid:20, precip:0, vis:32000, gs:33,
+     limiting:null, vetoes:[], worst:[["ветер на рабочей высоте",62],["сила потоков (оценка W*)",68],["спред T−Td",70]]},
+    {km:10, eta:"12:24", role:"маршрут", score:66, along:14,  windDir:232, windKmh:21, wStar:2.6,
+     base:2860, terrain:1760, band:1100, margin:198, ground:null, gust:null, cape:240, li:-0.8, cin:20,
+     cloudLow:10, cloudMid:25, precip:0, vis:30000, gs:36,
+     limiting:"снос поперёк курса", vetoes:[], worst:[["снос поперёк курса",52],["ветер на рабочей высоте",58],["рабочий диапазон высот",70]]},
+    {km:20, eta:"12:52", role:"маршрут", score:48, along:9,   windDir:268, windKmh:26, wStar:1.9,
+     base:2780, terrain:1610, band:1010, margin:176, ground:null, gust:null, cape:340, li:-1.2, cin:12,
+     cloudLow:15, cloudMid:30, precip:0, vis:24000, gs:31,
+     limiting:"снос поперёк курса", vetoes:[], worst:[["снос поперёк курса",32],["ветер на рабочей высоте",48],["сила потоков (оценка W*)",55]]},
+    {km:30, eta:"13:24", role:"маршрут", score:58, along:-6,  windDir:312, windKmh:19, wStar:2.1,
+     base:2720, terrain:1140, band:1420, margin:155, ground:null, gust:null, cape:280, li:-0.9, cin:18,
+     cloudLow:20, cloudMid:30, precip:0, vis:26000, gs:22,
+     limiting:"ветер вдоль курса", vetoes:[], worst:[["ветер вдоль курса",44],["запас времени до закрытия окна",64],["сила потоков (оценка W*)",66]]},
+    {km:34, eta:"13:38", role:"финиш",   score:62, along:-4,  windDir:318, windKmh:17, wStar:2.0,
+     base:2700, terrain:1050, band:1450, margin:142, ground:9, gust:15, cape:240, li:-0.7, cin:22,
+     cloudLow:20, cloudMid:25, precip:0, vis:28000, gs:23,
+     limiting:null, vetoes:[], worst:[["ветер вдоль курса",52],["сила потоков (оценка W*)",64],["спред T−Td",72]]},
+  ],
+  /* рельеф вдоль маршрута, шаг 2 км — отдельный запрос к Elevation API */
+  terrain:[2196,2140,2010,1880,1830,1760,1690,1720,1640,1560,1610,1480,1360,1300,1210,1140,1090,1050],
+  notes:["Рельеф взят с шагом 2 км (Copernicus DEM GLO-90)"],
+  ai:{
+    verdict:"Маршрут проходится, но без запаса. Первая треть работает хорошо — гребень над Гудаури держит поток, ветер почти строго вдоль курса. Проблема начинается за 15-м километром.",
+    bottleneck:"На 20 км ветер разворачивается на западный и даёт 24 км/ч поперёк курса при потоках 1,9 м/с. Снос съедает больше, чем набор компенсирует.",
+    tactical:"Вылет в 11:30 вместо 12:00 даёт 67 вместо 61: проходишь узкое место до того, как западная составляющая наберёт силу. Обратный маршрут хуже (54) — против ветра на финише.",
+    points:[
+      {km:10, comment:"держись правого борта долины, левый в тени после 13:00"},
+      {km:20, comment:"узкое место — если высота меньше 2400, уходи на подветренный гребень заранее"},
+      {km:30, comment:"долина Арагви, встречная составляющая; запас по времени ещё 2,5 часа"},
+    ],
+  },
+};
+
+const SAVED_ROUTES = [
+  {name:"Гудаури → Пасанаури", km:34, points:5, saved:"2026-07-24"},
+  {name:"Лалискури круг",      km:52, points:7, saved:"2026-07-11"},
+];
+
+const CFG = {
+  speed:25,
+  windCorrection:true,
+  permanentModel:"auto",
+  onceModel:"gfs",
+  cooldown:10,
+  allowed:4,
+};
+
+const MODELS = [
+  {key:"auto",  label:"Auto",  note:"best_match — open-meteo выбирает сам"},
+  {key:"ecmwf", label:"ECMWF", note:"без потолка — потолок возьмём из GFS"},
+  {key:"gfs",   label:"GFS",   note:"даёт потолок термички"},
+  {key:"icon",  label:"ICON",  note:"без потолка — потолок возьмём из GFS"},
+];
+
+/* ══════════════════════════════════════════════════════════════════
+   СОСТОЯНИЕ
+   ══════════════════════════════════════════════════════════════════ */
+const state = {
+  tab:"day",
+  siteId:"lal",
+  dateIdx:0,
+  range:"week",
+  overMode:"site",
+  hour:14,
+  routePoint:20,
+};
+
+const $  = (sel, root) => (root || document).querySelector(sel);
+const el = (tag, cls, txt) => {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (txt !== undefined) n.textContent = txt;
+  return n;
+};
+const fmtDate = (iso) => {
+  const d = new Date(iso + "T00:00:00");
+  return {wd:WD[(d.getDay()+6)%7], dm:`${d.getDate()} ${MON[d.getMonth()]}`,
+          short:`${String(d.getDate()).padStart(2,"0")}.${String(d.getMonth()+1).padStart(2,"0")}`};
+};
+const site = () => SITES.find(s => s.id === state.siteId);
+const num = (v, dec) => v.toFixed(dec === undefined ? 0 : dec).replace(".", ",");
+
+/* ══════════════════════════════════════════════════════════════════
+   ШАПКА
+   ══════════════════════════════════════════════════════════════════ */
+function renderCtx(){
+  const s = site();
+  $("#siteName").textContent = s.name;
+  $("#siteAsp").textContent  = `${s.aspect} ${s.aspectDeg}°`;
+  const d = fmtDate(OVERVIEW[state.dateIdx].date);
+  $("#dateLine").innerHTML = `<b>${d.wd}</b> ${d.dm} <i>· ${s.elev} м</i>`;
+  $("#dPrev").disabled = state.dateIdx === 0;
+  $("#dNext").disabled = state.dateIdx === OVERVIEW.length - 1;
+  const m = MODELS.find(x => x.key === CFG.onceModel);
+  const btn = $("#modelBtn");
+  const once = CFG.onceModel !== CFG.permanentModel;
+  btn.textContent = once ? `${m.label} · разово` : `${m.label}`;
+  btn.classList.toggle("chip--live", once);
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   ЭКРАН «ПРОГНОЗ»
+   Два прибора: полоса дня (ось времени) и столб воздуха (ось высоты).
+   ══════════════════════════════════════════════════════════════════ */
+function renderDay(){
+  const v = $("#v-day");
+  v.textContent = "";
+  const cat = catOf(DAY.score);
+
+  /* ── прибор 1: полоса дня ───────────────────────────────────── */
+  const p1 = el("div", "panel panel--flush");
+  const head = el("div", "panel__head");
+  head.style.padding = "0 14px";
+  head.append(el("span", "lbl", "Лётное окно"), el("span", "lbl", `пик ${DAY.peak[0]}–${DAY.peak[1]}`));
+  p1.append(head);
+
+  const vd = el("div", "verdict");
+  vd.style.padding = "0 14px";
+  const left = el("div");
+  left.append(
+    el("div", "verdict__win", `${String(DAY.window[0]).padStart(2,"0")}:00 – ${String(DAY.window[1]).padStart(2,"0")}:00`),
+    el("div", "verdict__sub", `солнце на склоне ${DAY.thermalWindow[0]}–${DAY.thermalWindow[1]} · световой день ${DAY.sunrise}–${DAY.sunset}`)
+  );
+  const right = el("div", "verdict__score");
+  const nEl = el("div", "verdict__num", String(DAY.score));
+  nEl.style.color = colorOf(DAY.score);
+  right.append(nEl, el("div", "verdict__cat", cat.label));
+  vd.append(left, right);
+  p1.append(vd);
+
+  /* полоса часов: высота столбика = балл, цвет = категория */
+  const strip = el("div", "strip");
+  const inner = el("div", "strip__inner");
+  const winBox = el("div", "strip__win");
+  const iStart = HOURS.findIndex(h => h.h === DAY.window[0]);
+  const iEnd   = HOURS.findIndex(h => h.h === DAY.window[1]);
+  const pct = (i) => (i / HOURS.length) * 100;
+  winBox.style.left  = pct(iStart) + "%";
+  winBox.style.right = (100 - pct(iEnd + 1)) + "%";
+  inner.append(winBox);
+
+  const bars = el("div", "strip__bars");
+  HOURS.forEach(h => {
+    const b = el("button", "hr");
+    b.type = "button";
+    b.setAttribute("aria-pressed", String(h.h === state.hour));
+    b.setAttribute("aria-label", `${h.h}:00, балл ${h.s}`);
+    const val = el("div", "hr__val", String(h.s));
+    const bar = el("div", "hr__bar");
+    bar.style.background = colorOf(h.s);
+    bar.style.height = "0px";
+    requestAnimationFrame(() => { bar.style.height = Math.round(h.s / 100 * 78) + "px"; });
+    b.append(val, bar);
+    b.addEventListener("click", () => { state.hour = h.h; renderDay(); });
+    bars.append(b);
+  });
+  inner.append(bars);
+
+  const pk = el("div", "peakmark");
+  const iPk0 = HOURS.findIndex(h => h.h === DAY.peak[0]);
+  const iPk1 = HOURS.findIndex(h => h.h === DAY.peak[1]);
+  pk.style.left  = pct(iPk0) + "%";
+  pk.style.right = (100 - pct(iPk1 + 1)) + "%";
+  inner.append(pk);
+  strip.append(inner);
+
+  const axis = el("div", "strip__axis");
+  HOURS.forEach(h => {
+    const s = el("span", h.h >= DAY.peak[0] && h.h <= DAY.peak[1] ? "is-peak" : "", String(h.h));
+    axis.append(s);
+  });
+  strip.append(axis);
+  p1.append(strip);
+
+  const hd = HOURS.find(h => h.h === state.hour);
+  const det = el("div", "hrdetail");
+  det.innerHTML = `<b>${String(hd.h).padStart(2,"0")}:00</b> · ${hd.note}<br>`
+    + `<b>${num(hd.t,1)}°</b> · ветер <b>${num(hd.w,1)}</b> порыв <b>${num(hd.g,1)}</b> м/с · `
+    + `<b>${compass(hd.d)} ${hd.d}°</b> · облака <b>${hd.cl}%</b> · CAPE <b>${hd.cape}</b>`;
+  p1.append(det);
+
+  if (DAY.limiting){
+    const lim = el("div", "limiting");
+    lim.append(el("span", "limiting__k", "Ограничивает"), el("span", "", DAY.limiting));
+    p1.append(lim);
+  }
+  v.append(p1);
+
+  /* ── прибор 2: столб воздуха ────────────────────────────────── */
+  const p2 = el("div", "panel");
+  const h2 = el("div", "panel__head");
+  h2.append(el("span", "lbl", "Столб воздуха"), el("span", "lbl", "метры MSL"));
+  p2.append(h2);
+
+  const lo = 400, hi = 2750;
+  const y = (m) => ((hi - m) / (hi - lo)) * 100;
+  const col = el("div", "column");
+
+  const ax = el("div", "column__axis");
+  [2500, 2000, 1500, 1000, 500].forEach(m => {
+    const t = el("span", "", String(m));
+    t.style.top = y(m) + "%";
+    ax.append(t);
+  });
+
+  const draw = el("div", "column__draw");
+  const terr = el("div", "column__terrain");
+  terr.style.height = (100 - y(site().elev)) + "%";
+  const band = el("div", "column__band");
+  band.style.top = y(DAY.ceilingMsl) + "%";
+  band.style.height = (y(site().elev) - y(DAY.ceilingMsl)) + "%";
+  const ceil = el("div", "column__line");
+  ceil.style.top = y(DAY.ceilingMsl) + "%";
+  const base = el("div", "column__line column__line--dash");
+  base.style.top = y(DAY.lclMsl) + "%";
+  draw.append(band, terr, ceil, base);
+
+  /* Подписи разводятся по вертикали: база и потолок стоят в 190 м друг от друга
+     и на этой шкале налезали бы. Сдвинутая подпись соединяется с настоящей
+     высотой выноской — иначе она врёт о том, к чему относится. */
+  const notes = el("div", "column__notes");
+  const COLH = 186, MINGAP = 30;
+  const items = [
+    {m:DAY.lclMsl,     val:`${DAY.lclMsl} м`,     txt:"база облаков — выше потолка", dash:true},
+    {m:DAY.ceilingMsl, val:`${DAY.ceilingMsl} м`, txt:`потолок · ${DAY.ceilingAgl} м над стартом`},
+    {m:site().elev,    val:`${site().elev} м`,    txt:"старт"},
+  ].map(it => ({...it, trueY: y(it.m) / 100 * COLH}));
+  items.sort((a,b) => a.trueY - b.trueY);
+  items.forEach((it,i) => {
+    it.labelY = i === 0 ? it.trueY
+              : Math.max(it.trueY, items[i-1].labelY + MINGAP);
+  });
+  items.forEach(it => {
+    const n = el("div", "column__note");
+    n.style.top = (it.labelY - 7) + "px";   /* засечка внутри стоит на 7px */
+    const b = el("b", "", it.val);
+    if (it.dash) b.style.color = cssVar("--air-deep");
+    if (Math.abs(it.labelY - it.trueY) > 2){
+      const lead = el("i", "column__lead");
+      lead.style.top = (Math.min(it.labelY, it.trueY) - it.labelY + 7) + "px";
+      lead.style.height = Math.abs(it.labelY - it.trueY) + "px";
+      n.append(lead);
+    }
+    n.append(el("i", "column__tick"), b, el("span", "", it.txt));
+    notes.append(n);
+  });
+  col.append(ax, draw, notes);
+  p2.append(col);
+
+  const lg = el("div", "legend");
+  lg.innerHTML =
+    `<span><i style="background:${cssVar("--air")};opacity:.42"></i>рабочий коридор ${DAY.ceilingAgl} м</span>` +
+    `<span><i style="background:${cssVar("--ground")}"></i>рельеф</span>` +
+    (DAY.blue ? `<span><i style="background:${cssVar("--air-deep")}"></i>голубая термичка</span>` : "");
+  p2.append(lg);
+  v.append(p2);
+
+  /* ── факты ──────────────────────────────────────────────────── */
+  const facts = el("div", "facts");
+  const fact = (k, val, unit, note) => {
+    const f = el("div", "fact");
+    f.append(el("div", "lbl", k));
+    const vv = el("div", "fact__v");
+    vv.textContent = val;
+    if (unit){ const u = el("small", "", " " + unit); vv.append(u); }
+    f.append(vv);
+    if (note) f.append(el("div", "fact__note", note));
+    return f;
+  };
+  facts.append(
+    fact("Ветер днём", `${num(DAY.windRange[0],1)}–${num(DAY.windRange[1],1)}`, "м/с", `порывы до ${num(DAY.gustMax,1)}`),
+    fact("Направление", `${compass(DAY.flyDir)} ${DAY.flyDir}°`, "", `${DAY.dirVerdict} к склону (${site().aspect})`),
+    fact("Температура", `${DAY.tempRange[0]}–${DAY.tempRange[1]}`, "°", `днём ${DAY.sunrise}–${DAY.sunset}`),
+    fact("Осадки", DAY.precip > 0 ? num(DAY.precip,1) : "нет", DAY.precip > 0 ? "мм" : "", "за сутки")
+  );
+  v.append(facts);
+
+  /* ── действия ───────────────────────────────────────────────── */
+  const acts = el("div", "acts");
+  const act = (title, sub, fn, wide) => {
+    const a = el("button", "act" + (wide ? " act--wide" : ""));
+    a.type = "button";
+    a.append(el("b", "", title), el("span", "", sub));
+    a.addEventListener("click", fn);
+    return a;
+  };
+  acts.append(
+    act("Ветер по высотам", "6 уровней × 10 часов", openWindGrid),
+    act("Разбор от ИИ", "Gemini по этим числам", openDayAI),
+    act("Метеограмма", "температура, ветер, порывы, осадки", () => openChart("meteogram"), true)
+  );
+  v.append(acts);
+
+  /* ── оговорки ───────────────────────────────────────────────── */
+  const cav = el("div", "panel caveats");
+  cav.append(el("div", "lbl", "Оговорки"));
+  const ul = el("ul");
+  DAY.caveats.forEach(c => ul.append(el("li", "", c)));
+  cav.append(ul);
+  v.append(cav);
+
+  v.append(el("div", "attrib", "Погода: Open-Meteo.com (CC BY 4.0) · потолок всегда по GFS"));
+  flash(v);
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   ЭКРАН «ОБЗОР»
+   ══════════════════════════════════════════════════════════════════ */
+function renderOver(){
+  const v = $("#v-over");
+  v.textContent = "";
+
+  const seg = el("div", "seg");
+  [["3d","3 дня"],["week","Неделя"],["2weeks","2 недели"],["scan","Все старты"]].forEach(([k,label]) => {
+    const b = el("button", "", label);
+    b.type = "button";
+    b.setAttribute("aria-pressed", String(state.range === k));
+    b.addEventListener("click", () => { state.range = k; renderOver(); });
+    seg.append(b);
+  });
+  v.append(seg);
+
+  if (state.range === "scan"){ renderScan(v); flash(v); return; }
+
+  const n = state.range === "3d" ? 3 : state.range === "week" ? 7 : 14;
+  const rows = OVERVIEW.slice(0, n);
+  const best = rows.reduce((a,b) => b.score > a.score ? b : a);
+
+  const lead = el("div", "panel");
+  const lh = el("div", "panel__head");
+  lh.append(el("span", "lbl", "Лучший день"), el("span", "lbl", `${site().name} · ${n} дн.`));
+  lead.append(lh);
+  const bd = fmtDate(best.date);
+  const bv = el("div", "verdict");
+  const bl = el("div");
+  bl.append(
+    el("div", "verdict__win", `${bd.wd} ${bd.dm}`),
+    el("div", "verdict__sub", `${best.wmo} · до ${num(best.wmax,1)} м/с, порыв ${num(best.gmax,1)} · ${compass(best.dom)}`)
+  );
+  const br = el("div", "verdict__score");
+  const bn = el("div", "verdict__num", String(best.score));
+  bn.style.color = colorOf(best.score);
+  br.append(bn, el("div", "verdict__cat", catOf(best.score).label));
+  bv.append(bl, br);
+  lead.append(bv);
+  v.append(lead);
+
+  const list = el("div", "days");
+  rows.forEach(r => {
+    const d = fmtDate(r.date);
+    const b = el("button", "day");
+    b.type = "button";
+    const dd = el("div", "day__d");
+    dd.innerHTML = `<b>${d.wd}</b><i>${d.short}</i>`;
+    const m = el("div", "day__m");
+    const bar = el("div", "day__bar");
+    bar.style.background = colorOf(r.score);
+    bar.style.width = Math.max(6, r.score) + "%";
+    /* Причина ограничения важнее описания погоды: она говорит, что делать.
+       Обе в строку не влезают, поэтому описание уступает место причине. */
+    const f = el("div", "day__f",
+      `до ${num(r.wmax,1)} порыв ${num(r.gmax,1)} · ${compass(r.dom)} · `
+      + (r.limiting || r.wmo)
+      + (r.precip > 0.2 ? ` · ${num(r.precip,1)} мм` : ""));
+    m.append(bar, f);
+    const sc = el("div", "day__s");
+    sc.innerHTML = `${r.score}<small>${catOf(r.score).key === "no_fly" || catOf(r.score).key === "danger" ? "не лётно" : "лётно"}</small>`;
+    sc.style.color = colorOf(r.score);
+    b.append(dd, m, sc);
+    b.addEventListener("click", () => {
+      state.dateIdx = OVERVIEW.findIndex(x => x.date === r.date);
+      switchTab("day");
+    });
+    list.append(b);
+  });
+  v.append(list);
+  v.append(el("div", "attrib", "Тап по дню открывает подробный прогноз — экран перерисуется, ничего не добавится в историю"));
+  flash(v);
+}
+
+function renderScan(v){
+  SCAN.sites.forEach(s => {
+    const g = el("div", "sitegrp");
+    const h = el("div", "sitegrp__h");
+    h.append(el("b", "", s.name), el("span", "lbl", `${s.aspect} · ${s.days.length} лётных`));
+    g.append(h);
+    const list = el("div", "days");
+    s.days.forEach(r => {
+      const d = fmtDate(r.date);
+      const b = el("button", "day");
+      b.type = "button";
+      const dd = el("div", "day__d");
+      dd.innerHTML = `<b>${d.wd}</b><i>${d.short}</i>`;
+      const m = el("div", "day__m");
+      const bar = el("div", "day__bar");
+      bar.style.background = colorOf(r.score);
+      bar.style.width = Math.max(6, r.score) + "%";
+      m.append(bar, el("div", "day__f",
+        `до ${num(r.wmax,1)} порыв ${num(r.gmax,1)} · ${compass(r.dom)} · `
+        + (r.limiting || r.wmo)));
+      const sc = el("div", "day__s", String(r.score));
+      sc.style.color = colorOf(r.score);
+      b.append(dd, m, sc);
+      b.addEventListener("click", () => {
+        state.siteId = s.id;
+        const i = OVERVIEW.findIndex(x => x.date === r.date);
+        if (i >= 0) state.dateIdx = i;
+        switchTab("day");
+      });
+      list.append(b);
+    });
+    g.append(list);
+    v.append(g);
+  });
+
+  if (SCAN.empty.length){
+    const e = el("div", "empty");
+    e.append(el("b", "", "Без лётных дней"));
+    e.append(document.createTextNode(SCAN.empty.join(", ") + " — на неделе ни одного окна ≥ удовлетворительного."));
+    v.append(e);
+  }
+  if (SCAN.failed.length){
+    const e = el("div", "empty");
+    e.append(el("b", "", "Не удалось получить"));
+    e.append(document.createTextNode(SCAN.failed.join(", ") + ". Открой старт вручную, чтобы повторить запрос."));
+    v.append(e);
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   ЭКРАН «МАРШРУТ»
+   ══════════════════════════════════════════════════════════════════ */
+function renderRoute(){
+  const v = $("#v-route");
+  v.textContent = "";
+
+  /* карта */
+  const map = el("div", "map");
+  const cv = el("canvas");
+  map.append(cv);
+  const pins = el("div", "map__pins");
+  map.append(pins);
+  const sc = el("div", "map__scale");
+  sc.innerHTML = "<s></s>10 км";
+  map.append(sc);
+  const nrt = el("div", "map__n", "N");
+  map.append(nrt);
+  v.append(map);
+
+  /* заголовок маршрута */
+  const head = el("div", "panel");
+  const hh = el("div", "panel__head");
+  hh.append(el("span", "lbl", "Маршрут"), el("span", "lbl", `${ROUTE.sampleCount} точек · шаг ${ROUTE.stepKm} км`));
+  head.append(hh);
+  const vd = el("div", "verdict");
+  const l = el("div");
+  l.append(
+    el("div", "verdict__win", `${ROUTE.totalKm} км`),
+    el("div", "verdict__sub", `${ROUTE.name} · вылет ${ROUTE.departure} → прилёт ~${ROUTE.eta}`)
+  );
+  const r = el("div", "verdict__score");
+  const rn = el("div", "verdict__num", String(ROUTE.verdict.score));
+  rn.style.color = colorOf(ROUTE.verdict.score);
+  r.append(rn, el("div", "verdict__cat", "проходится"));
+  vd.append(l, r);
+  head.append(vd);
+
+  const lim = el("div", "limiting");
+  lim.append(el("span", "limiting__k", "Узкое место"),
+             el("span", "", `${ROUTE.bottleneck.score} на ${ROUTE.bottleneck.km} км`));
+  head.append(lim);
+  v.append(head);
+
+  /* разрез: рельеф, коридор, база */
+  const secp = el("div", "panel");
+  const sh = el("div", "panel__head");
+  sh.append(el("span", "lbl", "Разрез маршрута"), el("span", "lbl", "метры MSL"));
+  secp.append(sh);
+  secp.append(buildSection());
+  const slg = el("div", "legend");
+  slg.innerHTML =
+    `<span><i style="background:${cssVar("--ground")}"></i>рельеф</span>` +
+    `<span><i style="background:${cssVar("--air")};opacity:.42"></i>рабочий коридор</span>` +
+    `<span><i style="background:${cssVar("--air-deep")}"></i>база облаков</span>`;
+  secp.append(slg);
+  v.append(secp);
+
+  /* таблица точек — колонки как в route._rows */
+  const tp = el("div", "panel");
+  const th = el("div", "panel__head");
+  th.append(el("span", "lbl", "Точки"), el("span", "lbl", "тап — карточка точки"));
+  tp.append(th);
+  const wrap = el("div");
+  wrap.style.overflowX = "auto";
+  const tbl = el("table", "rtable");
+  tbl.innerHTML = "<thead><tr><th>км</th><th>время</th><th>вдоль</th><th>ветер</th><th>балл</th></tr></thead>";
+  const tb = el("tbody");
+  ROUTE.points.forEach(p => {
+    const tr = el("tr");
+    tr.setAttribute("aria-selected", String(p.km === state.routePoint));
+    const arrow = p.along >= 0 ? "→" : "←";
+    tr.innerHTML =
+      `<td>${p.km}</td><td class="u">${p.eta}</td>` +
+      `<td>${arrow}${Math.abs(p.along)}</td>` +
+      `<td class="u">${compass(p.windDir)} ${p.windKmh}</td>` +
+      `<td class="sc" style="color:${colorOf(p.score)}">${p.score}</td>`;
+    tr.addEventListener("click", () => { state.routePoint = p.km; openPointCard(p.km); renderRoute(); });
+    tb.append(tr);
+  });
+  tbl.append(tb);
+  wrap.append(tbl);
+  tp.append(wrap);
+  v.append(tp);
+
+  /* время вылета */
+  const dep = el("div", "panel");
+  const dh = el("div", "panel__head");
+  dh.append(el("span", "lbl", "Время вылета"), el("span", "lbl", "перебор по окну"));
+  dep.append(dh);
+  const chips = el("div");
+  chips.style.cssText = "display:flex;gap:7px;flex-wrap:wrap;margin-top:9px";
+  const deps = [{time:ROUTE.bestDeparture.time, score:ROUTE.bestDeparture.score, best:true},
+                {time:ROUTE.departure, score:ROUTE.verdict.score},
+                ...ROUTE.altDepartures];
+  deps.forEach(d => {
+    const b = el("button", "chip");
+    b.type = "button";
+    b.style.fontSize = "12px";
+    b.style.padding = "6px 10px";
+    if (d.time === ROUTE.departure){ b.style.borderColor = cssVar("--ink"); b.style.color = cssVar("--ink"); }
+    b.textContent = `${d.time} → ${d.score}` + (d.best ? " ★" : "");
+    b.title = d.best ? "Лучший вылет" : "";
+    chips.append(b);
+  });
+  dep.append(chips);
+  dep.append(el("div", "fact__note", `Запас окна: старт +${ROUTE.marginStart} мин · финиш +${ROUTE.marginFinish} мин. Обратный маршрут — ${ROUTE.reverseScore}.`));
+  v.append(dep);
+
+  /* действия */
+  const acts = el("div", "acts");
+  const mk = (t, s, fn, wide) => {
+    const a = el("button", "act" + (wide ? " act--wide" : ""));
+    a.type = "button";
+    a.append(el("b", "", t), el("span", "", s));
+    a.addEventListener("click", fn);
+    return a;
+  };
+  acts.append(
+    mk("Разбор от ИИ", "тактика по узкому месту", openRouteAI),
+    mk("Сохранённые", `${SAVED_ROUTES.length} маршрута`, openSaved),
+    mk("Новый маршрут", "точки на карте, GPX или KML", openNewRoute, true)
+  );
+  v.append(acts);
+
+  ROUTE.notes.forEach(n => v.append(el("div", "attrib", n)));
+  flash(v);
+  drawMap(cv, pins);
+}
+
+/* Разрез маршрута: рельеф, рабочий коридор, база облаков. */
+function buildSection(){
+  const W = 340, H = 150, padL = 30, padR = 8, padT = 10, padB = 20;
+  const lo = 800, hi = 3050;
+  const T = ROUTE.terrain;
+  const x = (i) => padL + (i / (T.length - 1)) * (W - padL - padR);
+  const y = (m) => padT + ((hi - m) / (hi - lo)) * (H - padT - padB);
+
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.setAttribute("class", "section");
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label", "Разрез маршрута: рельеф, рабочий коридор и база облаков");
+  const ns = "http://www.w3.org/2000/svg";
+  const node = (t, attrs) => {
+    const n = document.createElementNS(ns, t);
+    for (const k in attrs) n.setAttribute(k, attrs[k]);
+    return n;
+  };
+
+  /* сетка высот */
+  [1000,1500,2000,2500,3000].forEach(m => {
+    svg.append(node("line", {x1:padL, x2:W-padR, y1:y(m), y2:y(m),
+      stroke:cssVar("--rule"), "stroke-width":1}));
+    const t = node("text", {x:padL-5, y:y(m)+3, "text-anchor":"end",
+      "font-size":8, fill:cssVar("--faint"), "font-family":"ui-monospace,monospace"});
+    t.textContent = m;
+    svg.append(t);
+  });
+
+  /* коридор: между рельефом+запас и потолком */
+  const ceilAt = (i) => 2750 - (i / (T.length - 1)) * 250;
+  let band = `M ${x(0)} ${y(ceilAt(0))}`;
+  T.forEach((m,i) => { if (i) band += ` L ${x(i)} ${y(ceilAt(i))}`; });
+  for (let i = T.length - 1; i >= 0; i--) band += ` L ${x(i)} ${y(T[i] + 80)}`;
+  band += " Z";
+  svg.append(node("path", {d:band, fill:cssVar("--air"), opacity:.34}));
+
+  /* база облаков — пунктир */
+  const baseAt = (i) => 2900 - (i / (T.length - 1)) * 200;
+  let bl = `M ${x(0)} ${y(baseAt(0))}`;
+  T.forEach((m,i) => { if (i) bl += ` L ${x(i)} ${y(baseAt(i))}`; });
+  svg.append(node("path", {d:bl, fill:"none", stroke:cssVar("--air-deep"),
+    "stroke-width":1.5, "stroke-dasharray":"4 3"}));
+
+  /* рельеф */
+  let ter = `M ${x(0)} ${y(T[0])}`;
+  T.forEach((m,i) => { if (i) ter += ` L ${x(i)} ${y(m)}`; });
+  ter += ` L ${x(T.length-1)} ${H-padB} L ${x(0)} ${H-padB} Z`;
+  svg.append(node("path", {d:ter, fill:cssVar("--ground")}));
+
+  /* точки маршрута */
+  ROUTE.points.forEach(p => {
+    const i = (p.km / ROUTE.totalKm) * (T.length - 1);
+    const px = padL + (i / (T.length - 1)) * (W - padL - padR);
+    const py = y(p.terrain + (p.base - p.terrain) * .55);
+    svg.append(node("line", {x1:px, x2:px, y1:padT, y2:H-padB,
+      stroke:cssVar("--rule"), "stroke-width":1, "stroke-dasharray":"2 3"}));
+    svg.append(node("circle", {cx:px, cy:py, r:4, fill:colorOf(p.score),
+      stroke:cssVar("--panel"), "stroke-width":1.5}));
+    const t = node("text", {x:px, y:H-6, "text-anchor":"middle", "font-size":8,
+      fill:p.km === ROUTE.bottleneck.km ? cssVar("--ink") : cssVar("--faint"),
+      "font-family":"ui-monospace,monospace",
+      "font-weight":p.km === ROUTE.bottleneck.km ? 700 : 400});
+    t.textContent = p.km;
+    svg.append(t);
+  });
+  return svg;
+}
+
+/* Карта: рельеф рисуется генеративно на canvas — внешних тайлов нет
+   (CSP их всё равно блокирует, и для прототипа они не нужны). */
+function drawMap(cv, pins){
+  const rect = cv.getBoundingClientRect();
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const W = Math.max(1, Math.round(rect.width)), H = Math.max(1, Math.round(rect.height));
+  cv.width = W * dpr; cv.height = H * dpr;
+  const g = cv.getContext("2d");
+  g.scale(dpr, dpr);
+
+  /* детерминированный шум — карта не «дрожит» между перерисовками */
+  const hash = (x, y) => {
+    let n = Math.sin(x * 127.1 + y * 311.7) * 43758.5453;
+    return n - Math.floor(n);
+  };
+  const smooth = (x, y) => {
+    const xi = Math.floor(x), yi = Math.floor(y), xf = x - xi, yf = y - yi;
+    const u = xf*xf*(3-2*xf), v2 = yf*yf*(3-2*yf);
+    return hash(xi,yi)*(1-u)*(1-v2) + hash(xi+1,yi)*u*(1-v2)
+         + hash(xi,yi+1)*(1-u)*v2   + hash(xi+1,yi+1)*u*v2;
+  };
+  const field = (x, y) => {
+    let v = 0, a = .5, f = 1;
+    for (let o = 0; o < 4; o++){ v += smooth(x*f, y*f) * a; a *= .5; f *= 2; }
+    /* хребет вдоль северо-запада — маршрут идёт с гребня в долину */
+    v += .30 * Math.exp(-Math.pow((x*.18 + y*.10 - 1.5), 2) * 1.7);
+    return v;
+  };
+
+  const air = cssVar("--air"), ground = cssVar("--ground"), panel = cssVar("--panel");
+  const rgb = (hex) => {
+    const h = hex.replace("#", "").trim();
+    return [parseInt(h.slice(0,2),16), parseInt(h.slice(2,4),16), parseInt(h.slice(4,6),16)];
+  };
+  const mix = (a, b, t) => {
+    const A = rgb(a), B = rgb(b);
+    return `rgb(${Math.round(A[0]+(B[0]-A[0])*t)},${Math.round(A[1]+(B[1]-A[1])*t)},${Math.round(A[2]+(B[2]-A[2])*t)})`;
+  };
+  g.fillStyle = panel; g.fillRect(0, 0, W, H);
+
+  /* высотные ступени как на полётной карте: долины к воде, гребни к рельефу,
+     между ступенями — тонкая изогипса */
+  const N = 7, cell = 3;
+  const cols = Math.ceil(W / cell), rows = Math.ceil(H / cell);
+  const lv = new Int8Array(cols * rows);
+  /* гипсометрическая шкала полётной карты: нижняя ступень — вода,
+     выше — непрерывный ход от светлого к тёмному по рельефу */
+  const tone = [mix(panel, air, .52)];
+  for (let i = 1; i < N; i++) tone.push(mix(panel, ground, .16 + (i - 1) / (N - 2) * .74));
+  for (let ry = 0; ry < rows; ry++){
+    for (let rx = 0; rx < cols; rx++){
+      const v = field(rx * cell / 46, ry * cell / 46);
+      const i = Math.min(N - 1, Math.max(0, Math.floor(v * N)));
+      lv[ry * cols + rx] = i;
+      g.fillStyle = tone[i];
+      g.fillRect(rx * cell, ry * cell, cell, cell);
+    }
+  }
+  g.fillStyle = mix(panel, ground, .95);
+  g.globalAlpha = .30;
+  for (let ry = 0; ry < rows; ry++){
+    for (let rx = 0; rx < cols; rx++){
+      const here = lv[ry * cols + rx];
+      if (rx && lv[ry * cols + rx - 1] !== here) g.fillRect(rx * cell, ry * cell, 1, cell);
+      if (ry && lv[(ry - 1) * cols + rx] !== here) g.fillRect(rx * cell, ry * cell, cell, 1);
+    }
+  }
+  g.globalAlpha = 1;
+
+  /* трасса: от старта в верхнем-левом к финишу в нижнем-правом */
+  const path = ROUTE.points.map(p => {
+    const f = p.km / ROUTE.totalKm;
+    return {x: W * (0.17 + f * 0.66) + Math.sin(f * 3.6) * W * 0.055,
+            y: H * (0.20 + f * 0.60) + Math.cos(f * 2.4) * H * 0.045, p};
+  });
+  g.lineWidth = 5; g.strokeStyle = panel; g.lineJoin = "round"; g.lineCap = "round";
+  g.beginPath(); path.forEach((q,i) => i ? g.lineTo(q.x,q.y) : g.moveTo(q.x,q.y)); g.stroke();
+  g.lineWidth = 2.4; g.strokeStyle = cssVar("--ink");
+  g.beginPath(); path.forEach((q,i) => i ? g.lineTo(q.x,q.y) : g.moveTo(q.x,q.y)); g.stroke();
+
+  pins.textContent = "";
+  path.forEach(q => {
+    const b = el("button", "pin");
+    b.type = "button";
+    b.style.left = (q.x / W * 100) + "%";
+    b.style.top  = (q.y / H * 100) + "%";
+    b.setAttribute("aria-pressed", String(q.p.km === state.routePoint));
+    b.setAttribute("aria-label", `Точка ${q.p.km} км, балл ${q.p.score}`);
+    const i = el("i");
+    i.style.background = colorOf(q.p.score);
+    b.append(i);
+    b.addEventListener("click", () => { state.routePoint = q.p.km; openPointCard(q.p.km); renderRoute(); });
+    pins.append(b);
+  });
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   ЭКРАН «НАСТРОЙКИ»
+   ══════════════════════════════════════════════════════════════════ */
+function renderSet(){
+  const v = $("#v-set");
+  v.textContent = "";
+
+  const grp = (title) => { const g = el("div", "lbl", title); g.style.padding = "6px 2px 0"; return g; };
+
+  /* модель */
+  v.append(grp("Метеомодель"));
+  const m1 = el("div", "rows");
+  const permRow = el("button", "row");
+  permRow.type = "button";
+  const permM = MODELS.find(x => x.key === CFG.permanentModel);
+  const pm = el("div", "row__m");
+  pm.append(el("div", "row__t", "Постоянная модель"),
+            el("div", "row__s", "Ей считаются все прогнозы, пока не сменишь"));
+  permRow.append(pm, el("div", "row__v", permM.label + " ›"));
+  permRow.addEventListener("click", () => openModelSheet("permanent"));
+  m1.append(permRow);
+
+  const ceilRow = el("div", "row");
+  const cm = el("div", "row__m");
+  cm.append(el("div", "row__t", "Потолок термички"),
+            el("div", "row__s", "Всегда считается по GFS — только она даёт высоту слоя перемешивания"));
+  ceilRow.append(cm, el("div", "row__v", "GFS"));
+  m1.append(ceilRow);
+  v.append(m1);
+
+  /* маршрут */
+  v.append(grp("Маршрут"));
+  const m2 = el("div", "rows");
+  const spRow = el("div", "row");
+  const sp = el("div", "row__m");
+  sp.append(el("div", "row__t", "Средняя маршрутная скорость"),
+            el("div", "row__s", "С учётом наборов в термиках, не скорость крыла. 10–45 км/ч"));
+  const stp = el("div", "stepper");
+  const minus = el("button", "", "−"); minus.type = "button";
+  const plus  = el("button", "", "+"); plus.type = "button";
+  const valEl = el("b", "", `${CFG.speed} км/ч`);
+  minus.addEventListener("click", () => { CFG.speed = Math.max(10, CFG.speed - 1); renderSet(); });
+  plus .addEventListener("click", () => { CFG.speed = Math.min(45, CFG.speed + 1); renderSet(); });
+  stp.append(minus, valEl, plus);
+  spRow.append(sp, stp);
+  m2.append(spRow);
+
+  const wcRow = el("button", "row");
+  wcRow.type = "button";
+  const wc = el("div", "row__m");
+  wc.append(el("div", "row__t", "Учитывать ветер во времени прилёта"),
+            el("div", "row__s", "Марш вперёд: GS = V·cos(WCA) + попутная составляющая"));
+  const sw = el("div", "sw");
+  sw.setAttribute("role", "switch");
+  sw.setAttribute("aria-checked", String(CFG.windCorrection));
+  wcRow.append(wc, sw);
+  wcRow.addEventListener("click", () => { CFG.windCorrection = !CFG.windCorrection; renderSet(); });
+  m2.append(wcRow);
+  v.append(m2);
+
+  /* старты */
+  v.append(grp(`Старты · ${SITES.length}`));
+  const m3 = el("div", "rows");
+  SITES.forEach(s => {
+    const row = el("button", "row");
+    row.type = "button";
+    const mm = el("div", "row__m");
+    mm.append(el("div", "row__t", s.name),
+              el("div", "row__s", `${s.lat.toFixed(3)}, ${s.lon.toFixed(3)} · ${s.elev} м · экспозиция ${s.aspect} ${s.aspectDeg}°`));
+    row.append(mm, el("div", "row__v", s.id === state.siteId ? "активен" : "›"));
+    row.addEventListener("click", () => openSiteEditor(s));
+    m3.append(row);
+  });
+  const addRow = el("button", "row");
+  addRow.type = "button";
+  const am = el("div", "row__m");
+  am.append(el("div", "row__t", "Добавить старт"),
+            el("div", "row__s", "Координаты, точка на карте или геопозиция"));
+  addRow.append(am, el("div", "row__v", "+"));
+  addRow.addEventListener("click", () => openSheet("Добавить старт", buildAddSite()));
+  m3.append(addRow);
+  v.append(m3);
+
+  /* доступ */
+  v.append(grp("Доступ"));
+  const m4 = el("div", "rows");
+  const acc = el("div", "row");
+  const ac = el("div", "row__m");
+  ac.append(el("div", "row__t", "Список допущенных"),
+            el("div", "row__s", "Чужие Telegram ID получают отказ с их номером"));
+  acc.append(ac, el("div", "row__v", `${CFG.allowed} чел.`));
+  m4.append(acc);
+  const cd = el("div", "row");
+  const cc = el("div", "row__m");
+  cc.append(el("div", "row__t", "Пауза между запросами"),
+            el("div", "row__s", "Только на набранные команды; кнопки под ответом не считаются"));
+  cd.append(cc, el("div", "row__v", `${CFG.cooldown} сек`));
+  m4.append(cd);
+  v.append(m4);
+
+  v.append(el("div", "attrib", "Прогноз: Open-Meteo · рельеф: Copernicus DEM GLO-90 · разбор: Gemini"));
+  flash(v);
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   ШТОРКИ
+   ══════════════════════════════════════════════════════════════════ */
+let lastFocus = null;
+
+function openSheet(title, node){
+  const sh = $("#sheet"), sc = $("#scrim");
+  lastFocus = document.activeElement;
+  $("#sheetTitle").textContent = title;
+  const b = $("#sheetBody");
+  b.textContent = "";
+  b.append(node);
+  sh.hidden = false;
+  requestAnimationFrame(() => { sh.classList.add("is-open"); sc.classList.add("is-open"); });
+  $("#sheetX").focus();
+}
+function closeSheet(){
+  const sh = $("#sheet"), sc = $("#scrim");
+  sh.classList.remove("is-open"); sc.classList.remove("is-open");
+  setTimeout(() => { sh.hidden = true; }, 300);
+  if (lastFocus && lastFocus.focus) lastFocus.focus();
+}
+
+function openWindGrid(){
+  const wrap = el("div");
+  wrap.append(el("p", "prose",
+    "Строки — высоты, столбцы — часы. Стрелка показывает, куда дует; цвет — сила."));
+  const scroller = el("div");
+  scroller.style.overflowX = "auto";
+  const t = el("table", "wgrid");
+  const thead = el("thead");
+  const hr = el("tr");
+  hr.append(el("th", "lv", ""));
+  WGRID.hours.forEach(h => hr.append(el("th", "", String(h))));
+  thead.append(hr);
+  t.append(thead);
+  const tb = el("tbody");
+  WGRID.levels.forEach((lv, i) => {
+    const tr = el("tr");
+    const th = el("th", "lv", `${lv.label}`);
+    th.title = `${lv.alt} м MSL`;
+    tr.append(th);
+    WGRID.cells[i].forEach(([spd, dir]) => {
+      const td = el("td");
+      /* цвет по силе ветра — та же логика, что в charts._grid_cell_color */
+      const s = spd <= 3 ? "ideal" : spd <= 5 ? "excellent" : spd <= 8 ? "fair"
+              : spd <= 12 ? "marginal" : spd <= 16 ? "no_fly" : "danger";
+      td.style.background = cssVar(CATS[s].v);
+      /* Стрелка нарисована остриём вниз = азимут 180°. Ветер дует В сторону
+         dir+180, поэтому поворот = (dir+180)−180 = dir. */
+      td.innerHTML =
+        `<svg viewBox="0 0 24 24" style="transform:rotate(${dir}deg)">` +
+        `<path d="M12 3v18M12 21l-5-6M12 21l5-6"/></svg>` +
+        `<b>${num(spd, spd < 10 ? 1 : 0)}</b>`;
+      td.title = `${num(spd,1)} м/с, ${compass(dir)} ${dir}°`;
+      tr.append(td);
+    });
+    tb.append(tr);
+  });
+  t.append(tb);
+  scroller.append(t);
+  wrap.append(scroller);
+  const lg = el("div", "legend");
+  lg.innerHTML = ["≤3 штиль","3–5 рабочий","5–8 бодро","8–12 много","12–16 нелётно","16+ опасно"]
+    .map((s,i) => `<span><i style="background:${cssVar(CATS[CAT_ORDER[i]].v)}"></i>${s}</span>`).join("");
+  wrap.append(lg);
+  openSheet("Ветер по высотам · м/с", wrap);
+}
+
+function openDayAI(){
+  const wrap = el("div");
+  const b = el("div", "badge", "Gemini · по фактам open-meteo");
+  b.style.background = cssVar("--air-deep");
+  wrap.append(b);
+  const p = el("div", "prose");
+  p.style.marginTop = "12px";
+  p.innerHTML = `
+    <p><b>Лететь стоит, но окно короче, чем кажется по баллу.</b> Склон встаёт под солнце
+    в 10, но до 11 потоки рваные — южная экспозиция даёт нагрев быстро, а ветер ещё не
+    развернулся в лоб.</p>
+    <p>Рабочий кусок — с 11 до 16. Пик в 14: 28,9°, ветер 4,1 м/с строго в лоб (194°),
+    потолок 1654 м над стартом. После 15 порывы уходят к 9 м/с при среднем 4,6 —
+    порывистость и есть то, что держит день на 72, а не на 85.</p>
+    <p><b>Термичка голубая.</b> База (2530) выше потолка (2340) — облаков-маркеров не будет.
+    Ищи потоки по рельефу и по чужим крыльям, а не по кучёвке.</p>
+    <p><em>Совет: стартовать к 11:30, набирать над южным ребром, к 15:30 быть на земле —
+    после этого порывы съедают запас.</em></p>`;
+  wrap.append(p);
+  wrap.append(el("div", "attrib", "Модель называет только числа из прогноза; вердикт — её интерпретация"));
+  openSheet("Разбор дня", wrap);
+}
+
+function openRouteAI(){
+  const wrap = el("div");
+  const b = el("div", "badge", "Gemini · по профилю маршрута");
+  b.style.background = cssVar("--air-deep");
+  wrap.append(b);
+  const p = el("div", "prose");
+  p.style.marginTop = "12px";
+  p.innerHTML =
+    `<p>${ROUTE.ai.verdict}</p>` +
+    `<p><b>Узкое место.</b> ${ROUTE.ai.bottleneck}</p>` +
+    `<p><b>Тактика.</b> ${ROUTE.ai.tactical}</p>`;
+  wrap.append(p);
+  /* Это проза, а не значения — колонкой влево, километр слева как маркер. */
+  const kv = el("div", "ptnotes");
+  ROUTE.ai.points.forEach(c => {
+    kv.append(el("span", "", `${c.km} км`), el("p", "", c.comment));
+  });
+  wrap.append(kv);
+  openSheet("Разбор маршрута", wrap);
+}
+
+function openPointCard(km){
+  const p = ROUTE.points.find(x => x.km === km);
+  if (!p) return;
+  const wrap = el("div");
+  const cat = catOf(p.score);
+  const b = el("div", "badge", `${p.score} · ${cat.label}`);
+  b.style.background = colorOf(p.score);
+  wrap.append(b);
+
+  if (p.limiting){
+    const lim = el("div", "prose");
+    lim.style.margin = "11px 0 4px";
+    lim.innerHTML = `<em>Ограничивает:</em> ${p.limiting}`;
+    wrap.append(lim);
+  }
+
+  const kv = el("div", "kv");
+  kv.style.marginTop = "10px";
+  const line = (k, val) => {
+    const d = el("div");
+    d.append(el("span", "", k), el("b", "", val));
+    kv.append(d);
+  };
+  line(`Ветер ${p.terrain + Math.round((p.base - p.terrain) * .55)} м`, `${p.windKmh} км/ч ${compass(p.windDir)}`);
+  line("  вдоль курса", `${Math.abs(p.along)} км/ч ${p.along >= 0 ? "→" : "←"}`);
+  line("  поперёк", `${Math.round(Math.sqrt(Math.max(0, p.windKmh*p.windKmh - p.along*p.along)))} км/ч →`);
+  if (p.ground !== null) line("Земля", `${p.ground}/${p.gust} км/ч`);
+  line("Потоки", `${num(p.wStar,1)} м/с`);
+  line("Скорость по земле", `${p.gs} км/ч`);
+  line("База", `${p.base} м`);
+  line("Рельеф", `${p.terrain} м`);
+  line("Коридор", `${p.band} м`);
+  line("Запас времени", `${p.margin} мин`);
+  line("CAPE · LI · CIN", `${p.cape} · ${num(p.li,1)} · ${p.cin}`);
+  line("Облачность", `${p.cloudLow}/${p.cloudMid} · дождь ${num(p.precip,1)}`);
+  line("Видимость", `${Math.round(p.vis/1000)} км`);
+  wrap.append(kv);
+
+  if (p.worst && p.worst.length){
+    const h = el("div", "lbl", "Что тянет вниз");
+    h.style.padding = "14px 0 7px";
+    wrap.append(h);
+    const kv2 = el("div", "kv");
+    p.worst.forEach(([label, val]) => {
+      const d = el("div");
+      const bb = el("b", "", String(val));
+      bb.style.color = colorOf(val);
+      d.append(el("span", "", label), bb);
+      kv2.append(d);
+    });
+    wrap.append(kv2);
+  }
+  openSheet(`${p.km} км · ${p.eta} · ${p.role}`, wrap);
+}
+
+function openSiteSheet(){
+  const wrap = el("div");
+  const pick = el("div", "pick");
+  SITES.forEach(s => {
+    const b = el("button");
+    b.type = "button";
+    b.setAttribute("aria-pressed", String(s.id === state.siteId));
+    b.append(el("b", "", s.name), el("s", "", `${s.aspect} · ${s.elev} м`));
+    if (s.id === state.siteId) b.append(el("em", "", "✓"));
+    b.addEventListener("click", () => { state.siteId = s.id; closeSheet(); renderAll(); });
+    pick.append(b);
+  });
+  wrap.append(pick);
+  const note = el("div", "prose");
+  note.style.marginTop = "12px";
+  note.innerHTML = `<em>${site().notes}</em>`;
+  wrap.append(note);
+  openSheet("Старт", wrap);
+}
+
+function openModelSheet(scope){
+  const wrap = el("div");
+  const once = el("div", "lbl", "Разово — только для этого прогноза");
+  wrap.append(once);
+  const p1 = el("div", "pick");
+  p1.style.marginTop = "7px";
+  MODELS.forEach(m => {
+    const b = el("button");
+    b.type = "button";
+    b.setAttribute("aria-pressed", String(m.key === CFG.onceModel));
+    b.append(el("b", "", m.label), el("s", "", m.note));
+    if (m.key === CFG.onceModel) b.append(el("em", "", "✓"));
+    b.addEventListener("click", () => { CFG.onceModel = m.key; closeSheet(); renderAll(); });
+    p1.append(b);
+  });
+  wrap.append(p1);
+
+  const perm = el("div", "lbl", "Постоянная — для всех следующих запросов");
+  perm.style.display = "block";
+  perm.style.padding = "18px 0 7px";
+  wrap.append(perm);
+  const p2 = el("div", "pick");
+  MODELS.forEach(m => {
+    const b = el("button");
+    b.type = "button";
+    b.setAttribute("aria-pressed", String(m.key === CFG.permanentModel));
+    b.append(el("b", "", m.label), el("s", "", m.note));
+    if (m.key === CFG.permanentModel) b.append(el("em", "", "✓"));
+    b.addEventListener("click", () => {
+      CFG.permanentModel = m.key; CFG.onceModel = m.key; closeSheet(); renderAll();
+    });
+    p2.append(b);
+  });
+  wrap.append(p2);
+
+  const n = el("div", "prose");
+  n.style.marginTop = "14px";
+  n.innerHTML = "<em>Потолок термички всегда считается по GFS: остальные модели не отдают "
+    + "высоту слоя перемешивания. Смена модели здесь на это не влияет.</em>";
+  wrap.append(n);
+  openSheet("Метеомодель", wrap);
+}
+
+function openChart(kind){
+  const wrap = el("div");
+  wrap.append(el("p", "prose",
+    "Метеограмма приходит из charts.py как PNG. В приложении её место занимает "
+    + "интерактивный график: тап по часу подсвечивает столбик на полосе дня."));
+  const svg = buildMeteogram();
+  wrap.append(svg);
+  openSheet("Метеограмма", wrap);
+}
+
+function buildMeteogram(){
+  const W = 340, H = 190, padL = 26, padR = 26, padT = 12, padB = 22;
+  const ns = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.setAttribute("class", "section");
+  svg.style.height = H + "px";
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label", "Метеограмма: температура, ветер и порывы по часам");
+  const node = (t, a) => { const n = document.createElementNS(ns, t);
+    for (const k in a) n.setAttribute(k, a[k]); return n; };
+
+  const x = (i) => padL + (i / (HOURS.length - 1)) * (W - padL - padR);
+  const tLo = 16, tHi = 32, wLo = 0, wHi = 12;
+  const yT = (v) => padT + ((tHi - v) / (tHi - tLo)) * (H - padT - padB);
+  const yW = (v) => padT + ((wHi - v) / (wHi - wLo)) * (H - padT - padB);
+
+  /* окно */
+  const i0 = HOURS.findIndex(h => h.h === DAY.window[0]);
+  const i1 = HOURS.findIndex(h => h.h === DAY.window[1]);
+  svg.append(node("rect", {x:x(i0), y:padT, width:x(i1)-x(i0), height:H-padT-padB,
+    fill:cssVar("--air"), opacity:.13}));
+
+  [0,4,8,12].forEach(v => {
+    svg.append(node("line", {x1:padL, x2:W-padR, y1:yW(v), y2:yW(v),
+      stroke:cssVar("--rule"), "stroke-width":1}));
+    const t = node("text", {x:W-padR+4, y:yW(v)+3, "font-size":8, fill:cssVar("--faint"),
+      "font-family":"ui-monospace,monospace"});
+    t.textContent = v;
+    svg.append(t);
+  });
+
+  const poly = (vals, yfn, color, dash) => {
+    let d = "";
+    vals.forEach((v,i) => { d += (i ? " L " : "M ") + x(i) + " " + yfn(v); });
+    svg.append(node("path", {d, fill:"none", stroke:color, "stroke-width":2,
+      "stroke-linejoin":"round", "stroke-linecap":"round",
+      ...(dash ? {"stroke-dasharray":"4 3"} : {})}));
+  };
+  poly(HOURS.map(h => h.g), yW, cssVar("--s-gust"), true);
+  poly(HOURS.map(h => h.w), yW, cssVar("--s-wind"));
+  poly(HOURS.map(h => h.t), yT, cssVar("--s-temp"));
+
+  HOURS.forEach((h,i) => {
+    if (h.h % 2) return;
+    const t = node("text", {x:x(i), y:H-6, "text-anchor":"middle", "font-size":8,
+      fill:cssVar("--faint"), "font-family":"ui-monospace,monospace"});
+    t.textContent = h.h;
+    svg.append(t);
+  });
+  [[cssVar("--s-temp"),"температура, °"],
+   [cssVar("--s-wind"),"ветер, м/с"],
+   [cssVar("--s-gust"),"порывы"]].forEach(([c,label],i) => {
+    svg.append(node("rect", {x:padL, y:padT+2+i*11, width:7, height:2.5, fill:c}));
+    const t = node("text", {x:padL+11, y:padT+6+i*11, "font-size":7.5, fill:cssVar("--muted")});
+    t.textContent = label;
+    svg.append(t);
+  });
+  return svg;
+}
+
+function openSaved(){
+  const wrap = el("div");
+  const pick = el("div", "pick");
+  SAVED_ROUTES.forEach(r => {
+    const b = el("button");
+    b.type = "button";
+    b.append(el("b", "", r.name), el("s", "", `${r.km} км · ${r.points} точек`));
+    b.addEventListener("click", closeSheet);
+    pick.append(b);
+  });
+  wrap.append(pick);
+  wrap.append(el("div", "attrib", "Хранится только геометрия — погода считается заново при каждом открытии"));
+  openSheet("Сохранённые маршруты", wrap);
+}
+
+function openNewRoute(){
+  const wrap = el("div");
+  const p = el("div", "prose");
+  p.innerHTML = `<p>Три способа задать маршрут — все три уже понимает бот:</p>`;
+  wrap.append(p);
+  const pick = el("div", "pick");
+  [["Точки на карте", "тап по карте ставит точку, перетаскивание двигает"],
+   ["Список координат", "по точке на строку: широта, долгота, имя"],
+   ["Файл GPX или KML", "трек прореживается до 50 точек"]].forEach(([t,s]) => {
+    const b = el("button");
+    b.type = "button";
+    b.append(el("b", "", t), el("s", "", ""));
+    const sub = el("div");
+    sub.style.cssText = "font-size:11.5px;color:var(--muted);width:100%";
+    b.style.flexWrap = "wrap";
+    b.append(sub);
+    sub.textContent = s;
+    b.addEventListener("click", closeSheet);
+    pick.append(b);
+  });
+  wrap.append(pick);
+  wrap.append(el("div", "attrib", "Минимум 2 точки, максимум 50 · шаг сэмплирования 10 км"));
+  openSheet("Новый маршрут", wrap);
+}
+
+function openSiteEditor(s){
+  const wrap = el("div");
+  const kv = el("div", "kv");
+  [["Координаты", `${s.lat}, ${s.lon}`],
+   ["Высота по гриду", `${s.elev} м`],
+   ["Экспозиция", `${s.aspect} ${s.aspectDeg}°`]].forEach(([k,v]) => {
+    const d = el("div");
+    d.append(el("span", "", k), el("b", "", v));
+    kv.append(d);
+  });
+  wrap.append(kv);
+  const n = el("div", "prose");
+  n.style.margin = "12px 0";
+  n.innerHTML = `<em>${s.notes}</em>`;
+  wrap.append(n);
+  const pick = el("div", "pick");
+  const use = el("button");
+  use.type = "button";
+  use.append(el("b", "", "Смотреть прогноз"));
+  use.addEventListener("click", () => { state.siteId = s.id; closeSheet(); switchTab("day"); });
+  const del = el("button");
+  del.type = "button";
+  const db = el("b", "", "Удалить старт");
+  db.style.color = cssVar("--g-no_fly");
+  del.append(db);
+  del.addEventListener("click", closeSheet);
+  pick.append(use, del);
+  wrap.append(pick);
+  openSheet(s.name, wrap);
+}
+
+function buildAddSite(){
+  const wrap = el("div");
+  const p = el("div", "prose");
+  p.innerHTML = "<p>Экспозиция — куда смотрит склон. Она нужна, чтобы понимать, "
+    + "дует ли ветер в лоб или в спину, и когда солнце встаёт на склон.</p>";
+  wrap.append(p);
+  const kv = el("div", "kv");
+  [["Координаты", "тап по карте или вставка"],
+   ["Название", "как называть в списке"],
+   ["Экспозиция", "С · СВ · В · ЮВ · Ю · ЮЗ · З · СЗ"],
+   ["Заметки", "необязательно"]].forEach(([k,v]) => {
+    const d = el("div");
+    const b = el("b", "", v);
+    b.style.cssText = "font-weight:400;color:var(--faint);font-family:var(--f-body)";
+    d.append(el("span", "", k), b);
+    kv.append(d);
+  });
+  wrap.append(kv);
+  wrap.append(el("div", "attrib", "Высоту старта приложение возьмёт само — запросом к Elevation API"));
+  return wrap;
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   НАВИГАЦИЯ
+   ══════════════════════════════════════════════════════════════════ */
+function flash(v){
+  v.classList.remove("is-fresh");
+  void v.offsetWidth;
+  v.classList.add("is-fresh");
+}
+
+const VIEWS = {day:"#v-day", over:"#v-over", route:"#v-route", set:"#v-set"};
+const RENDER = {day:renderDay, over:renderOver, route:renderRoute, set:renderSet};
+
+function switchTab(tab){
+  state.tab = tab;
+  for (const k in VIEWS) $(VIEWS[k]).hidden = (k !== tab);
+  document.querySelectorAll(".tab").forEach(b => {
+    if (b.dataset.tab === tab) b.setAttribute("aria-current", "page");
+    else b.removeAttribute("aria-current");
+  });
+  $("#body").scrollTop = 0;
+  RENDER[tab]();
+  renderCtx();
+}
+
+function renderAll(){
+  renderCtx();
+  RENDER[state.tab]();
+}
+
+document.querySelectorAll(".tab").forEach(b => {
+  b.addEventListener("click", () => switchTab(b.dataset.tab));
+});
+$("#siteBtn").addEventListener("click", openSiteSheet);
+$("#modelBtn").addEventListener("click", () => openModelSheet("once"));
+$("#dPrev").addEventListener("click", () => {
+  if (state.dateIdx > 0){ state.dateIdx--; renderAll(); }
+});
+$("#dNext").addEventListener("click", () => {
+  if (state.dateIdx < OVERVIEW.length - 1){ state.dateIdx++; renderAll(); }
+});
+$("#sheetX").addEventListener("click", closeSheet);
+$("#scrim").addEventListener("click", closeSheet);
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !$("#sheet").hidden) closeSheet();
+});
+
+/* тема */
+function setTheme(t){
+  document.documentElement.setAttribute("data-theme", t);
+  document.querySelectorAll("[data-theme-set]").forEach(b => {
+    b.setAttribute("aria-pressed", String(b.dataset.themeSet === t));
+  });
+  renderAll();
+}
+document.querySelectorAll("[data-theme-set]").forEach(b => {
+  b.addEventListener("click", () => setTheme(b.dataset.themeSet));
+});
+setTheme(window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+
+window.addEventListener("resize", () => { if (state.tab === "route") renderRoute(); });
+</script>
