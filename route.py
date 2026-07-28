@@ -194,6 +194,75 @@ def parse_gpx(data):
     raise RouteError("в GPX нет ни маршрута, ни трека, ни путевых точек")
 
 
+# ---------------------------------------------------------------- KML
+def _kml_coords(text):
+    """«долгота,широта[,высота] ...» → [(широта, долгота), ...].
+
+    Порядок в KML обратный GPX, и это главная ловушка формата: перепутать —
+    значит молча улететь в другое полушарие. Высота игнорируется: рельеф
+    берётся из DEM, а в файлах она бывает то над геоидом, то над эллипсоидом.
+    """
+    out = []
+    for chunk in (text or "").split():
+        parts = chunk.split(",")
+        if len(parts) < 2:
+            continue
+        try:
+            lon, lat = float(parts[0]), float(parts[1])
+        except ValueError:
+            continue
+        out.append((lat, lon))
+    return out
+
+
+def _kml_points(el, name=None):
+    out = []
+    for c in el.iter():
+        if _tag(c) == "coordinates":
+            out += [Point(lat, lon, name) for lat, lon in _kml_coords(c.text)]
+    return out
+
+
+def parse_kml(data):
+    """KML → (точки, имя маршрута). Приоритет: <LineString> → <Point> → любые
+    <coordinates> — та же логика «маршрут важнее трека важнее точек», что у GPX."""
+    if len(data) > MAX_GPX_BYTES:
+        raise RouteError(f"файл больше {MAX_GPX_BYTES // 1024} КБ — пришли маршрут покороче")
+    # Та же защита от «billion laughs», что и в parse_gpx: килобайтный файл с
+    # вложенными <!ENTITY> разворачивается в гигабайты и съедает память бота.
+    if b"<!DOCTYPE" in data[:4096].upper() or b"<!ENTITY" in data.upper():
+        raise RouteError("в файле есть объявления DOCTYPE или сущностей — "
+                         "такой KML не разбираю")
+    try:
+        root = ET.fromstring(data)
+    except ET.ParseError as e:
+        raise RouteError(f"не удалось разобрать KML: {e}") from None
+
+    marks = _find_all(root, "placemark")
+    name = next((_child_name(d) for d in _find_all(root, "document")
+                 if _child_name(d)), None)
+    if name is None:
+        name = next((_child_name(pm) for pm in marks if _child_name(pm)), None)
+
+    line = []
+    for ls in _find_all(root, "linestring"):
+        line += _kml_points(ls)
+    if line:
+        return _checked_count(_thin(line, MAX_POINTS)), name
+
+    pins = []
+    for pm in marks:
+        for pt in (el for el in pm.iter() if _tag(el) == "point"):
+            pins += _kml_points(pt, _child_name(pm))
+    if pins:
+        return _checked_count(_thin(pins, MAX_POINTS)), name
+
+    loose = _kml_points(root)
+    if loose:
+        return _checked_count(_thin(loose, MAX_POINTS)), name
+    raise RouteError("в KML нет ни линии маршрута, ни точек")
+
+
 # ---------------------------------------------------------------- геометрия
 EARTH_R_M = 6371008.8          # средний радиус Земли (IUGG)
 SAMPLE_STEP_KM = 10.0          # разрешение глобальных моделей open-meteo — 9–11 км;
@@ -247,6 +316,11 @@ class Sample:
     assessment: object | None = None       # criteria.HourAssessment, ставится спекой 2
     storm_ahead: dict | None = None
     weather: dict = field(default_factory=dict)
+
+
+def total_km(points):
+    """Длина ломаной по точкам в километрах."""
+    return sum(haversine(a, b)[0] for a, b in zip(points, points[1:])) / 1000.0
 
 
 def _lerp_point(a, b, f):
@@ -576,12 +650,63 @@ CAPE_WATCH = 800.0             # с этого значения гроза ст�
 LI_WATCH = -2.0
 
 
+# ---------------------------------------------------------------- характерные точки
+KEY_POINT_LIMIT = 8            # длиннее ряд кнопок в Telegram не читается
+_KM_EPS = 0.05                 # километраж округлён до десятой, сравнивать точно нельзя
+
+# Вид точки → метка, в порядке убывания важности. Точка, подходящая под несколько
+# видов, показывается ОДИН раз — с меткой самого важного из них.
+_KEY_MARKS = (("blocked", "⛔"), ("bottleneck", "⚠"), ("takeoff", "△"),
+              ("goal", "⚑"), ("turnpoint", "◆"), ("peak", "▲"))
+# Кого выбрасывать первым, когда точек больше лимита: с хвоста этого списка.
+_KEY_KEEP_ORDER = ("takeoff", "goal", "blocked", "bottleneck", "turnpoint", "peak")
+
+
+def _kinds_of(p, blocked, bottleneck):
+    kinds = set()
+    if blocked is not None and abs(p["km"] - blocked) < _KM_EPS:
+        kinds.add("blocked")
+    if bottleneck is not None and abs(p["km"] - bottleneck) < _KM_EPS:
+        kinds.add("bottleneck")
+    if p.get("role") in ("takeoff", "goal"):
+        kinds.add(p["role"])
+    elif p.get("is_turnpoint"):
+        kinds.add("turnpoint")
+    if p.get("is_terrain_peak"):
+        kinds.add("peak")
+    return kinds
+
+
+def key_points(profile):
+    """Точки, ради которых стоит открывать подробности: старт, финиш, обрыв,
+    узкое место, поворотные и вершины рельефа.
+
+    Не больше KEY_POINT_LIMIT: расчётных точек бывает полсотни, и вываливать их
+    все кнопками — значит не помочь выбрать, а переложить выбор на пилота.
+    """
+    pts = profile.get("points") or []
+    v = profile.get("verdict") or {}
+    blocked = v.get("blocked_at_km")
+    bottleneck = (v.get("bottleneck") or {}).get("km")
+    found = []
+    for p in pts:
+        kinds = _kinds_of(p, blocked, bottleneck)
+        if kinds:
+            mark = next(m for k, m in _KEY_MARKS if k in kinds)
+            found.append({"km": p["km"], "mark": mark, "kinds": kinds})
+    if len(found) <= KEY_POINT_LIMIT:
+        return found
+    rank = {k: i for i, k in enumerate(_KEY_KEEP_ORDER)}
+    keep = sorted(found, key=lambda f: min(rank[k] for k in f["kinds"]))[:KEY_POINT_LIMIT]
+    return sorted(keep, key=lambda f: f["km"])
+
+
 def _signed(v):
     """Число со знаком минус-тире, без выравнивания: «+330», «−25»."""
     return "н/д" if v is None else f"{'−' if v < 0 else '+'}{abs(v):.0f}"
 
 
-def _plural(n, one, few, many):
+def plural(n, one, few, many):
     """«1 точка», «3 точки», «5 точек» — иначе карточка читается как машинный вывод."""
     n = abs(int(n))
     if n % 10 == 1 and n % 100 != 11:
@@ -676,11 +801,143 @@ def _eta_gap_min(points):
     return abs(mins(last["eta"]) - mins(last["eta_fixed"]))
 
 
+# ---------------------------------------------------------------- карточка точки
+ROLE_RU = {"takeoff": "старт", "enroute": "маршрут", "goal": "финиш"}
+SUBS_SHOWN = 3
+
+# Категория → (эмодзи, название). Берётся из criteria.CATEGORIES, чтобы своей
+# копии названий здесь не заводилось.
+_CAT = {key: (emoji, label) for key, _lo, emoji, label in criteria.CATEGORIES}
+
+
+def _pair(label, value):
+    """Строка «подпись … значение» по ширине карточки.
+
+    Слишком длинная подпись обрезается: перенести её на вторую строку значит
+    сломать колонку значений, ради которой карточка и читается сверху вниз.
+    """
+    room = CARD_WIDTH - len(value) - 1
+    if len(label) > room:
+        label = label[:max(0, room - 1)] + "…"
+    return label + " " * max(1, CARD_WIDTH - len(label) - len(value)) + value
+
+
+def _qty(v, unit, fmt="{:.0f}"):
+    return "н/д" if v is None else (fmt.format(v) + " " + unit).replace(".", ",")
+
+
+def _point_by_km(profile, km):
+    return next((p for p in profile.get("points") or []
+                 if abs(p["km"] - km) < _KM_EPS), None)
+
+
+def _worst_subs(p, limit=SUBS_SHOWN):
+    """Самые низкие субоценки с русскими названиями параметров."""
+    subs = p.get("subs") or {}
+    ranked = sorted((v, k) for k, v in subs.items() if v is not None)
+    out = []
+    for value, key in ranked[:limit]:
+        param = criteria.PARAMS.get(key)
+        out.append((param.label if param else key, value))
+    return out
+
+
+def render_point_card(profile, km):
+    """Подробности одной точки маршрута. None, если такой точки нет.
+
+    Высоты здесь есть намеренно. Из таблицы маршрута их убрали потому, что там
+    их было десять и они мешали читать погоду; сюда пилот приходит сам, чтобы
+    разобраться в диапазоне и запасе, — без чисел ответить нечем.
+    """
+    p = _point_by_km(profile, km)
+    if p is None:
+        return None
+    w = p.get("weather") or {}
+    out = [f"📍 {p['km']:.0f} км · {p.get('eta') or '—'} · "
+           f"{ROLE_RU.get(p.get('role'), p.get('role') or '')}",
+           "─" * CARD_WIDTH]
+
+    if p.get("score") is not None:
+        emoji, label = _CAT.get(p.get("category"), ("", p.get("category") or ""))
+        out.append(f"{emoji} {p['score']:.0f} {label}")
+    if p.get("limiting"):
+        out.append("Ограничивает:")
+        out += _wrap(p["limiting"])
+    for veto in p.get("vetoes") or []:
+        out.append("⛔")
+        out += _wrap(veto)
+    out.append("")
+
+    deg, spd = p.get("wind_working_alt_dir"), p.get("wind_working_alt_kmh")
+    alt = p.get("thermal_ceiling_m")
+    out.append(_pair("Ветер" if alt is None else f"Ветер {alt:.0f} м",
+                     "н/д" if deg is None or spd is None
+                     else f"{spd:.0f} км/ч {engine.card(deg)}"))
+    along, cross = p.get("wind_along_kmh"), p.get("wind_cross_kmh")
+    out.append(_pair("  вдоль курса",
+                     "н/д" if along is None
+                     else f"{abs(along):.0f} км/ч {'→' if along >= 0 else '←'}"))
+    out.append(_pair("  поперёк",
+                     "н/д" if cross is None
+                     else f"{abs(cross):.0f} км/ч {'→' if cross >= 0 else '←'}"))
+    # У точки в воздухе наземный ветер в оценке не участвует: печатать его —
+    # предлагать пилоту решение по числу, которое ни на что не влияет.
+    if p.get("role") in ("takeoff", "goal"):
+        ground, gust = w.get("wind_speed_10m"), w.get("wind_gusts_10m")
+        out.append(_pair("Земля", "н/д" if ground is None else
+                         f"{ms_to_kmh(ground):.0f}"
+                         + ("" if gust is None else f"/{ms_to_kmh(gust):.0f}")
+                         + " км/ч"))
+    out.append(_pair("Потоки", _qty(p.get("w_star_ms"), "м/с", "{:.1f}")))
+    out.append(_pair("Скорость по земле",
+                     _qty(p.get("effective_ground_speed_kmh"), "км/ч")))
+    out.append(_pair("База", _qty(p.get("cloud_base_m"), "м")))
+    out.append(_pair("Рельеф", _qty(p.get("terrain_m"), "м")
+                     + (" ▲" if p.get("is_terrain_peak") else "")))
+    out.append(_pair("Коридор", _qty(p.get("working_band_m"), "м")))
+    out.append(_pair("Запас времени", _qty(p.get("time_margin_min"), "мин")))
+    out.append("")
+
+    out.append(f"CAPE {w.get('cape') or 0:.0f} · LI {w.get('lifted_index') or 0:.1f}"
+               f" · CIN {w.get('convective_inhibition') or 0:.0f}".replace(".", ","))
+    out.append(f"Облачность {w.get('cloud_cover_low') or 0:.0f}/"
+               f"{w.get('cloud_cover_mid') or 0:.0f} · дождь "
+               f"{w.get('precipitation') or 0:.1f}".replace(".", ","))
+    vis = w.get("visibility")
+    out.append(_pair("Видимость", "н/д" if vis is None else f"{vis / 1000.0:.0f} км"))
+
+    worst = _worst_subs(p)
+    if worst:
+        out += ["", "Что тянет вниз:"]
+        for label, value in worst:
+            out.append(_pair(f"  {label}", f"{value:.0f}"))
+    return "\n".join(out)
+
+
+def render_analysis(answer):
+    """Текст ИИ-разбора маршрута для Telegram.
+
+    Пустые поля сводки строк не занимают: «Тактика: —» читается как совет,
+    которого нет, а не как его отсутствие.
+    """
+    s = answer.get("summary") or {}
+    out = ["🤖 Разбор маршрута", ""]
+    if s.get("verdict"):
+        out += [s["verdict"], ""]
+    if s.get("bottleneck_note"):
+        out += [f"Узкое место: {s['bottleneck_note']}", ""]
+    if s.get("tactical_note"):
+        out += [f"Тактика: {s['tactical_note']}", ""]
+    for c in answer.get("points") or []:
+        out.append(f"{c['km']:.0f} км · {c['comment']}")
+    return "\n".join(out).strip()
+
+
 def render_card(profile):
     """Текстовая карточка маршрута. Только погода и время — высот здесь нет."""
     r, pts = profile["route"], profile["points"]
     n = len(pts)
-    word = _plural(n, "точка", "точки", "точек")
+    word = plural(n, "точка", "точки", "точек")
     head = [f"🗺 {r['name']}",
             f"{r['total_km']:.0f} км · {n} {word} · {engine.fmt_date(r['date'])}",
             ""]
@@ -745,6 +1002,6 @@ def render_card(profile):
 
     tail.extend(profile.get("notes") or [])
     cnt = r["sample_count"]
-    tail.append(f"📊 {cnt} {_plural(cnt, 'точка', 'точки', 'точек')} · "
+    tail.append(f"📊 {cnt} {plural(cnt, 'точка', 'точки', 'точек')} · "
                 f"шаг {r['sample_step_km']:.0f} км · {r['model'].split(' ')[0]}")
     return "\n".join(head + _rows(pts) + tail)

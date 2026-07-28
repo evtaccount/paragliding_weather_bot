@@ -17,9 +17,12 @@ import asyncio
 import datetime as dt
 import html
 import io
+import itertools
 import logging
+import math
 import os
 import re
+from collections import OrderedDict
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command, CommandObject, CommandStart
@@ -34,10 +37,12 @@ from dotenv import load_dotenv
 
 load_dotenv()  # before guards/forecast read their env vars
 
+import analysis  # noqa: E402
 import engine  # noqa: E402
 import forecast  # noqa: E402
 import guards  # noqa: E402
 import route  # noqa: E402
+import routes  # noqa: E402
 import settings  # noqa: E402
 
 logging.basicConfig(level=logging.INFO)
@@ -88,7 +93,11 @@ HELP = (
     "/twoweeks [старт] — обзор на 2 недели\n"
     "/scan — лётные дни на неделю по всем стартам\n"
     "/forecast <старт> <диапазон> — вручную (1d · 3d · week · 2weeks)\n"
-    "/route [дата] [ЧЧ:ММ] — погода по маршруту (список координат или GPX)\n"
+    "/route [дата] [ЧЧ:ММ] — погода по маршруту (список координат, GPX или KML)\n"
+    "/route <имя> [дата] [ЧЧ:ММ] — посчитать сохранённый маршрут\n"
+    "/routes — сохранённые маршруты\n"
+    "/saveroute <имя> — сохранить последний посчитанный маршрут\n"
+    "/delroute <имя> — удалить сохранённый маршрут\n"
     "/settings — средняя маршрутная скорость и учёт ветра\n"
     "/model — метеомодель (auto · ecmwf · gfs · icon)\n"
     "/sites — список стартов\n\n"
@@ -104,7 +113,10 @@ BOT_COMMANDS = [
     BotCommand(command="twoweeks", description="Обзор на 2 недели"),
     BotCommand(command="scan", description="Лётные дни на неделю по всем стартам"),
     BotCommand(command="forecast", description="Прогноз: <старт> <диапазон>"),
-    BotCommand(command="route", description="Погода по маршруту: список координат или GPX"),
+    BotCommand(command="route", description="Погода по маршруту: список координат, GPX или KML"),
+    BotCommand(command="routes", description="Сохранённые маршруты"),
+    BotCommand(command="saveroute", description="Сохранить последний маршрут: <имя>"),
+    BotCommand(command="delroute", description="Удалить сохранённый маршрут: <имя>"),
     BotCommand(command="settings", description="Настройки маршрута"),
     BotCommand(command="model", description="Метеомодель: /model <auto|ecmwf|gfs|icon>"),
     BotCommand(command="sites", description="Список стартов"),
@@ -827,7 +839,7 @@ ROUTE_HELP = ("Пришли маршрут списком координат —
               "42.4776, 44.4787, старт\n"
               "42.2104, 44.6890, финиш\n\n"
               "Дата и время вылета необязательны: без времени берётся начало "
-              "термического окна в первой точке. GPX-файл тоже подойдёт.")
+              "термического окна в первой точке. Файл GPX или KML тоже подойдёт.")
 
 
 def _parse_when(args: str):
@@ -847,20 +859,84 @@ def _parse_when(args: str):
     return date, departure
 
 
+_ROUTE_CACHE_MAX = 8
+_route_cache: "OrderedDict[str, dict]" = OrderedDict()
+_route_token = itertools.count(1)
+
+
+def _remember_route(points, name, date, departure):
+    """Положить ЗАПРОС в кэш и вернуть короткий токен для callback_data.
+
+    Хранится запрос, а не готовый профиль. Погода уже лежит в forecast._rcache,
+    поэтому пересчёт профиля по нажатию кнопки — чистый процессор и ноль
+    обращений к API. Взамен «другое время вылета» становится тем же вызовом
+    get_route с другим departure, а не отдельной веткой кода, и расхождений
+    между показанной карточкой и данными кнопки быть не может.
+    """
+    token = format(next(_route_token), "x")
+    _route_cache[token] = {"points": points, "name": name,
+                           "date": date, "departure": departure}
+    while len(_route_cache) > _ROUTE_CACHE_MAX:
+        _route_cache.popitem(last=False)
+    return token
+
+
+def _route_keyboard(token, profile):
+    """Кнопки под карточкой: характерные точки, разрез, разбор, другое время."""
+    rows = []
+    marks = [_btn(f"{k['mark']} {k['km']:.0f}", f"rt|{token}|pt|{k['km']:.0f}")
+             for k in route.key_points(profile)]
+    marks = [b for b in marks if b]
+    if marks:
+        rows.append(marks)
+    actions = [_btn("📈 Разрез", f"rt|{token}|sec")]
+    if analysis.available():
+        actions.append(_btn("🤖 Разбор", f"rt|{token}|ai"))
+    if profile.get("departure_scan"):
+        actions.append(_btn("🕐 Другое время", f"rt|{token}|dep"))
+    actions = [b for b in actions if b]
+    if actions:
+        rows.append(actions)
+    return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
+
+
 async def _send_route(message: Message, points, name, date, departure):
     try:
         profile = await forecast.get_route(points, name, date, departure)
     except forecast.ForecastError as e:
         return await message.answer(str(e))
-    for chunk in _chunks(route.render_card(profile)):
+    token = _remember_route(points, name, date, departure)
+    chunks = list(_chunks(route.render_card(profile)))
+    for chunk in chunks[:-1]:
         await message.answer(chunk)
+    await message.answer(chunks[-1], reply_markup=_route_keyboard(token, profile))
+
+
+def _saved_route_from_args(args):
+    """«Гудаури Пасанаури завтра 11:30» → (точки, имя, остаток строки).
+
+    Имя примеряется целиком, потом без последнего слова, и так далее: иначе
+    маршрут с именем из нескольких слов вызвать было бы нельзя. Не нашлось —
+    (None, None, исходные аргументы).
+    """
+    words = (args or "").split()
+    for cut in range(len(words), 0, -1):
+        name = " ".join(words[:cut])
+        pts = routes.get(name)
+        if pts:
+            return pts, name, " ".join(words[cut:])
+    return None, None, args or ""
 
 
 @dp.message(Command("route"), flags={"forecast": True})
 async def cmd_route(message: Message, command: CommandObject):
     body = "\n".join((message.text or "").splitlines()[1:])
     if not body.strip():
-        return await message.answer(ROUTE_HELP)
+        pts, name, rest = _saved_route_from_args(command.args)
+        if pts is None:
+            return await message.answer(ROUTE_HELP)
+        date, departure = _parse_when(rest)
+        return await _send_route(message, pts, name, date, departure)
     date, departure = _parse_when(command.args or "")
     try:
         points = route.parse_text(body, first_line_no=2)  # первая строка — сама команда
@@ -869,18 +945,208 @@ async def cmd_route(message: Message, command: CommandObject):
     await _send_route(message, points, None, date, departure)
 
 
+@dp.message(Command("saveroute"), flags={"forecast": True})
+async def cmd_saveroute(message: Message, command: CommandObject):
+    name = (command.args or "").strip()
+    if not name:
+        return await message.answer("Как назвать маршрут? /saveroute <имя>")
+    err = name_error(name)
+    if err:
+        return await message.answer(f"❌ {err}")
+    if not _route_cache:
+        return await message.answer("Сначала посчитай маршрут через /route.")
+    entry = next(reversed(_route_cache.values()))
+    existed = name in routes.list_all()
+    try:
+        routes.save(name, entry["points"])
+    except ValueError as e:
+        return await message.answer(f"❌ {e}")
+    n = len(entry["points"])
+    await message.answer(("Перезаписал" if existed else "Сохранил") +
+                         f" маршрут «{name}»: {n} "
+                         f"{route.plural(n, 'точка', 'точки', 'точек')}.")
+
+
+@dp.message(Command("routes"), flags={"forecast": True})
+async def cmd_routes(message: Message):
+    saved = routes.list_all()
+    if not saved:
+        return await message.answer(
+            "Сохранённых маршрутов нет. Посчитай маршрут через /route "
+            "и сохрани: /saveroute <имя>")
+    lines, rows = [], []
+    for name in sorted(saved):
+        pts = routes.get(name) or []
+        n = len(pts)
+        lines.append(f"• {name} — {route.total_km(pts):.0f} км, {n} "
+                     f"{route.plural(n, 'точка', 'точки', 'точек')}, "
+                     f"{saved[name].get('saved', '—')}")
+        btn = _btn(name, f"rr|{name}")
+        if btn:
+            rows.append([btn])
+    await message.answer(
+        "🗂 Сохранённые маршруты:\n" + "\n".join(lines),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows) if rows else None)
+
+
+@dp.message(Command("delroute"), flags={"forecast": True})
+async def cmd_delroute(message: Message, command: CommandObject):
+    name = (command.args or "").strip()
+    if routes.delete(name):
+        return await message.answer(f"Удалил маршрут «{name}».")
+    known = ", ".join(sorted(routes.list_all())) or "пусто"
+    await message.answer(f"Нет такого маршрута. Сохранённые: {known}")
+
+
+async def _profile_from_token(cb: CallbackQuery, token: str, departure=None):
+    """Пересчитать профиль по токену. None (и ответ пользователю), если токена нет."""
+    entry = _route_cache.get(token)
+    if entry is None:
+        await cb.answer("Маршрут устарел, посчитай заново: /route", show_alert=True)
+        return None
+    dep = entry["departure"] if departure is None else departure
+    return await forecast.get_route(entry["points"], entry["name"], entry["date"], dep)
+
+
+@dp.callback_query(F.data.regexp(r"^rt\|[^|]+\|pt\|"))
+async def cb_route_point(cb: CallbackQuery):
+    _prefix, token, _action, km = cb.data.split("|", 3)
+    profile = await _profile_from_token(cb, token)
+    if profile is None:
+        return
+    await cb.answer()
+    msg = await cb_message(cb)
+    if msg is None:
+        return
+    text = route.render_point_card(profile, float(km))
+    await msg.answer(text or "Точка не найдена — посчитай маршрут заново.")
+
+
+@dp.callback_query(F.data.regexp(r"^rt\|[^|]+\|sec$"))
+async def cb_route_section(cb: CallbackQuery):
+    _prefix, token, _action = cb.data.split("|")
+    await cb.answer()
+    msg = await cb_message(cb)
+    if msg is None:
+        return
+    entry = _route_cache.get(token)
+    if entry is None:
+        return await msg.answer("Маршрут устарел, посчитай заново: /route")
+    try:
+        png = await forecast.get_route_section(
+            entry["points"], entry["name"], entry["date"], entry["departure"])
+    except forecast.ForecastError as e:
+        return await msg.answer(str(e))
+    await msg.answer_photo(BufferedInputFile(png, filename="route_section.png"))
+
+
+@dp.callback_query(F.data.regexp(r"^rt\|[^|]+\|ai$"))
+async def cb_route_analysis(cb: CallbackQuery):
+    _prefix, token, _action = cb.data.split("|")
+    await cb.answer()
+    msg = await cb_message(cb)
+    if msg is None:
+        return
+    entry = _route_cache.get(token)
+    if entry is None:
+        return await msg.answer("Маршрут устарел, посчитай заново: /route")
+    async with ChatActionSender.typing(bot=msg.bot, chat_id=msg.chat.id):
+        try:
+            text = await forecast.get_route_analysis(
+                entry["points"], entry["name"], entry["date"], entry["departure"])
+        except forecast.ForecastError as e:
+            return await msg.answer(str(e))
+    for chunk in _chunks(text):
+        await msg.answer(chunk)
+
+
+_DEPARTURE_BUTTONS = 12     # клавиатура из двух десятков времён нечитаема
+
+
+def _departure_keyboard(token, scan):
+    """Времена вылета из скана, прорежённые до читаемого числа кнопок."""
+    step = max(1, math.ceil(len(scan) / _DEPARTURE_BUTTONS))
+    rows, row = [], []
+    for e in scan[::step][:_DEPARTURE_BUTTONS]:
+        mark = "🟢" if e["feasibility"] == "completable" else "·"
+        btn = _btn(f"{mark} {e['departure']}", f"rt|{token}|dep|{e['departure']}")
+        if btn is None:
+            continue
+        row.append(btn)
+        if len(row) == 4:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
+
+
+@dp.callback_query(F.data.regexp(r"^rt\|[^|]+\|dep$"))
+async def cb_route_departures(cb: CallbackQuery):
+    _prefix, token, _action = cb.data.split("|")
+    profile = await _profile_from_token(cb, token)
+    if profile is None:
+        return
+    await cb.answer()
+    msg = await cb_message(cb)
+    if msg is None:
+        return
+    scan = profile.get("departure_scan") or []
+    if not scan:
+        return await msg.answer("Скан времён вылета пуст — "
+                                "термическое окно не открывается.")
+    await msg.answer("Во сколько вылетаем?",
+                     reply_markup=_departure_keyboard(token, scan))
+
+
+@dp.callback_query(F.data.regexp(r"^rt\|[^|]+\|dep\|"))
+async def cb_route_departure_pick(cb: CallbackQuery):
+    _prefix, token, _action, hhmm = cb.data.split("|", 3)
+    entry = _route_cache.get(token)
+    if entry is None:
+        return await cb.answer("Маршрут устарел, посчитай заново: /route",
+                               show_alert=True)
+    await cb.answer()
+    msg = await cb_message(cb)
+    if msg is None:
+        return
+    h, m = hhmm.split(":")
+    await _send_route(msg, entry["points"], entry["name"], entry["date"],
+                      int(h) + int(m) / 60.0)
+
+
+@dp.callback_query(F.data.startswith("rr|"))
+async def cb_saved_route(cb: CallbackQuery):
+    name = cb.data.split("|", 1)[1]
+    await cb.answer()
+    msg = await cb_message(cb)
+    if msg is None:
+        return
+    pts = routes.get(name)
+    if not pts:
+        return await msg.answer("Маршрут не читается — сохрани его заново.")
+    await _send_route(msg, pts, name, dt.date.today().isoformat(), None)
+
+
+_DOC_PARSERS = ((".gpx", route.parse_gpx), (".kml", route.parse_kml))
+
+
 @dp.message(F.document, flags={"forecast": True})
-async def route_gpx_document(message: Message):
+async def route_document(message: Message):
     doc = message.document
-    if not (doc.file_name or "").lower().endswith(".gpx"):
-        return await message.answer("Я понимаю только GPX-файлы маршрутов.")
+    fname = (doc.file_name or "").lower()
+    if fname.endswith(".kmz"):
+        return await message.answer("KMZ — это архив. Распакуй и пришли .kml")
+    parser = next((p for ext, p in _DOC_PARSERS if fname.endswith(ext)), None)
+    if parser is None:
+        return await message.answer("Я понимаю маршруты в форматах GPX и KML.")
     if (doc.file_size or 0) > route.MAX_GPX_BYTES:
         return await message.answer(
             f"❌ файл больше {route.MAX_GPX_BYTES // 1024} КБ — пришли маршрут покороче")
     buf = io.BytesIO()
     await message.bot.download(doc, destination=buf)
     try:
-        points, name = route.parse_gpx(buf.getvalue())
+        points, name = parser(buf.getvalue())
     except route.RouteError as e:
         return await message.answer(f"❌ {e}")
     date, departure = _parse_when(message.caption or "")
