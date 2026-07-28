@@ -78,6 +78,7 @@ def fresh_state():
     forecast._rcache.clear()
     forecast._terrain_cache.clear()
     botmod.dp.fsm.storage.storage.clear()  # MemoryStorage internals
+    botmod._route_cache.clear()            # токены маршрутов под кнопками
     if os.path.exists(engine.MODEL_FILE):  # each test starts at the default model
         os.remove(engine.MODEL_FILE)
     if os.path.exists(settings.SETTINGS_FILE):  # ...and at the default route settings

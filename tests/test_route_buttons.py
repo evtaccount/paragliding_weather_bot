@@ -1,0 +1,84 @@
+"""Кнопки под карточкой маршрута и токен, который их обслуживает."""
+import pytest
+
+import bot as botmod
+import forecast
+import route
+from fixtures import om_route
+from tg import buttons, keyboards, text_update
+
+BODY = ("/route\n"
+        "42.4776, 44.4787, старт\n"
+        "42.1176, 44.4787, финиш")
+
+
+def _n(url):
+    return url.split("latitude=")[1].split("&")[0].count(",") + 1
+
+
+@pytest.fixture()
+def api(monkeypatch):
+    calls = {"weather": 0, "terrain": 0}
+
+    async def fake_weather(url):
+        calls["weather"] += 1
+        return om_route(_n(url))
+
+    async def fake_terrain(coords):
+        calls["terrain"] += 1
+        return [1000.0] * len(coords)
+
+    monkeypatch.setattr(forecast, "_fetch_route_weather", fake_weather)
+    monkeypatch.setattr(forecast, "fetch_terrain", fake_terrain)
+    return calls
+
+
+def _last_token():
+    return next(reversed(botmod._route_cache))
+
+
+async def test_card_comes_with_a_keyboard(feed, session, api):
+    await feed(text_update(BODY))
+    assert keyboards(session), "под карточкой маршрута нет кнопок"
+
+
+async def test_keyboard_has_point_buttons_and_actions(feed, session, api):
+    await feed(text_update(BODY))
+    labels = [b.text for b in buttons(keyboards(session)[-1])]
+    assert any("△" in t for t in labels)
+    assert any("⚑" in t for t in labels)
+    assert any("Разрез" in t for t in labels)
+    assert any("Другое время" in t for t in labels)
+
+
+async def test_every_callback_data_fits_telegram(feed, session, api):
+    await feed(text_update(BODY))
+    for b in buttons(keyboards(session)[-1]):
+        assert len(b.callback_data.encode("utf-8")) <= 64
+
+
+async def test_the_token_remembers_the_request_not_the_answer(feed, api):
+    await feed(text_update(BODY))
+    entry = botmod._route_cache[_last_token()]
+    assert set(entry) == {"points", "name", "date", "departure"}
+    assert all(isinstance(p, route.Point) for p in entry["points"])
+
+
+async def test_the_cache_has_a_ceiling(feed, api):
+    for _ in range(botmod._ROUTE_CACHE_MAX + 3):
+        await feed(text_update(BODY))
+    assert len(botmod._route_cache) == botmod._ROUTE_CACHE_MAX
+
+
+async def test_the_analysis_button_is_hidden_without_a_key(feed, session, api):
+    """Кнопка, которая всегда отвечает «недоступно», хуже отсутствующей кнопки."""
+    await feed(text_update(BODY))
+    labels = [b.text for b in buttons(keyboards(session)[-1])]
+    assert not any("Разбор" in t for t in labels)
+
+
+async def test_the_analysis_button_appears_with_a_key(feed, session, api, monkeypatch):
+    monkeypatch.setattr(botmod.analysis, "available", lambda: True)
+    await feed(text_update(BODY))
+    labels = [b.text for b in buttons(keyboards(session)[-1])]
+    assert any("Разбор" in t for t in labels)

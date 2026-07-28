@@ -17,9 +17,12 @@ import asyncio
 import datetime as dt
 import html
 import io
+import itertools
 import logging
+import math
 import os
 import re
+from collections import OrderedDict
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command, CommandObject, CommandStart
@@ -34,10 +37,12 @@ from dotenv import load_dotenv
 
 load_dotenv()  # before guards/forecast read their env vars
 
+import analysis  # noqa: E402
 import engine  # noqa: E402
 import forecast  # noqa: E402
 import guards  # noqa: E402
 import route  # noqa: E402
+import routes  # noqa: E402
 import settings  # noqa: E402
 
 logging.basicConfig(level=logging.INFO)
@@ -847,13 +852,57 @@ def _parse_when(args: str):
     return date, departure
 
 
+_ROUTE_CACHE_MAX = 8
+_route_cache: "OrderedDict[str, dict]" = OrderedDict()
+_route_token = itertools.count(1)
+
+
+def _remember_route(points, name, date, departure):
+    """Положить ЗАПРОС в кэш и вернуть короткий токен для callback_data.
+
+    Хранится запрос, а не готовый профиль. Погода уже лежит в forecast._rcache,
+    поэтому пересчёт профиля по нажатию кнопки — чистый процессор и ноль
+    обращений к API. Взамен «другое время вылета» становится тем же вызовом
+    get_route с другим departure, а не отдельной веткой кода, и расхождений
+    между показанной карточкой и данными кнопки быть не может.
+    """
+    token = format(next(_route_token), "x")
+    _route_cache[token] = {"points": points, "name": name,
+                           "date": date, "departure": departure}
+    while len(_route_cache) > _ROUTE_CACHE_MAX:
+        _route_cache.popitem(last=False)
+    return token
+
+
+def _route_keyboard(token, profile):
+    """Кнопки под карточкой: характерные точки, разрез, разбор, другое время."""
+    rows = []
+    marks = [_btn(f"{k['mark']} {k['km']:.0f}", f"rt|{token}|pt|{k['km']:.0f}")
+             for k in route.key_points(profile)]
+    marks = [b for b in marks if b]
+    if marks:
+        rows.append(marks)
+    actions = [_btn("📈 Разрез", f"rt|{token}|sec")]
+    if analysis.available():
+        actions.append(_btn("🤖 Разбор", f"rt|{token}|ai"))
+    if profile.get("departure_scan"):
+        actions.append(_btn("🕐 Другое время", f"rt|{token}|dep"))
+    actions = [b for b in actions if b]
+    if actions:
+        rows.append(actions)
+    return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
+
+
 async def _send_route(message: Message, points, name, date, departure):
     try:
         profile = await forecast.get_route(points, name, date, departure)
     except forecast.ForecastError as e:
         return await message.answer(str(e))
-    for chunk in _chunks(route.render_card(profile)):
+    token = _remember_route(points, name, date, departure)
+    chunks = list(_chunks(route.render_card(profile)))
+    for chunk in chunks[:-1]:
         await message.answer(chunk)
+    await message.answer(chunks[-1], reply_markup=_route_keyboard(token, profile))
 
 
 @dp.message(Command("route"), flags={"forecast": True})
