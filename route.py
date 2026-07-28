@@ -914,6 +914,25 @@ def render_point_card(profile, km):
     return "\n".join(out)
 
 
+def render_analysis(answer):
+    """Текст ИИ-разбора маршрута для Telegram.
+
+    Пустые поля сводки строк не занимают: «Тактика: —» читается как совет,
+    которого нет, а не как его отсутствие.
+    """
+    s = answer.get("summary") or {}
+    out = ["🤖 Разбор маршрута", ""]
+    if s.get("verdict"):
+        out += [s["verdict"], ""]
+    if s.get("bottleneck_note"):
+        out += [f"Узкое место: {s['bottleneck_note']}", ""]
+    if s.get("tactical_note"):
+        out += [f"Тактика: {s['tactical_note']}", ""]
+    for c in answer.get("points") or []:
+        out.append(f"{c['km']:.0f} км · {c['comment']}")
+    return "\n".join(out).strip()
+
+
 def render_card(profile):
     """Текстовая карточка маршрута. Только погода и время — высот здесь нет."""
     r, pts = profile["route"], profile["points"]

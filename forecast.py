@@ -719,6 +719,30 @@ def route_facts(profile):
     }
 
 
+async def get_route_analysis(points, name, date, departure_h=None) -> str:
+    """ИИ-разбор маршрута. ForecastError, если разбора не будет.
+
+    Карточка маршрута к этому моменту уже показана и остаётся в силе — поэтому
+    отказ здесь это сообщение, а не откат на другой текст, как у разбора старта.
+    """
+    if not analysis.available():
+        raise ForecastError("ИИ-разбор недоступен: не задан GEMINI_API_KEY.")
+    profile = await get_route(points, name, date, departure_h)
+    facts = route_facts(profile)
+    t0 = time.monotonic()
+    try:
+        raw = await asyncio.to_thread(analysis.analyze_route, facts)
+        answer, flags = analysis.check_route_answer(raw, profile)
+    except Exception as e:  # noqa: BLE001 — отказ модели или неразбираемый ответ
+        log.warning("route analysis failed: %s", e)
+        raise ForecastError("ИИ-разбор не получился — карточка выше остаётся в силе.")
+    if flags:
+        log.warning("route analysis checks tripped: %s", ",".join(sorted(set(flags))))
+    log.info("route analysis ok (%.1fs, %d комментариев)",
+             time.monotonic() - t0, len(answer["points"]))
+    return route.render_analysis(answer)
+
+
 async def get_analysis(site_name: str, rng: str, date: str | None = None, deep: bool = False) -> str:
     """LLM analysis over the cached facts.
 

@@ -1040,6 +1040,26 @@ async def cb_route_section(cb: CallbackQuery):
     await msg.answer_photo(BufferedInputFile(png, filename="route_section.png"))
 
 
+@dp.callback_query(F.data.regexp(r"^rt\|[^|]+\|ai$"))
+async def cb_route_analysis(cb: CallbackQuery):
+    _prefix, token, _action = cb.data.split("|")
+    await cb.answer()
+    msg = await cb_message(cb)
+    if msg is None:
+        return
+    entry = _route_cache.get(token)
+    if entry is None:
+        return await msg.answer("Маршрут устарел, посчитай заново: /route")
+    async with ChatActionSender.typing(bot=msg.bot, chat_id=msg.chat.id):
+        try:
+            text = await forecast.get_route_analysis(
+                entry["points"], entry["name"], entry["date"], entry["departure"])
+        except forecast.ForecastError as e:
+            return await msg.answer(str(e))
+    for chunk in _chunks(text):
+        await msg.answer(chunk)
+
+
 _DEPARTURE_BUTTONS = 12     # клавиатура из двух десятков времён нечитаема
 
 
