@@ -253,25 +253,41 @@ def _model_short(k: str) -> str:
     return "Auto" if k == "auto" else engine.model_label(k)
 
 
-def _model_switch_keyboard(site: str, rng: str, date: str | None) -> InlineKeyboardMarkup | None:
+def _model_switch_keyboard(site: str, rng: str, date: str | None,
+                           current: str) -> InlineKeyboardMarkup | None:
     """Row of model buttons under a forecast; tapping re-renders it with that model.
-    An over-long site name overflows callback_data → _btn drops that button (with a warning)."""
-    cur = engine.get_model_key()
+    An over-long site name overflows callback_data → _btn drops that button (with a warning).
+
+    `current` — модель, которой посчитан ПОКАЗАННЫЙ прогноз, а не глобальная:
+    после разового переключения галочка должна стоять на том, что на экране.
+    """
     row = []
     for k in engine.MODELS:
-        btn = _btn(f"{_model_short(k)}{' ✓' if k == cur else ''}", f"mf|{k}|{site}|{rng}|{date or ''}")
+        btn = _btn(f"{_model_short(k)}{' ✓' if k == current else ''}", f"mf|{k}|{site}|{rng}|{date or ''}")
         if btn is not None:
             row.append(btn)
     return InlineKeyboardMarkup(inline_keyboard=[row]) if row else None
 
 
-async def send_forecast(message: Message, site: str, rng: str, date: str | None = None):
+def _model_switch_caption(model: str | None) -> str:
+    """Подпись ряда моделей. При разовом выборе называет и постоянную модель —
+    иначе непонятно, куда вернётся бот на следующем запросе."""
+    if model is None:
+        return "🌐 Другая модель (разово):"
+    return (f"🌐 Модель: {engine.model_label(model)} — разово. "
+            f"Постоянная: {engine.model_label(engine.get_model_key())} (/model)")
+
+
+async def send_forecast(message: Message, site: str, rng: str, date: str | None = None,
+                        model: str | None = None):
+    """`model` — разовый выбор кнопкой; едет во все кнопки этого же сообщения,
+    чтобы разбор и ветер по высотам считались по показанной модели."""
     if rng == "1d" and not date:
         date = dt.date.today().isoformat()
     try:
         # keeps the "typing…" status alive while forecast/analysis runs (>5 s)
         async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
-            card, pngs = await forecast.get_forecast(site, rng, date)
+            card, pngs = await forecast.get_forecast(site, rng, date, model=model)
     except forecast.ForecastError as e:
         await message.answer(f"⚠️ {e}\n\nСписок стартов: /sites")
         return
@@ -303,9 +319,10 @@ async def send_forecast(message: Message, site: str, rng: str, date: str | None 
         kb = _day_picker_kb(site, rng)
         if kb is not None:
             await message.answer("📅 Подробно по дню:", reply_markup=kb)
-    mkb = _model_switch_keyboard(site, rng, date)  # let the user re-run in another model
+    eff = model or engine.get_model_key()
+    mkb = _model_switch_keyboard(site, rng, date, eff)  # let the user re-run in another model
     if mkb is not None:
-        await message.answer("🌐 Другая модель:", reply_markup=mkb)
+        await message.answer(_model_switch_caption(model), reply_markup=mkb)
 
 
 async def ask_location(message: Message, rng: str, date: str | None):
@@ -409,28 +426,25 @@ async def cb_pick_model(cb: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("mf|"), flags={"forecast": True})
 async def cb_switch_model(cb: CallbackQuery):
-    """A model button under a forecast → set the model, re-render the same forecast."""
+    """A model button under a forecast → re-render that forecast in that model.
+
+    Выбор РАЗОВЫЙ: model.json не пишется. Постоянную модель меняет только /model —
+    иначе взгляд на альтернативную модель молча переопределял бы все дальнейшие
+    прогнозы, включая те, что пользователь запросит завтра.
+    """
     msg = await cb_message(cb)
     if msg is None:
         return
-    try:
-        _, key, site, rng, date = cb.data.split("|", 4)
-    except ValueError:
+    parts = cb.data.split("|")
+    if len(parts) != 5:
         await cb.answer()
         return
-    try:
-        engine.set_model_key(key)
-    except ValueError:
+    _, key, site, rng, date = parts
+    if key not in engine.MODELS:
         await cb.answer("Неизвестная модель.", show_alert=True)
         return
-    except OSError as e:  # read-only model.json — surface it
-        log.exception("set_model_key: write failed")
-        await cb.answer()
-        await msg.answer("⚠️ Не удалось сохранить выбор модели — нет доступа к файлу на запись.\n"
-                         f"({e.strerror or e})")
-        return
-    await cb.answer(f"{engine.model_label(key)} — пересчитываю…")
-    await send_forecast(msg, site, rng, date or None)
+    await cb.answer(f"{engine.model_label(key)} — разово, пересчитываю…")
+    await send_forecast(msg, site, rng, date or None, model=key)
 
 
 def _settings_text() -> str:

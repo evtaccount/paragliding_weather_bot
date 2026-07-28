@@ -122,11 +122,11 @@ def feed(tg_bot):
 
 @pytest.fixture()
 def fc_calls(monkeypatch):
-    """Patch forecast.get_forecast; returns the recorded (site, rng, date) calls."""
+    """Patch forecast.get_forecast; returns the recorded (site, rng, date, model) calls."""
     calls = []
 
-    async def fake(site, rng, date=None):
-        calls.append((site, rng, date))
+    async def fake(site, rng, date=None, model=None):
+        calls.append((site, rng, date, model))
         return f"CARD {site} {rng} {date}", [b"png"]
 
     monkeypatch.setattr(forecast, "get_forecast", fake)
@@ -135,11 +135,11 @@ def fc_calls(monkeypatch):
 
 @pytest.fixture()
 def an_calls(monkeypatch):
-    """Patch forecast.get_analysis; returns the recorded (site, rng, date, deep) calls."""
+    """Patch forecast.get_analysis; returns the recorded (site, rng, date, deep, model) calls."""
     calls = []
 
-    async def fake(site, rng, date=None, deep=False):
-        calls.append((site, rng, date, deep))
+    async def fake(site, rng, date=None, deep=False, model=None):
+        calls.append((site, rng, date, deep, model))
         return "АНАЛИЗ ГОТОВ"
 
     monkeypatch.setattr(forecast, "get_analysis", fake)
