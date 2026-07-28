@@ -637,7 +637,7 @@ def _signed(v):
     return "н/д" if v is None else f"{'−' if v < 0 else '+'}{abs(v):.0f}"
 
 
-def _plural(n, one, few, many):
+def plural(n, one, few, many):
     """«1 точка», «3 точки», «5 точек» — иначе карточка читается как машинный вывод."""
     n = abs(int(n))
     if n % 10 == 1 and n % 100 != 11:
@@ -736,7 +736,7 @@ def render_card(profile):
     """Текстовая карточка маршрута. Только погода и время — высот здесь нет."""
     r, pts = profile["route"], profile["points"]
     n = len(pts)
-    word = _plural(n, "точка", "точки", "точек")
+    word = plural(n, "точка", "точки", "точек")
     head = [f"🗺 {r['name']}",
             f"{r['total_km']:.0f} км · {n} {word} · {engine.fmt_date(r['date'])}",
             ""]
@@ -801,6 +801,6 @@ def render_card(profile):
 
     tail.extend(profile.get("notes") or [])
     cnt = r["sample_count"]
-    tail.append(f"📊 {cnt} {_plural(cnt, 'точка', 'точки', 'точек')} · "
+    tail.append(f"📊 {cnt} {plural(cnt, 'точка', 'точки', 'точек')} · "
                 f"шаг {r['sample_step_km']:.0f} км · {r['model'].split(' ')[0]}")
     return "\n".join(head + _rows(pts) + tail)
