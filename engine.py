@@ -46,6 +46,28 @@ MODELS = {  # key → (UI label, open-meteo id)
 # (перенормировка весов + непроверенные вето), но половина критериев не работает.
 DEFAULT_MODEL_KEY = "auto"
 
+# Однобуквенный код модели для callback_data: разовый выбор едет с кнопкой, а
+# лимит там 64 байта. Таблица явная, а не «первая буква ключа», — иначе новая
+# модель с занятой буквой молча увела бы пользователя на чужую.
+MODEL_CODES = {"auto": "a", "ecmwf": "e", "gfs": "g", "icon": "i"}
+_CODE_TO_MODEL = {v: k for k, v in MODEL_CODES.items()}
+
+# Потолок термиков всегда считается по одной модели, независимо от выбранной.
+# Причин две: у ECMWF и ICON серии пограничного слоя нет вовсе, а под best_match
+# её отдаёт неизвестно какая подложка — число несравнимо между стартами и днями.
+CEILING_MODEL_KEY = "gfs"
+CEILING_VAR = "boundary_layer_height"
+
+
+def model_code(key):
+    return MODEL_CODES[key]
+
+
+def model_for_code(code):
+    """Ключ модели по коду; None для неизвестного — устаревшая кнопка из старого
+    сообщения не должна ронять обработчик."""
+    return _CODE_TO_MODEL.get(code)
+
 
 def model_id(key):
     return MODELS[key][1]
@@ -193,9 +215,10 @@ D_OV = ("sunrise,sunset,weather_code,temperature_2m_max,temperature_2m_min,wind_
         "wind_gusts_10m_max,wind_direction_10m_dominant,precipitation_sum,precipitation_probability_max,"
         "sunshine_duration,shortwave_radiation_sum")
 
-def build_url(site, rng, date=None):
+def build_url(site, rng, date=None, model=None):
+    """`model` — разовый выбор для одного запроса; None означает глобальную настройку."""
     base = (f"https://api.open-meteo.com/v1/forecast?latitude={site['lat']}&longitude={site['lon']}"
-            f"&wind_speed_unit=ms&timezone=auto&models={model_id(get_model_key())}")
+            f"&wind_speed_unit=ms&timezone=auto&models={model_id(model or get_model_key())}")
     if rng == "1d":
         if not date:
             raise SystemExit("для --range 1d нужен --date YYYY-MM-DD")
@@ -203,7 +226,7 @@ def build_url(site, rng, date=None):
     n = RANGE_DAYS[rng]
     return f"{base}&hourly={H_OV}&daily={D_OV}&forecast_days={n}"
 
-def route_weather_url(coords, date, tz):
+def route_weather_url(coords, date, tz, model=None):
     """Мульти-точечный запрос погоды на один день. `coords` — список пар (lat, lon).
 
     Часовой пояс задаётся ЯВНО, а не timezone=auto: при auto каждая локация
@@ -214,8 +237,34 @@ def route_weather_url(coords, date, tz):
     lons = ",".join(f"{lon:.4f}" for _, lon in coords)
     return (f"https://api.open-meteo.com/v1/forecast?latitude={lats}&longitude={lons}"
             f"&wind_speed_unit=ms&timezone={quote(tz)}"
-            f"&models={model_id(get_model_key())}"
+            f"&models={model_id(model or get_model_key())}"
             f"&hourly={H_1D}&daily={D_1D}&start_date={date}&end_date={date}")
+
+def ceiling_url(site, rng, date=None):
+    """Узкий побочный запрос за одной серией — глубиной пограничного слоя из GFS.
+
+    Ходит отдельно от основного, потому что open-meteo не умеет брать разные
+    переменные из разных моделей в одном запросе: `models=a,b` размножает ВСЕ
+    переменные с суффиксом модели.
+    """
+    base = (f"https://api.open-meteo.com/v1/forecast?latitude={site['lat']}&longitude={site['lon']}"
+            f"&wind_speed_unit=ms&timezone=auto&models={model_id(CEILING_MODEL_KEY)}"
+            f"&hourly={CEILING_VAR}")
+    if rng == "1d":
+        if not date:
+            raise SystemExit("для --range 1d нужен --date YYYY-MM-DD")
+        return f"{base}&start_date={date}&end_date={date}"
+    return f"{base}&forecast_days={RANGE_DAYS[rng]}"
+
+def route_ceiling_url(coords, date, tz):
+    """Мульти-точечный аналог ceiling_url. Пояс явный — по той же причине,
+    что и в route_weather_url."""
+    lats = ",".join(f"{lat:.4f}" for lat, _ in coords)
+    lons = ",".join(f"{lon:.4f}" for _, lon in coords)
+    return (f"https://api.open-meteo.com/v1/forecast?latitude={lats}&longitude={lons}"
+            f"&wind_speed_unit=ms&timezone={quote(tz)}"
+            f"&models={model_id(CEILING_MODEL_KEY)}"
+            f"&hourly={CEILING_VAR}&start_date={date}&end_date={date}")
 
 # ---------------------------------------------------------------- helpers
 def hour_of(iso): return int(iso[11:13])
