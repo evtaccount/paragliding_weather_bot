@@ -69,6 +69,21 @@ def write_sites(sites: list[dict]):
 
 
 @pytest.fixture(autouse=True)
+def no_ceiling_request(monkeypatch):
+    """Побочный запрос за потолком заглушён по умолчанию.
+
+    Он ходит из _fetch_build и _ensure_route_weather, которые тесты мокают
+    по отдельности, — без этой заглушки каждый такой тест уходил бы в сеть и
+    висел до 30-секундного таймаута httpx. Тесты самой подстановки
+    переопределяют заглушку своим моком.
+    """
+    async def none(url):
+        return None
+
+    monkeypatch.setattr(forecast, "_fetch_ceiling", none)
+
+
+@pytest.fixture(autouse=True)
 def fresh_state():
     """Default sites on disk, empty caches/ad-hoc registry, empty FSM storage."""
     write_sites(DEFAULT_SITES["sites"])

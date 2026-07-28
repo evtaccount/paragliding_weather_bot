@@ -67,3 +67,50 @@ def test_route_splice_applies_to_every_point():
     assert forecast._splice_ceiling_all([a, b], [_gfs(times), _gfs(times)]) is True
     assert a["hourly"]["boundary_layer_height"][0] == 1400.0
     assert b["hourly"]["boundary_layer_height"][0] == 1400.0
+
+
+async def test_route_weather_splices_ceiling_from_gfs(monkeypatch):
+    """На маршруте потолок должен быть из той же модели, что и на старте —
+    иначе «потолок» значит разное в двух частях одного ответа."""
+    import engine
+    from route import Sample
+
+    times = om_1day()["hourly"]["time"]
+    calls = []
+
+    async def fake_weather(url):
+        calls.append(url)
+        return [om_1day(boundary_layer_height=None)]
+
+    async def fake_ceiling(url):
+        calls.append(url)
+        return [_gfs(times)]
+
+    monkeypatch.setattr(forecast, "_fetch_route_weather", fake_weather)
+    monkeypatch.setattr(forecast, "_fetch_ceiling", fake_ceiling)
+    monkeypatch.setattr(engine, "get_model_key", lambda: "ecmwf")
+    forecast._rcache.clear()
+
+    samples = [Sample(km=0.0, lat=42.0, lon=44.0)]
+    bodies = await forecast._ensure_route_weather(samples, "2026-07-29")
+
+    assert bodies[0]["hourly"]["boundary_layer_height"][0] == 1400.0
+    assert any("models=gfs_seamless" in u for u in calls)
+
+
+async def test_route_weather_skips_side_request_when_gfs_selected(monkeypatch):
+    import engine
+    from route import Sample
+
+    async def fake_weather(url):
+        return [om_1day()]
+
+    async def fail_ceiling(url):
+        raise AssertionError("побочный запрос не нужен, когда выбрана сама GFS")
+
+    monkeypatch.setattr(forecast, "_fetch_route_weather", fake_weather)
+    monkeypatch.setattr(forecast, "_fetch_ceiling", fail_ceiling)
+    monkeypatch.setattr(engine, "get_model_key", lambda: "gfs")
+    forecast._rcache.clear()
+
+    await forecast._ensure_route_weather([Sample(km=0.0, lat=42.0, lon=44.0)], "2026-07-29")

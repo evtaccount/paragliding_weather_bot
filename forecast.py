@@ -397,23 +397,34 @@ async def _ensure_terrain(grid):
     return elev
 
 
-async def _ensure_route_weather(samples, date):
+async def _ensure_route_weather(samples, date, model=None):
     """Погода по всем сэмплам одним запросом. Скорость и тумблер ветра в ключ не
-    входят: они меняют только пересчёт времени, который дешёв и идёт поверх кэша."""
+    входят: они меняют только пересчёт времени, который дешёв и идёт поверх кэша.
+
+    Потолок, как и на старте, всегда из GFS — вторым узким запросом конкурентно
+    с основным.
+    """
     coords = [(s.lat, s.lon) for s in samples]
-    key = (_route_key(coords), date, engine.get_model_key())
+    mkey = model or engine.get_model_key()
+    key = (_route_key(coords), date, mkey)
     now = time.monotonic()
     _purge(now)
     if key in _rcache:
         return _rcache[key][1]
     tz = os.environ.get("TZ") or "Asia/Tbilisi"
-    url = engine.route_weather_url(coords, date, tz)
+    url = engine.route_weather_url(coords, date, tz, model=mkey)
     try:
-        bodies = await _fetch_route_weather(url)
+        if mkey == engine.CEILING_MODEL_KEY:
+            bodies, gfs = await _fetch_route_weather(url), None
+        else:
+            bodies, gfs = await asyncio.gather(
+                _fetch_route_weather(url),
+                _fetch_ceiling(engine.route_ceiling_url(coords, date, tz)))
     except httpx.HTTPError as e:
         raise ForecastError(f"Не удалось получить прогноз от open-meteo: {e}")
     if len(bodies) != len(samples):
         raise ForecastError("open-meteo вернул другое число точек, чем запрошено")
+    _splice_ceiling_all(bodies, gfs)
     _rcache[key] = (now + _TTL, bodies)
     return bodies
 
