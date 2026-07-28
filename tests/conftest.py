@@ -39,6 +39,7 @@ from aiogram.client.session.base import BaseSession  # noqa: E402
 import bot as botmod  # noqa: E402
 import engine  # noqa: E402
 import forecast  # noqa: E402
+import routes  # noqa: E402
 import settings  # noqa: E402
 
 
@@ -81,6 +82,8 @@ def fresh_state():
         os.remove(engine.MODEL_FILE)
     if os.path.exists(settings.SETTINGS_FILE):  # ...and at the default route settings
         os.remove(settings.SETTINGS_FILE)
+    if os.path.exists(routes.ROUTES_FILE):      # ...and with no saved routes
+        os.remove(routes.ROUTES_FILE)
     yield
 
 

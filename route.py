@@ -249,6 +249,11 @@ class Sample:
     weather: dict = field(default_factory=dict)
 
 
+def total_km(points):
+    """Длина ломаной по точкам в километрах."""
+    return sum(haversine(a, b)[0] for a, b in zip(points, points[1:])) / 1000.0
+
+
 def _lerp_point(a, b, f):
     """Точка на доле f отрезка. Линейно по широте и долготе: на плече до 100 км
     отклонение от дуги большого круга меньше 100 м, то есть на порядок меньше
