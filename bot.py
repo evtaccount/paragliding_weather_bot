@@ -998,6 +998,30 @@ async def cmd_delroute(message: Message, command: CommandObject):
     await message.answer(f"Нет такого маршрута. Сохранённые: {known}")
 
 
+async def _profile_from_token(cb: CallbackQuery, token: str, departure=None):
+    """Пересчитать профиль по токену. None (и ответ пользователю), если токена нет."""
+    entry = _route_cache.get(token)
+    if entry is None:
+        await cb.answer("Маршрут устарел, посчитай заново: /route", show_alert=True)
+        return None
+    dep = entry["departure"] if departure is None else departure
+    return await forecast.get_route(entry["points"], entry["name"], entry["date"], dep)
+
+
+@dp.callback_query(F.data.regexp(r"^rt\|[^|]+\|pt\|"))
+async def cb_route_point(cb: CallbackQuery):
+    _prefix, token, _action, km = cb.data.split("|", 3)
+    profile = await _profile_from_token(cb, token)
+    if profile is None:
+        return
+    await cb.answer()
+    msg = await cb_message(cb)
+    if msg is None:
+        return
+    text = route.render_point_card(profile, float(km))
+    await msg.answer(text or "Точка не найдена — посчитай маршрут заново.")
+
+
 @dp.callback_query(F.data.startswith("rr|"))
 async def cb_saved_route(cb: CallbackQuery):
     name = cb.data.split("|", 1)[1]

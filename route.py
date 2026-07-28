@@ -801,6 +801,119 @@ def _eta_gap_min(points):
     return abs(mins(last["eta"]) - mins(last["eta_fixed"]))
 
 
+# ---------------------------------------------------------------- карточка точки
+ROLE_RU = {"takeoff": "старт", "enroute": "маршрут", "goal": "финиш"}
+SUBS_SHOWN = 3
+
+# Категория → (эмодзи, название). Берётся из criteria.CATEGORIES, чтобы своей
+# копии названий здесь не заводилось.
+_CAT = {key: (emoji, label) for key, _lo, emoji, label in criteria.CATEGORIES}
+
+
+def _pair(label, value):
+    """Строка «подпись … значение» по ширине карточки.
+
+    Слишком длинная подпись обрезается: перенести её на вторую строку значит
+    сломать колонку значений, ради которой карточка и читается сверху вниз.
+    """
+    room = CARD_WIDTH - len(value) - 1
+    if len(label) > room:
+        label = label[:max(0, room - 1)] + "…"
+    return label + " " * max(1, CARD_WIDTH - len(label) - len(value)) + value
+
+
+def _qty(v, unit, fmt="{:.0f}"):
+    return "н/д" if v is None else (fmt.format(v) + " " + unit).replace(".", ",")
+
+
+def _point_by_km(profile, km):
+    return next((p for p in profile.get("points") or []
+                 if abs(p["km"] - km) < _KM_EPS), None)
+
+
+def _worst_subs(p, limit=SUBS_SHOWN):
+    """Самые низкие субоценки с русскими названиями параметров."""
+    subs = p.get("subs") or {}
+    ranked = sorted((v, k) for k, v in subs.items() if v is not None)
+    out = []
+    for value, key in ranked[:limit]:
+        param = criteria.PARAMS.get(key)
+        out.append((param.label if param else key, value))
+    return out
+
+
+def render_point_card(profile, km):
+    """Подробности одной точки маршрута. None, если такой точки нет.
+
+    Высоты здесь есть намеренно. Из таблицы маршрута их убрали потому, что там
+    их было десять и они мешали читать погоду; сюда пилот приходит сам, чтобы
+    разобраться в диапазоне и запасе, — без чисел ответить нечем.
+    """
+    p = _point_by_km(profile, km)
+    if p is None:
+        return None
+    w = p.get("weather") or {}
+    out = [f"📍 {p['km']:.0f} км · {p.get('eta') or '—'} · "
+           f"{ROLE_RU.get(p.get('role'), p.get('role') or '')}",
+           "─" * CARD_WIDTH]
+
+    if p.get("score") is not None:
+        emoji, label = _CAT.get(p.get("category"), ("", p.get("category") or ""))
+        out.append(f"{emoji} {p['score']:.0f} {label}")
+    if p.get("limiting"):
+        out.append("Ограничивает:")
+        out += _wrap(p["limiting"])
+    for veto in p.get("vetoes") or []:
+        out.append("⛔")
+        out += _wrap(veto)
+    out.append("")
+
+    deg, spd = p.get("wind_working_alt_dir"), p.get("wind_working_alt_kmh")
+    alt = p.get("thermal_ceiling_m")
+    out.append(_pair("Ветер" if alt is None else f"Ветер {alt:.0f} м",
+                     "н/д" if deg is None or spd is None
+                     else f"{spd:.0f} км/ч {engine.card(deg)}"))
+    along, cross = p.get("wind_along_kmh"), p.get("wind_cross_kmh")
+    out.append(_pair("  вдоль курса",
+                     "н/д" if along is None
+                     else f"{abs(along):.0f} км/ч {'→' if along >= 0 else '←'}"))
+    out.append(_pair("  поперёк",
+                     "н/д" if cross is None
+                     else f"{abs(cross):.0f} км/ч {'→' if cross >= 0 else '←'}"))
+    # У точки в воздухе наземный ветер в оценке не участвует: печатать его —
+    # предлагать пилоту решение по числу, которое ни на что не влияет.
+    if p.get("role") in ("takeoff", "goal"):
+        ground, gust = w.get("wind_speed_10m"), w.get("wind_gusts_10m")
+        out.append(_pair("Земля", "н/д" if ground is None else
+                         f"{ms_to_kmh(ground):.0f}"
+                         + ("" if gust is None else f"/{ms_to_kmh(gust):.0f}")
+                         + " км/ч"))
+    out.append(_pair("Потоки", _qty(p.get("w_star_ms"), "м/с", "{:.1f}")))
+    out.append(_pair("Скорость по земле",
+                     _qty(p.get("effective_ground_speed_kmh"), "км/ч")))
+    out.append(_pair("База", _qty(p.get("cloud_base_m"), "м")))
+    out.append(_pair("Рельеф", _qty(p.get("terrain_m"), "м")
+                     + (" ▲" if p.get("is_terrain_peak") else "")))
+    out.append(_pair("Коридор", _qty(p.get("working_band_m"), "м")))
+    out.append(_pair("Запас времени", _qty(p.get("time_margin_min"), "мин")))
+    out.append("")
+
+    out.append(f"CAPE {w.get('cape') or 0:.0f} · LI {w.get('lifted_index') or 0:.1f}"
+               f" · CIN {w.get('convective_inhibition') or 0:.0f}".replace(".", ","))
+    out.append(f"Облачность {w.get('cloud_cover_low') or 0:.0f}/"
+               f"{w.get('cloud_cover_mid') or 0:.0f} · дождь "
+               f"{w.get('precipitation') or 0:.1f}".replace(".", ","))
+    vis = w.get("visibility")
+    out.append(_pair("Видимость", "н/д" if vis is None else f"{vis / 1000.0:.0f} км"))
+
+    worst = _worst_subs(p)
+    if worst:
+        out += ["", "Что тянет вниз:"]
+        for label, value in worst:
+            out.append(_pair(f"  {label}", f"{value:.0f}"))
+    return "\n".join(out)
+
+
 def render_card(profile):
     """Текстовая карточка маршрута. Только погода и время — высот здесь нет."""
     r, pts = profile["route"], profile["points"]

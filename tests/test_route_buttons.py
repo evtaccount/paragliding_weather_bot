@@ -5,7 +5,7 @@ import bot as botmod
 import forecast
 import route
 from fixtures import om_route
-from tg import buttons, keyboards, text_update
+from tg import buttons, callback_update, cb_answers, keyboards, text_update, texts
 
 BODY = ("/route\n"
         "42.4776, 44.4787, старт\n"
@@ -82,3 +82,30 @@ async def test_the_analysis_button_appears_with_a_key(feed, session, api, monkey
     await feed(text_update(BODY))
     labels = [b.text for b in buttons(keyboards(session)[-1])]
     assert any("Разбор" in t for t in labels)
+
+
+# ---------------------------------------------------------------- карточка точки
+async def test_a_point_button_answers_with_the_point_card(feed, session, api):
+    await feed(text_update(BODY))
+    await feed(callback_update(f"rt|{_last_token()}|pt|0"))
+    assert any("📍" in t for t in texts(session))
+
+
+async def test_the_point_card_costs_no_new_api_calls(feed, api):
+    """Погода уже в кэше: кнопка не должна ходить в open-meteo заново."""
+    await feed(text_update(BODY))
+    before = dict(api)
+    await feed(callback_update(f"rt|{_last_token()}|pt|0"))
+    assert api == before
+
+
+async def test_a_lost_token_says_so_instead_of_going_quiet(feed, session, api):
+    await feed(callback_update("rt|неттакого|pt|0"))
+    assert cb_answers(session)
+    assert "устарел" in cb_answers(session)[-1].text
+
+
+async def test_an_unknown_kilometre_is_reported(feed, session, api):
+    await feed(text_update(BODY))
+    await feed(callback_update(f"rt|{_last_token()}|pt|999"))
+    assert "не найдена" in texts(session)[-1]
