@@ -40,8 +40,8 @@ def test_cache_key_includes_model(monkeypatch):
     monkeypatch.setattr(forecast, "_fetch_build", fake_build)
 
     site = store.find_site("Гудаури")
-    _s, _d, key1 = forecast._resolve("Гудаури", "week", None)
-    asyncio.run(forecast._ensure(site, "week", None, key1))  # warm under auto
+    _s, _d, key1 = forecast._resolve("Гудаури", "week", None, model="auto")
+    asyncio.run(forecast._ensure(site, "week", None, key1, model="auto"))  # warm under auto
     _s, _d, key2 = forecast._resolve("Гудаури", "week", None, model="gfs")
     assert key1 != key2                       # model is part of the key
     asyncio.run(forecast._ensure(site, "week", None, key2, model="gfs"))  # rebuild, not reuse

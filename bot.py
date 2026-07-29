@@ -220,9 +220,11 @@ def _day_picker_kb(site: str, rng: str, model: str | None = None,
     around midnight. Cold cache → fall back to server-local dates.
 
     `effective` — модель, которой посчитан показанный обзор: по ней ищется запись
-    в кэше. `model` — разовый выбор пользователя, он едет в callback_data кнопок.
+    в кэше, и она же уходит в cached_dates. `model` — разовый выбор пользователя,
+    он едет только в callback_data кнопок, а не в поиск по кэшу: единственный
+    вызывающий (`send_forecast`) всегда передаёт настоящий `eff` в `effective`.
     """
-    dates = forecast.cached_dates(site, rng, model=effective or model)
+    dates = forecast.cached_dates(site, rng, model=effective)
     if dates is None:
         today = dt.date.today()
         dates = [(today + dt.timedelta(days=i)).isoformat() for i in range(engine.RANGE_DAYS[rng])]

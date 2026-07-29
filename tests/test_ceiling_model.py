@@ -120,7 +120,7 @@ def test_cache_key_separates_models():
     """Разовый рендер не должен вытеснять запись постоянной модели и наоборот."""
     import store
     from conftest import TEST_USER_ID
-    _s, _d, base = forecast._resolve("Гудаури", "1d", "2026-07-29")
+    _s, _d, base = forecast._resolve("Гудаури", "1d", "2026-07-29", model="auto")
     _s, _d, once = forecast._resolve("Гудаури", "1d", "2026-07-29", model="ecmwf")
     assert base != once
     assert base[3] == "auto" and once[3] == "ecmwf"

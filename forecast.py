@@ -160,7 +160,9 @@ def register_adhoc(lat: float, lon: float, elev: int) -> str:
     return store.adhoc_put(lat, lon, elev)
 
 
-def _resolve(site_name: str, rng: str, date: str | None, model: str | None = None):
+def _resolve(site_name: str, rng: str, date: str | None, model):
+    """`model` обязателен: вызывающий (одна из пяти публичных функций forecast)
+    уже разрешил его сам, и угадывать здесь нечего."""
     if rng not in engine.RANGE_DAYS:
         raise ForecastError(f"Неизвестный диапазон: {rng}")
     site = store.find_site(site_name) or store.adhoc_get(site_name)
@@ -168,11 +170,11 @@ def _resolve(site_name: str, rng: str, date: str | None, model: str | None = Non
         raise ForecastError(f"Старт не найден: {site_name}. /sites — список.")
     if rng == "1d" and not date:
         date = dt.date.today().isoformat()
-    return site, date, (site["name"], rng, date, model or engine.DEFAULT_MODEL_KEY)
+    return site, date, (site["name"], rng, date, model)
 
 
-def cached_dates(site_name: str, rng: str, date: str | None = None,
-                 model: str | None = None) -> list[str] | None:
+def cached_dates(site_name: str, rng: str, date: str | None = None, *,
+                 model) -> list[str] | None:
     """Dates (site-local) of a cached overview — for the day-picker. None on a cold cache."""
     try:
         _site, _date, key = _resolve(site_name, rng, date, model)
@@ -264,19 +266,20 @@ async def _fetch_main(url):
     return data
 
 
-async def _fetch_build(site: dict, rng: str, date: str | None, model: str | None = None):
+async def _fetch_build(site: dict, rng: str, date: str | None, model: str):
     """Fetch open-meteo once and build (card, png_bytes, facts, fallback_text, rows, grid).
 
     Потолок всегда берётся из GFS отдельным узким запросом — конкурентно с
     основным, поэтому задержка не растёт. Когда выбрана сама GFS, запроса нет.
+
+    `model` обязателен — вызывающий (через `_ensure`) уже разрешил его.
     """
-    key = model or engine.DEFAULT_MODEL_KEY
-    main = _fetch_main(engine.build_url(site, rng, date, model=key))
-    if key == engine.CEILING_MODEL_KEY:
+    main = _fetch_main(engine.build_url(site, rng, date, model=model))
+    if model == engine.CEILING_MODEL_KEY:
         data, gfs = await main, None
     else:
         data, gfs = await asyncio.gather(main, _fetch_ceiling(engine.ceiling_url(site, rng, date)))
-    data["_model_key"] = key
+    data["_model_key"] = model
     if _splice_ceiling(data, gfs):
         data["_ceiling_model"] = engine.CEILING_MODEL_KEY
 
@@ -301,7 +304,7 @@ async def _fetch_build(site: dict, rng: str, date: str | None, model: str | None
     return card, pngs, facts, fallback, rows, grid
 
 
-async def _ensure(site: dict, rng: str, date: str | None, key: tuple, model: str | None = None):
+async def _ensure(site: dict, rng: str, date: str | None, key: tuple, model: str):
     """Return (card, pngs, facts, fallback, rows, grid), fetching only on a cold cache."""
     now = time.monotonic()
     _purge(now)
@@ -392,24 +395,24 @@ async def _ensure_terrain(grid):
     return elev
 
 
-async def _ensure_route_weather(samples, date, model=None):
+async def _ensure_route_weather(samples, date, model):
     """Погода по всем сэмплам одним запросом. Скорость и тумблер ветра в ключ не
     входят: они меняют только пересчёт времени, который дешёв и идёт поверх кэша.
 
     Потолок, как и на старте, всегда из GFS — вторым узким запросом конкурентно
-    с основным.
+    с основным. `model` обязателен — единственный вызывающий (`get_route`)
+    передаёт `cfg.model_key`, который никогда не бывает None.
     """
     coords = [(s.lat, s.lon) for s in samples]
-    mkey = model or engine.DEFAULT_MODEL_KEY
-    key = (_route_key(coords), date, mkey)
+    key = (_route_key(coords), date, model)
     now = time.monotonic()
     _purge(now)
     if key in _rcache:
         return _rcache[key][1]
     tz = os.environ.get("TZ") or "Asia/Tbilisi"
-    url = engine.route_weather_url(coords, date, tz, model=mkey)
+    url = engine.route_weather_url(coords, date, tz, model=model)
     try:
-        if mkey == engine.CEILING_MODEL_KEY:
+        if model == engine.CEILING_MODEL_KEY:
             bodies, gfs = await _fetch_route_weather(url), None
         else:
             bodies, gfs = await asyncio.gather(

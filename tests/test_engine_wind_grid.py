@@ -65,7 +65,7 @@ import forecast
 def test_get_wind_grid_uses_cache_and_returns_png(monkeypatch):
     # warm cache: a 7-tuple whose grid is a real engine.wind_grid dict
     g = engine.wind_grid(_day_data(), _high_site())
-    _site, _date, key = forecast._resolve("Гудаури", "1d", "2026-07-25")
+    _site, _date, key = forecast._resolve("Гудаури", "1d", "2026-07-25", model=engine.DEFAULT_MODEL_KEY)
     import time
     forecast._fcache[key] = (time.monotonic() + 999, "card", [], {}, "fb", [], g)
 

@@ -215,7 +215,7 @@ async def test_overview_has_single_analysis_button_and_day_picker(feed, session,
 async def test_day_picker_uses_cached_site_local_dates(feed, session, fc_calls):
     start = dt.date.today() + dt.timedelta(days=1)  # смещённые даты, как из чужой таймзоны
     dates = [(start + dt.timedelta(days=i)).isoformat() for i in range(3)]
-    _site, _date, key = forecast._resolve("Гудаури", "3d", None)
+    _site, _date, key = forecast._resolve("Гудаури", "3d", None, model="auto")
     forecast._fcache[key] = (time.monotonic() + 999, "c", [],
                              {"days_daytime": [{"date": d} for d in dates]}, "f", [], None)
     await feed(text_update("/threedays Гудаури"))
