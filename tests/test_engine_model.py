@@ -1,4 +1,6 @@
 """engine model registry + личная настройка модели + build_url &models=."""
+import pytest
+
 import engine
 import store
 from conftest import TEST_USER_ID
@@ -18,8 +20,8 @@ def test_default_model_is_auto():
     assert engine.model_id("ecmwf") == "ecmwf_ifs025"
 
 
-def test_build_url_defaults_to_the_default_model():
-    assert "models=best_match" in engine.build_url(_site(), "week")
+def test_build_url_uses_default_model_when_specified():
+    assert "models=best_match" in engine.build_url(_site(), "week", model="auto")
     assert "models=icon_seamless" in engine.build_url(_site(), "1d", "2026-07-25",
                                                       model="icon")
 
@@ -111,3 +113,29 @@ def test_route_weather_url_takes_the_model_argument():
     url = engine.route_weather_url([(42.0, 44.0)], "2026-07-29", "Asia/Tbilisi", model="gfs")
     assert "models=gfs_seamless" in url
     assert store.prefs(TEST_USER_ID).model_key == "auto"
+
+
+# ---------------------------------------------------------------- обязательный параметр
+
+
+def test_build_url_requires_model():
+    """Забыть модель должно быть ошибкой вызова, а не тихим падением на дефолт."""
+    site = {"name": "X", "lat": 1.0, "lon": 2.0, "elevation_m": 100}
+    with pytest.raises(TypeError):
+        engine.build_url(site, "week")
+
+
+def test_build_url_uses_given_model():
+    site = {"name": "X", "lat": 1.0, "lon": 2.0, "elevation_m": 100}
+    assert "models=gfs_seamless" in engine.build_url(site, "week", model="gfs")
+    assert "models=ecmwf_ifs025" in engine.build_url(site, "week", model="ecmwf")
+
+
+def test_route_weather_url_requires_model():
+    with pytest.raises(TypeError):
+        engine.route_weather_url([(1.0, 2.0)], "2026-07-29", "auto")
+
+
+def test_model_note_reads_only_response_key():
+    """_model_note больше не подсматривает в глобальную настройку."""
+    assert "ECMWF" in engine._model_note({"_model_key": "ecmwf", "hourly": {}})

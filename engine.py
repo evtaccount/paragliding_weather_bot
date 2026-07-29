@@ -143,10 +143,10 @@ D_OV = ("sunrise,sunset,weather_code,temperature_2m_max,temperature_2m_min,wind_
         "wind_gusts_10m_max,wind_direction_10m_dominant,precipitation_sum,precipitation_probability_max,"
         "sunshine_duration,shortwave_radiation_sum")
 
-def build_url(site, rng, date=None, model=None):
-    """`model` — модель для этого запроса; None означает модель по умолчанию."""
+def build_url(site, rng, date=None, *, model):
+    """`model` — модель для этого запроса (обязательный параметр)."""
     base = (f"https://api.open-meteo.com/v1/forecast?latitude={site['lat']}&longitude={site['lon']}"
-            f"&wind_speed_unit=ms&timezone=auto&models={model_id(model or DEFAULT_MODEL_KEY)}")
+            f"&wind_speed_unit=ms&timezone=auto&models={model_id(model)}")
     if rng == "1d":
         if not date:
             raise SystemExit("для --range 1d нужен --date YYYY-MM-DD")
@@ -154,7 +154,7 @@ def build_url(site, rng, date=None, model=None):
     n = RANGE_DAYS[rng]
     return f"{base}&hourly={H_OV}&daily={D_OV}&forecast_days={n}"
 
-def route_weather_url(coords, date, tz, model=None):
+def route_weather_url(coords, date, tz, *, model):
     """Мульти-точечный запрос погоды на один день. `coords` — список пар (lat, lon).
 
     Часовой пояс задаётся ЯВНО, а не timezone=auto: при auto каждая локация
@@ -165,7 +165,7 @@ def route_weather_url(coords, date, tz, model=None):
     lons = ",".join(f"{lon:.4f}" for _, lon in coords)
     return (f"https://api.open-meteo.com/v1/forecast?latitude={lats}&longitude={lons}"
             f"&wind_speed_unit=ms&timezone={quote(tz)}"
-            f"&models={model_id(model or DEFAULT_MODEL_KEY)}"
+            f"&models={model_id(model)}"
             f"&hourly={H_1D}&daily={D_1D}&start_date={date}&end_date={date}")
 
 def ceiling_url(site, rng, date=None):
@@ -330,6 +330,8 @@ def _model_note(data):
     Потолок берётся из отдельной модели, и об этом надо сказать прямо: без
     оговорки читатель (и LLM) припишет число выбранной модели, у которой его нет.
     Штампы кладёт слой forecast; их отсутствие означает прямой вызов мимо него.
+    `_fetch_build` всегда проставляет `_model_key`; DEFAULT_MODEL_KEY остаётся
+    только для ответов, собранных в тестах вручную.
     """
     key = data.get("_model_key") or DEFAULT_MODEL_KEY
     label = model_label(key)
@@ -1062,7 +1064,7 @@ def main():
         raise SystemExit(f"Старт не найден: {a.site}. Есть: "
                          + ", ".join(s["name"] for s in store.load_sites()))
     if a.cmd == "url":
-        print(build_url(site, a.range, a.date)); return
+        print(build_url(site, a.range, a.date, model=DEFAULT_MODEL_KEY)); return
     with open(a.json, encoding="utf-8") as f:
         data = json.load(f)
     os.makedirs(a.out, exist_ok=True)
