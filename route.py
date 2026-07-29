@@ -57,6 +57,22 @@ class Point:
                 and self.lon == other.lon and self.name == other.name)
 
 
+def points_from_rows(rows):
+    """Точки из сырых строк хранилища: [[lat, lon, name], ...] → [Point].
+
+    None при битой записи или нехватке точек — маршрут, который нельзя
+    посчитать, лучше показать как отсутствующий, чем уронить бота.
+    """
+    out = []
+    for item in rows or []:
+        try:
+            lat, lon = float(item[0]), float(item[1])
+        except (TypeError, ValueError, IndexError, KeyError):
+            return None
+        out.append(Point(lat, lon, item[2] if len(item) > 2 else None))
+    return out if len(out) >= MIN_POINTS else None
+
+
 # Запятая допускается как дробный разделитель прямо в шаблоне числа: тогда
 # «42,4776, 44,4787» разбирается как два числа, а не как четыре, и отдельное
 # правило склейки не нужно.

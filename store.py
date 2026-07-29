@@ -263,3 +263,74 @@ def set_model(user_id: int, key: str) -> None:
     """Постоянная модель пользователя. Ключ валидирует вызывающий (engine.MODELS):
     список моделей — знание домена, а не хранилища."""
     _set_pref(user_id, "model_key", key)
+
+
+# ------------------------------------------------------------ личные маршруты
+# Хранится ТОЛЬКО геометрия. Погода всегда считается заново, поэтому устаревать
+# здесь нечему: сохранённый маршрут — это набор координат, а не прогноз.
+# Точки лежат JSON-строкой намеренно: запросов по отдельной точке нет,
+# отдельная таблица была бы схемой ради схемы.
+MAX_ROUTES = 20
+
+
+def routes_list(user_id: int) -> dict[str, dict]:
+    """Все маршруты пользователя. Битые записи пропускаются, а не роняют выдачу."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT name, points, saved_at FROM routes WHERE user_id = ? ORDER BY name",
+            (user_id,)).fetchall()
+    out = {}
+    for r in rows:
+        try:
+            pts = json.loads(r["points"])
+        except ValueError:
+            continue
+        if isinstance(pts, list):
+            out[r["name"]] = {"points": pts, "saved": r["saved_at"]}
+    return out
+
+
+def route_rows(user_id: int, name: str) -> list | None:
+    """Сырые строки точек: [[lat, lon, name], ...]. None, если нет или битая."""
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT points FROM routes WHERE user_id = ? AND name = ?",
+            (user_id, name)).fetchone()
+    if row is None:
+        return None
+    try:
+        pts = json.loads(row["points"])
+    except ValueError:
+        return None
+    return pts if isinstance(pts, list) else None
+
+
+def route_save(user_id: int, name: str, rows: list) -> None:
+    """Сохранить точки под именем. ValueError при переполнении.
+
+    Перезапись существующего имени переполнением не считается — иначе на
+    заполненном списке нельзя было бы поправить уже сохранённый маршрут.
+    """
+    with connect() as conn:
+        exists = conn.execute(
+            "SELECT 1 FROM routes WHERE user_id = ? AND name = ?",
+            (user_id, name)).fetchone()
+        if not exists:
+            n = conn.execute("SELECT count(*) c FROM routes WHERE user_id = ?",
+                             (user_id,)).fetchone()["c"]
+            if n >= MAX_ROUTES:
+                raise ValueError(f"сохранено уже {MAX_ROUTES} маршрутов — "
+                                 "удали ненужный через /delroute")
+        conn.execute(
+            "INSERT INTO routes (user_id, name, points, saved_at) VALUES (?,?,?,?)"
+            " ON CONFLICT(user_id, name) DO UPDATE SET"
+            " points = excluded.points, saved_at = excluded.saved_at",
+            (user_id, name, json.dumps(rows, ensure_ascii=False), _now()))
+
+
+def route_delete(user_id: int, name: str) -> bool:
+    """True, если удалили; False, если такого маршрута не было."""
+    with connect() as conn:
+        cur = conn.execute("DELETE FROM routes WHERE user_id = ? AND name = ?",
+                           (user_id, name))
+        return cur.rowcount > 0

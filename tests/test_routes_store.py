@@ -95,3 +95,22 @@ def test_too_many_points_is_refused():
 def test_the_file_lives_next_to_sites_json():
     import engine
     assert os.path.dirname(routes.ROUTES_FILE) == os.path.dirname(engine.SITES)
+
+
+def test_points_from_rows_builds_points():
+    import route
+    pts = route.points_from_rows([[42.4, 44.4, "старт"], [42.2, 44.6, None]])
+    assert [p.lat for p in pts] == [42.4, 42.2]
+    assert pts[0].name == "старт" and pts[1].name is None
+
+
+def test_points_from_rows_rejects_corrupt():
+    """Битая запись читается как None, а не роняет бота."""
+    import route
+    assert route.points_from_rows([["нет", 44.4, None], [42.2, 44.6, None]]) is None
+    assert route.points_from_rows([[42.4], [42.2, 44.6, None]]) is None
+
+
+def test_points_from_rows_rejects_too_few():
+    import route
+    assert route.points_from_rows([[42.4, 44.4, None]]) is None

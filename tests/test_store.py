@@ -198,3 +198,51 @@ def test_prefs_is_frozen(store):
     p = store.prefs(1)
     with pytest.raises(dataclasses.FrozenInstanceError):
         p.model_key = "gfs"
+
+
+PTS = [[42.4, 44.4, "старт"], [42.2, 44.6, "финиш"]]
+
+
+def test_route_save_and_list(store):
+    store.route_save(1, "Гудаури → Пасанаури", PTS)
+    got = store.routes_list(1)
+    assert list(got) == ["Гудаури → Пасанаури"]
+    assert got["Гудаури → Пасанаури"]["points"] == PTS
+    assert got["Гудаури → Пасанаури"]["saved"]
+
+
+def test_routes_are_per_user(store):
+    store.route_save(1, "Мой", PTS)
+    assert store.routes_list(2) == {}
+    assert store.route_rows(2, "Мой") is None
+
+
+def test_route_save_overwrites_same_name(store):
+    store.route_save(1, "Мой", PTS)
+    store.route_save(1, "Мой", [[1.0, 2.0, None], [3.0, 4.0, None]])
+    assert store.route_rows(1, "Мой") == [[1.0, 2.0, None], [3.0, 4.0, None]]
+    assert len(store.routes_list(1)) == 1
+
+
+def test_route_save_rejects_overflow(store):
+    for i in range(store.MAX_ROUTES):
+        store.route_save(1, f"м{i}", PTS)
+    with pytest.raises(ValueError, match="удали"):
+        store.route_save(1, "лишний", PTS)
+
+
+def test_route_save_overflow_allows_overwrite(store):
+    """Переполнение не должно мешать перезаписать уже существующий маршрут."""
+    for i in range(store.MAX_ROUTES):
+        store.route_save(1, f"м{i}", PTS)
+    store.route_save(1, "м0", PTS)   # не бросает
+
+
+def test_route_delete(store):
+    store.route_save(1, "Мой", PTS)
+    assert store.route_delete(1, "Мой") is True
+    assert store.route_delete(1, "Мой") is False
+
+
+def test_route_rows_missing_returns_none(store):
+    assert store.route_rows(1, "нет") is None
