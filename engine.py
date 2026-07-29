@@ -694,6 +694,74 @@ def hourly_strip(day_assessment, window):
 
 
 # ---------------------------------------------------------------- report: 1 day
+def _day_frame(data, site, assessment=None):
+    """Величины, нужные и карточке, и фактам, посчитанные ровно один раз.
+
+    До этого час пика считался в двух местах по разным правилам: карточка брала
+    максимум по рабочему окну с тай-брейком по солнцу на склоне, факты — простой
+    максимум температуры за световой день. Профиль ветра, уходивший в Gemini, мог
+    относиться не к тому часу, что видел пилот.
+    """
+    H, D = data["hourly"], data["daily"]
+    t = H["time"]
+    sr, ss = D["sunrise"][0], D["sunset"][0]
+    day = daylight_idx(t, sr, ss)
+    temp = H["temperature_2m"]
+    assess, ctx = assessment or assess_day(data, site)
+    tw = ctx["thermal_window"]
+    workable = [i for i in day
+                if tw and tw["start_hour"] <= hour_of(t[i]) <= tw["end_hour"]]
+    ref = tw["peak_hour"] if tw else hour_of(t[max(day, key=lambda i: temp[i])])
+    tmax_i = max(workable or day,
+                 key=lambda i: (round(temp[i], 1), -abs(hour_of(t[i]) - ref)))
+    # направление в рабочее окно (11–16, взвешенное по скорости) — НЕ суточное
+    # доминирующее: слабый ночной сток утягивает его от термического ветра
+    core = [i for i in day if 11 <= hour_of(t[i]) <= 16] or [tmax_i]
+    fly_dir = wind_from_avg([H["wind_direction_10m"][i] for i in core],
+                            [max(H["wind_speed_10m"][i], 0.3) for i in core])
+    dv, dc = dir_verdict(fly_dir, site["aspect_deg"])
+    return {"day": day, "assess": assess, "ctx": ctx, "thermal_window": tw,
+            "tmax_i": tmax_i, "peak_hour": hour_of(t[tmax_i]),
+            "fly_dir": fly_dir, "dir_verdict": dv, "dir_class": dc}
+
+
+def day_caveats(data, site, frame):
+    """Оговорки под карточкой. Возвращает список строк — их же кладут в факты."""
+    H = data["hourly"]
+    t = H["time"]
+    temp = H["temperature_2m"]; clow = H["cloud_cover_low"]; dew = H["dew_point_2m"]
+    blh = H["boundary_layer_height"]
+    has_blh = _series_available(H, "boundary_layer_height")
+    day = frame["day"]; tmax_i = frame["tmax_i"]; dc = frame["dir_class"]
+    assess = frame["assess"]
+    lcl_agl = 122 * (temp[tmax_i] - dew[tmax_i])
+    if has_blh:
+        top_agl = round(max(blh[i] for i in day))
+        blue = clow[tmax_i] < 15 and lcl_agl > blh[tmax_i]
+    else:  # model without a boundary-layer series (e.g. ECMWF) — no ceiling
+        top_agl = None
+        blue = False
+    elev = site["elevation_m"]
+    no_route_top = site.get("route_top_m") is None
+
+    cav = []
+    if assess.vetoes_in_window:
+        cav.append("вето внутри окна: " + ", ".join(
+            criteria.veto_labels(assess.vetoes_in_window)))
+    if any(h.raw.get("foehn_suspect") for h in assess.hours):
+        cav.append("признаки фёна (эвристика по косвенным приметам, не расчёт) — "
+                   "роторы с подветра могут быть жёсткими")
+    if blue: cav.append("голубая термичка (без облаков-маркеров)")
+    if has_blh and top_agl < 900: cav.append("низкий потолок — XC слабый")
+    if dc == "tail": cav.append("ветер в спину в рабочее окно — опасно, сверь экспозицию")
+    elif dc == "cross": cav.append("боковой ветер к склону — сверь экспозицию")
+    if no_route_top:
+        cav.append("вершины маршрута у старта не заданы (route_top_m) — вето «база ниже вершин» "
+                   "не проверяется, запас считается только над стартом")
+    cav.append(f"высота старта по гриду ({elev} м); прогноз далеко вперёд — пересними за 1–2 суток")
+    return cav
+
+
 def report_1day(data, site, out, assessment=None):
     H, D = data["hourly"], data["daily"]
     t = H["time"]
@@ -701,7 +769,7 @@ def report_1day(data, site, out, assessment=None):
     day = daylight_idx(t, sr, ss)
     elev = site["elevation_m"]; aspect = site["aspect_deg"]
     temp = H["temperature_2m"]; wind = H["wind_speed_10m"]; gust = H["wind_gusts_10m"]
-    wdir = H["wind_direction_10m"]; precip = H["precipitation"]; cape = H["cape"]
+    precip = H["precipitation"]; cape = H["cape"]
     clow = H["cloud_cover_low"]; dew = H["dew_point_2m"]; blh = H["boundary_layer_height"]
     has_blh = _series_available(H, "boundary_layer_height")
 
@@ -710,18 +778,17 @@ def report_1day(data, site, out, assessment=None):
     dt_gust = [gust[i] for i in day]
     # Лётность считает criteria — один расчёт на карточку, графики и данные для LLM.
     # Раньше карточка и метеограмма проверяли пороги независимо и могли разойтись.
-    assess, ctx = assessment or assess_day(data, site)
-    tw = ctx["thermal_window"]
-    workable = [i for i in day if tw and tw["start_hour"] <= hour_of(t[i]) <= tw["end_hour"]]
+    # Час пика и направление в рабочее окно теперь тоже общий расчёт с фактами —
+    # раньше facts_1day брал простой максимум температуры за световой день, и
+    # профиль ветра для Gemini мог относиться не к тому часу, что видит пилот.
+    frame = _day_frame(data, site, assessment)
+    assess, tw = frame["assess"], frame["thermal_window"]
     # лётные часы — только внутри термического окна: вне его склон не греет,
     # и «лётный» штиль в 06:00 не окно, а ночной сток
     fly_hours = assess.fly_window
     window = f"{fly_hours[0]:02d}:00–{fly_hours[1]:02d}:00" if fly_hours else "нет"
-    # thermal peak = the hottest hour of the window; near-ties (a flat temperature
-    # profile) go to the hour the sun hits the slope most directly
-    ref = tw["peak_hour"] if tw else hour_of(t[max(day, key=lambda i: temp[i])])
-    tmax_i = max(workable or day, key=lambda i: (round(temp[i], 1), -abs(hour_of(t[i]) - ref)))
-    peak_h = hour_of(t[tmax_i])
+    tmax_i = frame["tmax_i"]
+    peak_h = frame["peak_hour"]
     if tw:
         peak_lo = max(tw["start_hour"], peak_h - 1)
         peak_hi = min(tw["end_hour"], peak_h + 1)
@@ -737,11 +804,7 @@ def report_1day(data, site, out, assessment=None):
     else:  # model without a boundary-layer series (e.g. ECMWF) — no ceiling
         top_agl = top_msl = None
         blue = False
-    # flying-window direction (11–16, speed-weighted) — NOT the 24h dominant,
-    # which light morning/evening drainage skews away from the thermal wind.
-    core = [i for i in day if 11 <= hour_of(t[i]) <= 16] or [tmax_i]
-    fly_dir = wind_from_avg([wdir[i] for i in core], [max(wind[i], 0.3) for i in core])
-    dv, dc = dir_verdict(fly_dir, aspect)
+    fly_dir, dv, dc = frame["fly_dir"], frame["dir_verdict"], frame["dir_class"]
     precip_sum = D["precipitation_sum"][0]
 
     # ---- text: factual card (always shown) + tail (window/caveats) ----
@@ -777,20 +840,7 @@ def report_1day(data, site, out, assessment=None):
     card_text = "\n".join(card_lines)
 
     tail = [f"⏱️ Лётное окно: {window}" + (f" (пик {peak_lo:02d}–{peak_hi:02d})" if fly_hours else "")]
-    cav = []
-    if assess.vetoes_in_window:
-        cav.append("вето внутри окна: " + ", ".join(criteria.veto_labels(assess.vetoes_in_window)))
-    if any(h.raw.get("foehn_suspect") for h in assess.hours):
-        cav.append("признаки фёна (эвристика по косвенным приметам, не расчёт) — "
-                   "роторы с подветра могут быть жёсткими")
-    if blue: cav.append("голубая термичка (без облаков-маркеров)")
-    if has_blh and top_agl < 900: cav.append("низкий потолок — XC слабый")
-    if dc == "tail": cav.append("ветер в спину в рабочее окно — опасно, сверь экспозицию")
-    elif dc == "cross": cav.append("боковой ветер к склону — сверь экспозицию")
-    if no_route_top:
-        cav.append("вершины маршрута у старта не заданы (route_top_m) — вето «база ниже вершин» "
-                   "не проверяется, запас считается только над стартом")
-    cav.append(f"высота старта по гриду ({elev} м); прогноз далеко вперёд — пересними за 1–2 суток")
+    cav = day_caveats(data, site, frame)
     if cav:
         tail.append("")
         tail.append("⚠️ " + "; ".join(cav) + ".")
@@ -928,7 +978,11 @@ def facts_1day(data, site, assessment=None):
     clow = H["cloud_cover_low"]; dew = H["dew_point_2m"]; blh = H["boundary_layer_height"]
     has_blh = _series_available(H, "boundary_layer_height")
     has_frz = _series_available(H, "freezing_level_height")
-    tmax_i = max(day, key=lambda i: temp[i])  # peak-heating hour
+    # час пика — общий расчёт с report_1day (см. _day_frame), а не отдельный
+    # максимум температуры за световой день: иначе профиль ветра для Gemini
+    # мог относиться не к тому часу, что видит пилот на карточке.
+    frame = _day_frame(data, site, assessment)
+    tmax_i = frame["tmax_i"]
     lcl_agl = round(122 * (temp[tmax_i] - dew[tmax_i]))
     if has_blh:
         top_agl = round(max(blh[i] for i in day))
@@ -972,6 +1026,11 @@ def facts_1day(data, site, assessment=None):
         "thermal_ceiling_m_msl": (elev + top_agl) if top_agl is not None else None,
         "lcl_m_agl": lcl_agl,
         "blue_thermals": bool(blue),
+        "peak_hour": frame["peak_hour"],
+        "fly_dir_deg": round(frame["fly_dir"], 1),
+        "dir_verdict": frame["dir_verdict"],
+        "dir_class": frame["dir_class"],
+        "caveats": day_caveats(data, site, frame),
         "hourly_daytime": [
             {"time": t[i][11:16], "temp_c": round(temp[i], 1), "wind_ms": round(wind[i], 1),
              "gust_ms": round(gust[i], 1), "dir_deg": round(wdir[i]),
