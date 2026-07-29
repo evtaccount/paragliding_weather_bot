@@ -12,8 +12,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# run as non-root; /app/data holds the writable sites file (a named volume mounts
-# here and inherits this ownership, so the app user can persist /add and /removesite)
+# run as non-root; /app/data holds the writable SQLite database (a named volume
+# mounts here and inherits this ownership, so the app user can persist sites,
+# routes, settings and the model choice)
 RUN mkdir -p /app/data && useradd -m -u 10001 app && chown -R app /app
 USER app
 
