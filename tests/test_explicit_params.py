@@ -15,8 +15,8 @@ REQUIRED = [
     (forecast.get_analysis,  "model"),
     (forecast.scan_week,     "model"),
     (forecast.get_route,     "cfg"),
+    (forecast.get_facts,     "model"),
 ]
-# get_facts появляется в задаче 11 и дописывается в этот список там же.
 #
 # forecast.get_route НЕ получает отдельный параметр model, в отличие от брифа
 # задачи 9: модель маршрута выводится из cfg.model_key (упрощение задачи 7,
@@ -41,14 +41,15 @@ def test_required_params_are_keyword_only():
 # ---------------------------------------------------------------- fix round 1
 #
 # Пять публичных функций выше защищены, но одним слоем ниже оставались три
-# тихих отката `model or engine.DEFAULT_MODEL_KEY` (`_resolve`, `_fetch_build`,
-# `_ensure_route_weather`) плюс собственный `model=None` у `cached_dates` —
-# та же форма бага, что и до этой задачи, просто на уровень глубже. Если
-# дефолт вернётся в любом из этих мест, тесты ниже должны упасть.
+# тихих отката `model or engine.DEFAULT_MODEL_KEY` (`_resolve`, `_fetch_build` —
+# переименована в задаче 11 в `_fetch_raw`, `_ensure_route_weather`) плюс
+# собственный `model=None` у `cached_dates` — та же форма бага, что и до этой
+# задачи, просто на уровень глубже. Если дефолт вернётся в любом из этих мест,
+# тесты ниже должны упасть.
 
 NO_DEFAULT_ONLY = [
     (forecast._resolve,             "model"),
-    (forecast._fetch_build,         "model"),
+    (forecast._fetch_raw,           "model"),
     (forecast._ensure,              "model"),
     (forecast._ensure_route_weather, "model"),
 ]
@@ -93,8 +94,8 @@ def test_resolve_propagates_none_instead_of_substituting_default():
 
 
 async def test_fetch_path_propagates_none_instead_of_substituting_default(monkeypatch):
-    """_ensure → _fetch_build → engine.build_url. engine.model_id(None) кидает
-    KeyError ДО любого сетевого запроса; если бы _fetch_build подменяла
+    """_ensure → _fetch_raw → engine.build_url. engine.model_id(None) кидает
+    KeyError ДО любого сетевого запроса; если бы _fetch_raw подменяла
     model=None на DEFAULT_MODEL_KEY, build_url собрал бы валидный URL под
     best_match и тест ничего бы не заметил. _fetch_main/_fetch_ceiling
     подмоканы на AssertionError — если фолбэк всё же вернётся, тест обязан

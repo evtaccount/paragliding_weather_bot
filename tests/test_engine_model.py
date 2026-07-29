@@ -33,11 +33,11 @@ def test_cache_key_includes_model(monkeypatch):
 
     calls = []
 
-    async def fake_build(site, rng, date, model=None):
+    async def fake_raw(site, rng, date, model=None):
         calls.append((model or engine.DEFAULT_MODEL_KEY, rng))
-        return "card", [], {}, "fb", [], None  # 6-tuple _fetch_build contract
+        return {}, None  # (data, assessment) contract of _fetch_raw
 
-    monkeypatch.setattr(forecast, "_fetch_build", fake_build)
+    monkeypatch.setattr(forecast, "_fetch_raw", fake_raw)
 
     site = store.find_site("Гудаури")
     _s, _d, key1 = forecast._resolve("Гудаури", "week", None, model="auto")

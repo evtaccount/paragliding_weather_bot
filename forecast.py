@@ -32,7 +32,12 @@ import store
 log = logging.getLogger("pgbot.forecast")
 
 _TTL = float(os.environ.get("CACHE_TTL_MIN", "15")) * 60
-# facts cache:    key -> (expires, card, png_bytes, facts, fallback_text)
+# forecast cache: key -> (expires, data, assessment, derived)
+#   data       — сырой ответ open-meteo (плюс _model_key/_ceiling_model)
+#   assessment — engine.assess_day(...), посчитан один раз на 1d-запись, иначе None
+#   derived    — производные ("text"/"facts"/"rows"/"grid"), считаются лениво и
+#                запоминаются здесь же при первом запросе — карточка с PNG,
+#                факты для мини-аппа и Gemini больше не платят друг за друга
 # analysis cache: key -> (expires, text)   — so a repeat button press is free
 _fcache: dict[tuple, tuple] = {}
 _acache: dict[tuple, tuple[float, str]] = {}
@@ -71,8 +76,8 @@ async def scan_week(*, model) -> dict:
 
     async def fetch(site):
         key = (site["name"], "week", None, model)
-        _c, _p, _f, _fb, rows, _grid = await _ensure(site, "week", None, key, model)
-        return rows
+        data, assessment, derived = await _ensure(site, "week", None, key, model)
+        return _derive(site, "week", data, assessment, derived, "rows")
 
     gathered = await asyncio.gather(*(fetch(s) for s in sites), return_exceptions=True)
     out: dict = {"sites": [], "empty": [], "failed": []}
@@ -177,13 +182,15 @@ def cached_dates(site_name: str, rng: str, date: str | None = None, *,
                  model) -> list[str] | None:
     """Dates (site-local) of a cached overview — for the day-picker. None on a cold cache."""
     try:
-        _site, _date, key = _resolve(site_name, rng, date, model)
+        site, _date, key = _resolve(site_name, rng, date, model)
     except ForecastError:
         return None
     entry = _fcache.get(key)
     if entry is None:
         return None
-    days = entry[3].get("days_daytime") or []  # entry: (expires, card, pngs, facts, fallback)
+    _exp, data, assessment, derived = entry
+    facts = _derive(site, rng, data, assessment, derived, "facts")
+    days = facts.get("days_daytime") or []
     return [d["date"] for d in days] or None
 
 
@@ -266,8 +273,8 @@ async def _fetch_main(url):
     return data
 
 
-async def _fetch_build(site: dict, rng: str, date: str | None, model: str):
-    """Fetch open-meteo once and build (card, png_bytes, facts, fallback_text, rows, grid).
+async def _fetch_raw(site: dict, rng: str, date: str | None, model: str):
+    """Сходить за данными и посчитать оценку. Ничего не рендерит.
 
     Потолок всегда берётся из GFS отдельным узким запросом — конкурентно с
     основным, поэтому задержка не растёт. Когда выбрана сама GFS, запроса нет.
@@ -278,41 +285,56 @@ async def _fetch_build(site: dict, rng: str, date: str | None, model: str):
     if model == engine.CEILING_MODEL_KEY:
         data, gfs = await main, None
     else:
-        data, gfs = await asyncio.gather(main, _fetch_ceiling(engine.ceiling_url(site, rng, date)))
+        data, gfs = await asyncio.gather(
+            main, _fetch_ceiling(engine.ceiling_url(site, rng, date)))
     data["_model_key"] = model
     if _splice_ceiling(data, gfs):
         data["_ceiling_model"] = engine.CEILING_MODEL_KEY
+    # один расчёт лётности на карточку, графики и данные для LLM — иначе три
+    # места считали бы его независимо и могли разойтись
+    assessment = engine.assess_day(data, site) if rng == "1d" else None
+    return data, assessment
 
-    out = tempfile.mkdtemp(prefix="pgfc_")
-    try:
-        if rng == "1d":
-            # один расчёт лётности на карточку, графики и данные для LLM —
-            # иначе три места считали бы его независимо и могли разойтись
-            assessment = engine.assess_day(data, site)
-            fallback, png_paths, card = engine.report_1day(data, site, out, assessment)
-            facts = engine.facts_1day(data, site, assessment)
-            rows = []
-            grid = engine.wind_grid(data, site)
-        else:
-            fallback, png_paths, card = engine.report_overview(data, site, rng, out)
-            facts = engine.facts_overview(data, site, rng)
-            rows = engine.overview_rows(data, site)
-            grid = None
-        pngs = [pathlib.Path(p).read_bytes() for p in png_paths]
-    finally:
-        shutil.rmtree(out, ignore_errors=True)
-    return card, pngs, facts, fallback, rows, grid
+
+def _derive(site: dict, rng: str, data: dict, assessment, derived: dict, what: str):
+    """Посчитать производную и запомнить её в записи кэша.
+
+    what: "text" (fallback + card + pngs) | "facts" | "rows" | "grid"
+    """
+    if what in derived:
+        return derived[what]
+    if what == "text":
+        out = tempfile.mkdtemp(prefix="pgfc_")
+        try:
+            if rng == "1d":
+                fallback, png_paths, card = engine.report_1day(data, site, out, assessment)
+            else:
+                fallback, png_paths, card = engine.report_overview(data, site, rng, out)
+            derived["text"] = (card, [pathlib.Path(p).read_bytes() for p in png_paths],
+                               fallback)
+        finally:
+            shutil.rmtree(out, ignore_errors=True)
+    elif what == "facts":
+        derived["facts"] = (engine.facts_1day(data, site, assessment) if rng == "1d"
+                            else engine.facts_overview(data, site, rng))
+    elif what == "rows":
+        derived["rows"] = [] if rng == "1d" else engine.overview_rows(data, site)
+    elif what == "grid":
+        derived["grid"] = engine.wind_grid(data, site) if rng == "1d" else None
+    return derived[what]
 
 
 async def _ensure(site: dict, rng: str, date: str | None, key: tuple, model: str):
-    """Return (card, pngs, facts, fallback, rows, grid), fetching only on a cold cache."""
+    """Вернуть (data, assessment, derived), сходив в сеть только на холодном кэше."""
     now = time.monotonic()
     _purge(now)
     if key in _fcache:
-        return _fcache[key][1:]
-    card, pngs, facts, fallback, rows, grid = await _fetch_build(site, rng, date, model)
-    _fcache[key] = (now + _TTL, card, pngs, facts, fallback, rows, grid)
-    return card, pngs, facts, fallback, rows, grid
+        _exp, data, assessment, derived = _fcache[key]
+        return data, assessment, derived
+    data, assessment = await _fetch_raw(site, rng, date, model)
+    derived: dict = {}
+    _fcache[key] = (now + _TTL, data, assessment, derived)
+    return data, assessment, derived
 
 
 async def get_forecast(site_name: str, rng: str, date: str | None = None, *, model):
@@ -322,22 +344,31 @@ async def get_forecast(site_name: str, rng: str, date: str | None = None, *, mod
     пилота): вызывающий обязан разрешить её сам и передать явно.
     """
     site, date, key = _resolve(site_name, rng, date, model)
-    card, pngs, _facts, _fallback, _rows, _grid = await _ensure(site, rng, date, key, model)
+    data, assessment, derived = await _ensure(site, rng, date, key, model)
+    card, pngs, _fallback = _derive(site, rng, data, assessment, derived, "text")
     return card, pngs
+
+
+async def get_facts(site_name: str, rng: str, date: str | None = None, *, model) -> dict:
+    """Структурированные факты — то же, что уходит в Gemini, и то же, что
+    отдаётся приложению. PNG при этом не рисуются."""
+    site, date, key = _resolve(site_name, rng, date, model)
+    data, assessment, derived = await _ensure(site, rng, date, key, model)
+    return _derive(site, rng, data, assessment, derived, "facts")
 
 
 async def get_wind_grid(site_name: str, date: str, *, model) -> bytes:
     """PNG of the altitude × hour wind grid for a single day. Reuses the warm 1d cache
     (no re-fetch) and builds the image on demand — /today never pays for it unused."""
     site, date, key = _resolve(site_name, "1d", date, model)
-    _card, _pngs, _facts, _fallback, _rows, grid = await _ensure(site, "1d", date, key, model)
+    data, assessment, derived = await _ensure(site, "1d", date, key, model)
+    grid = _derive(site, "1d", data, assessment, derived, "grid")
     if not grid:
         raise ForecastError("Данные по высотам недоступны для этого дня.")
     out = tempfile.mkdtemp(prefix="pgwg_")
     try:
         import charts
-        path = charts.wind_grid_png(grid, site, out)
-        return pathlib.Path(path).read_bytes()
+        return pathlib.Path(charts.wind_grid_png(grid, site, out)).read_bytes()
     finally:
         shutil.rmtree(out, ignore_errors=True)
 
@@ -854,7 +885,9 @@ async def get_analysis(site_name: str, rng: str, date: str | None = None, deep: 
         log.info("analysis cache hit: %s", acache_key)
         return _acache[acache_key][1]
 
-    card, _pngs, facts, fallback, _rows, _grid = await _ensure(site, rng, date, base_key, model)
+    data, assessment, derived = await _ensure(site, rng, date, base_key, model)
+    facts = _derive(site, rng, data, assessment, derived, "facts")
+    card, _pngs, fallback = _derive(site, rng, data, assessment, derived, "text")
     rules_tail = fallback[len(card):].strip() or fallback  # deterministic verdict tail
 
     if not analysis.available():

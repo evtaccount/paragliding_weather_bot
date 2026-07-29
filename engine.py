@@ -240,6 +240,20 @@ def sun_position(lat, dec, hour_angle):
     return math.degrees(el), math.degrees(math.atan2(sin_az, cos_az)) % 360
 
 
+def _slope_deg(site):
+    """Уклон старта: SLOPE_DEG, если он не задан.
+
+    `site.get("slope_deg", SLOPE_DEG)` не работает для старта из БД: там ключ
+    slope_deg всегда присутствует (колонка есть у каждой строки), просто со
+    значением None, пока пилот не указал уклон явно, — .get с дефолтом
+    срабатывает только на ОТСУТСТВУЮЩИЙ ключ, а не на None, и slope_deg=None
+    доезжал бы до math.radians() и падал бы TypeError на каждом 1-дневном
+    прогнозе реального старта.
+    """
+    slope = site.get("slope_deg")
+    return SLOPE_DEG if slope is None else slope
+
+
 def slope_sun_index(sun_elev, sun_az, aspect_deg, slope_deg=SLOPE_DEG):
     """How directly the sun hits the launch slope: cos of the incidence angle, 0–1.
     1 = perpendicular to the face (maximum heating), 0 = the face gets no direct sun.
@@ -284,7 +298,7 @@ def sun_summary(date_iso, site, sunrise, sunset):
     (the multi-day overview). Same geometry, evaluated over whole daylight hours."""
     hours = list(range(int(_clock_h(sunrise)), int(_clock_h(sunset)) + 1))
     _, window = sun_hours(date_iso, site["lat"], sunrise, sunset, hours,
-                          site.get("aspect_deg"), site.get("slope_deg", SLOPE_DEG))
+                          site.get("aspect_deg"), _slope_deg(site))
     return window
 
 
@@ -330,7 +344,7 @@ def _model_note(data):
     Потолок берётся из отдельной модели, и об этом надо сказать прямо: без
     оговорки читатель (и LLM) припишет число выбранной модели, у которой его нет.
     Штампы кладёт слой forecast; их отсутствие означает прямой вызов мимо него.
-    `_fetch_build` всегда проставляет `_model_key`; DEFAULT_MODEL_KEY остаётся
+    `_fetch_raw` всегда проставляет `_model_key`; DEFAULT_MODEL_KEY остаётся
     только для ответов, собранных в тестах вручную.
     """
     key = data.get("_model_key") or DEFAULT_MODEL_KEY
@@ -628,7 +642,7 @@ def day_context(data, site, day_index=0):
     date = D["time"][day_index]
     idx = [i for i, tt in enumerate(t) if ymd(tt) == date and hour_of(sr) <= hour_of(tt) <= hour_of(ss)]
     _rows, window = sun_hours(date, site["lat"], sr, ss, [hour_of(t[i]) for i in idx],
-                              site.get("aspect_deg"), site.get("slope_deg", SLOPE_DEG))
+                              site.get("aspect_deg"), _slope_deg(site))
     return {"date": date, "sunrise": sr, "sunset": ss, "daylight_idx": idx,
             "thermal_window": window}
 
@@ -1006,7 +1020,7 @@ def facts_1day(data, site, assessment=None):
         profile.append(row)
 
     sun_rows, thermal_window = sun_hours(t[0], site["lat"], sr, ss, [hour_of(t[i]) for i in day],
-                                         aspect, site.get("slope_deg", SLOPE_DEG))
+                                         aspect, _slope_deg(site))
     sun_by_hour = {r["hour"]: r for r in sun_rows}
     assess, _ctx = assessment or assess_day(data, site)
     by_hour = {h.hour: h for h in assess.hours}

@@ -44,7 +44,7 @@ def test_scan_week_filters_flyable_and_reports_empty(monkeypatch):
     }
 
     async def fake_ensure(site, rng, date, key, model=None):
-        return "card", [], {}, "fb", rows_by_site[site["name"]], None
+        return {}, None, {"rows": rows_by_site[site["name"]]}
 
     monkeypatch.setattr(forecast, "_ensure", fake_ensure)
     result = asyncio.run(forecast.scan_week(model=engine.DEFAULT_MODEL_KEY))

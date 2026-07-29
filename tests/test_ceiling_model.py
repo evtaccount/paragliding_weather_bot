@@ -128,28 +128,34 @@ def test_cache_key_separates_models():
 
 
 async def test_get_forecast_passes_model_down(monkeypatch):
+    """Модель должна дойти до URL запроса, а не потеряться где-то в цепочке
+    _resolve → _ensure → _fetch_raw. Патчим _fetch_main (сетевой край), а не
+    _fetch_build/_fetch_raw — тот больше не возвращает готовую карточку, а
+    прогоняет реальные данные через engine, и настоящую подмену на этом уровне
+    подделать нечем."""
     seen = {}
 
-    async def fake_build(site, rng, date, model=None):
-        seen["model"] = model
-        return "CARD", [], {}, "FB", [], None
+    async def fake_main(url):
+        seen["url"] = url
+        return om_1day()
 
-    monkeypatch.setattr(forecast, "_fetch_build", fake_build)
+    monkeypatch.setattr(forecast, "_fetch_main", fake_main)
     await forecast.get_forecast("Гудаури", "1d", "2026-07-29", model="icon")
-    assert seen["model"] == "icon"
+    assert "models=icon_seamless" in seen["url"]
 
 
 async def test_analysis_uses_the_same_model_as_the_card(monkeypatch):
-    """Разбор должен описывать ту карточку, которую видит пользователь."""
+    """Разбор должен описывать ту карточку, которую видит пользователь: ОДИН
+    запрос к open-meteo под моделью карточки, а не свой собственный."""
     seen = []
 
-    async def fake_build(site, rng, date, model=None):
-        seen.append(model)
-        return "CARD", [], {"a": 1}, "CARD tail", [], {"grid": True}
+    async def fake_main(url):
+        seen.append(url)
+        return om_1day()
 
-    monkeypatch.setattr(forecast, "_fetch_build", fake_build)
+    monkeypatch.setattr(forecast, "_fetch_main", fake_main)
     await forecast.get_analysis("Гудаури", "1d", "2026-07-29", model="ecmwf")
-    assert seen == ["ecmwf"]
+    assert len(seen) == 1 and "models=ecmwf_ifs025" in seen[0]
 
 
 async def test_wind_grid_uses_the_same_model_as_the_card(monkeypatch):
@@ -159,16 +165,16 @@ async def test_wind_grid_uses_the_same_model_as_the_card(monkeypatch):
 
     seen = []
 
-    async def fake_build(site, rng, date, model=None):
-        seen.append(model)
-        return "CARD", [], {}, "FB", [], {"levels": [], "hours": []}
+    async def fake_main(url):
+        seen.append(url)
+        return om_1day()
 
     def fake_png(grid, site, out):
         path = pathlib.Path(out) / "grid.png"
         path.write_bytes(b"PNG")
         return str(path)
 
-    monkeypatch.setattr(forecast, "_fetch_build", fake_build)
+    monkeypatch.setattr(forecast, "_fetch_main", fake_main)
     monkeypatch.setattr(charts, "wind_grid_png", fake_png)
     assert await forecast.get_wind_grid("Гудаури", "2026-07-29", model="icon") == b"PNG"
-    assert seen == ["icon"]
+    assert len(seen) == 1 and "models=icon_seamless" in seen[0]
