@@ -223,6 +223,32 @@ async def test_day_picker_uses_cached_site_local_dates(feed, session, fc_calls):
     assert [b.callback_data for b in buttons(picker)] == [f"pd|Гудаури|{d}" for d in dates]
 
 
+async def test_day_picker_facts_failure_does_not_break_the_reply(feed, session, fc_calls,
+                                                                  monkeypatch):
+    """Регрессия ленивых производных (задача 11, fix round 1).
+
+    cached_dates больше не читает готовые facts из материализованного кортежа —
+    она вызывает _derive → engine.facts_overview по требованию. `_day_picker_kb`
+    зовёт cached_dates ПОСЛЕ единственного try/except в send_forecast
+    (bot.py:323-333), то есть вне его. Если facts_overview упадёт, карточка
+    уже отправлена — и падение не должно снести остаток ответа."""
+    def boom(data, site, rng):
+        raise RuntimeError("facts_overview boom")
+
+    monkeypatch.setattr(engine, "facts_overview", boom)
+
+    _site, _date, key = forecast._resolve("Гудаури", "3d", None, model="auto")
+    forecast._fcache[key] = (time.monotonic() + 999, {}, None, {})  # facts ещё не посчитаны
+
+    await feed(text_update("/threedays Гудаури"))
+
+    assert fc_calls == [("Гудаури", "3d", None, "auto")]
+    assert any(t.startswith("CARD") for t in texts(session))  # карточка ушла
+    picker = kb_for(session, "📅 Подробно по дню:")
+    assert len(buttons(picker)) == engine.RANGE_DAYS["3d"]  # откат на серверные даты
+    assert kb_for(session, "Ещё:") is not None  # остаток ответа не снесён
+
+
 # ---------------------------------------------------------------- /scan
 
 

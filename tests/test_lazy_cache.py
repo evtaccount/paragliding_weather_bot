@@ -3,8 +3,6 @@
 До этого _fetch_build рендерил 2-3 PNG через Pillow на каждый промах кэша —
 и рендерил бы их на каждый запрос из приложения, где они не нужны.
 """
-import pytest
-
 import asyncio
 
 import pytest

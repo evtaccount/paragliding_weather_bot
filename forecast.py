@@ -180,7 +180,18 @@ def _resolve(site_name: str, rng: str, date: str | None, model):
 
 def cached_dates(site_name: str, rng: str, date: str | None = None, *,
                  model) -> list[str] | None:
-    """Dates (site-local) of a cached overview — for the day-picker. None on a cold cache."""
+    """Dates (site-local) of a cached overview — for the day-picker. None on a cold
+    cache, and also None if computing facts from a warm entry blows up.
+
+    Единственный вызывающий (`bot._day_picker_kb`) строит клавиатуру ПОСЛЕ того, как
+    карточка с прогнозом уже отправлена, и делает это вне try/except, который ловит
+    ошибки forecast — клавиатура дней это необязательное украшение уже готового
+    ответа, и её нельзя ронять. Раньше facts лежали в кэше уже готовыми и этот вызов
+    не мог кинуть исключение; с ленивыми производными `_derive` может дойти до
+    настоящего `engine.facts_1day`/`facts_overview`, а он может упасть — тогда
+    здесь та же деградация, что и на холодном кэше: пикер откатится на серверные
+    даты вместо того, чтобы уронить весь оставшийся ответ.
+    """
     try:
         site, _date, key = _resolve(site_name, rng, date, model)
     except ForecastError:
@@ -189,7 +200,11 @@ def cached_dates(site_name: str, rng: str, date: str | None = None, *,
     if entry is None:
         return None
     _exp, data, assessment, derived = entry
-    facts = _derive(site, rng, data, assessment, derived, "facts")
+    try:
+        facts = _derive(site, rng, data, assessment, derived, "facts")
+    except Exception as e:  # noqa: BLE001 — day-picker best-effort, карточка уже отправлена
+        log.warning("cached_dates: facts derivation failed: %s", e)
+        return None
     days = facts.get("days_daytime") or []
     return [d["date"] for d in days] or None
 
@@ -299,7 +314,7 @@ async def _fetch_raw(site: dict, rng: str, date: str | None, model: str):
 def _derive(site: dict, rng: str, data: dict, assessment, derived: dict, what: str):
     """Посчитать производную и запомнить её в записи кэша.
 
-    what: "text" (fallback + card + pngs) | "facts" | "rows" | "grid"
+    what: "text" (card, pngs, fallback) | "facts" | "rows" | "grid"
     """
     if what in derived:
         return derived[what]
@@ -321,6 +336,8 @@ def _derive(site: dict, rng: str, data: dict, assessment, derived: dict, what: s
         derived["rows"] = [] if rng == "1d" else engine.overview_rows(data, site)
     elif what == "grid":
         derived["grid"] = engine.wind_grid(data, site) if rng == "1d" else None
+    else:
+        raise ValueError(f"_derive: неизвестная производная {what!r}")
     return derived[what]
 
 
