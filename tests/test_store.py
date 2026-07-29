@@ -246,3 +246,48 @@ def test_route_delete(store):
 
 def test_route_rows_missing_returns_none(store):
     assert store.route_rows(1, "нет") is None
+
+
+def test_terrain_roundtrip(store):
+    store.terrain_put("k1", [100, 200, 300])
+    assert store.terrain_get("k1") == [100, 200, 300]
+
+
+def test_terrain_missing_returns_none(store):
+    assert store.terrain_get("нет") is None
+
+
+def test_terrain_put_overwrites(store):
+    store.terrain_put("k1", [1])
+    store.terrain_put("k1", [2, 3])
+    assert store.terrain_get("k1") == [2, 3]
+
+
+def test_adhoc_roundtrip_and_name_format(store):
+    name = store.adhoc_put(42.089329, 45.401151, 686)
+    assert name == "42.0893, 45.4012"
+    got = store.adhoc_get(name)
+    assert got["name"] == name and got["elevation_m"] == 686
+    assert got["aspect"] is None and got["aspect_deg"] is None
+    assert got["aliases"] == []
+
+
+def test_adhoc_survives_new_connection(store):
+    """Раньше ad-hoc точки жили в памяти процесса и умирали при рестарте."""
+    name = store.adhoc_put(1.0, 2.0, 300)
+    assert store.adhoc_get(name) is not None
+
+
+def test_adhoc_missing_returns_none(store):
+    assert store.adhoc_get("42.0000, 45.0000") is None
+
+
+def test_purge_adhoc_removes_old_keeps_fresh(store):
+    fresh = store.adhoc_put(1.0, 2.0, 300)
+    old = store.adhoc_put(3.0, 4.0, 400)
+    with store.connect() as conn:
+        conn.execute("UPDATE adhoc_points SET created_at = ? WHERE name = ?",
+                     ("2020-01-01T00:00:00+00:00", old))
+    assert store.purge_adhoc(older_than_days=30) == 1
+    assert store.adhoc_get(old) is None
+    assert store.adhoc_get(fresh) is not None

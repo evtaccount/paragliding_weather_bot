@@ -334,3 +334,68 @@ def route_delete(user_id: int, name: str) -> bool:
         cur = conn.execute("DELETE FROM routes WHERE user_id = ? AND name = ?",
                            (user_id, name))
         return cur.rowcount > 0
+
+
+# ------------------------------------------------- рельеф и точки по координатам
+# Рельеф не меняется никогда, но стоит отдельного запроса к Elevation API.
+# До переезда в БД он жил в словаре процесса и терялся при каждом рестарте.
+
+
+def terrain_get(grid_key: str) -> list | None:
+    with connect() as conn:
+        row = conn.execute("SELECT elevations FROM terrain WHERE grid_key = ?",
+                           (grid_key,)).fetchone()
+    if row is None:
+        return None
+    try:
+        return json.loads(row["elevations"])
+    except ValueError:
+        return None
+
+
+def terrain_put(grid_key: str, elevations: list) -> None:
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO terrain (grid_key, elevations, fetched_at) VALUES (?,?,?)"
+            " ON CONFLICT(grid_key) DO UPDATE SET"
+            " elevations = excluded.elevations, fetched_at = excluded.fetched_at",
+            (grid_key, json.dumps(elevations), _now()))
+
+
+def adhoc_name(lat: float, lon: float) -> str:
+    """Имя точки по координатам. Оно же ключ: координаты уникальны глобально,
+    поэтому таблица общая, а не по пользователям."""
+    return f"{lat:.4f}, {lon:.4f}"
+
+
+def adhoc_put(lat: float, lon: float, elevation_m: int) -> str:
+    name = adhoc_name(lat, lon)
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO adhoc_points (name, lat, lon, elevation_m, created_at)"
+            " VALUES (?,?,?,?,?) ON CONFLICT(name) DO UPDATE SET"
+            " elevation_m = excluded.elevation_m, created_at = excluded.created_at",
+            (name, lat, lon, elevation_m, _now()))
+    return name
+
+
+def adhoc_get(name: str) -> dict | None:
+    """Точка в форме словаря старта. Экспозиция неизвестна, поэтому вердикт по
+    направлению ветра для неё пропускается — так же, как было в памяти."""
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM adhoc_points WHERE name = ?",
+                           (name,)).fetchone()
+    if row is None:
+        return None
+    return {"name": row["name"], "aliases": [], "lat": row["lat"], "lon": row["lon"],
+            "elevation_m": row["elevation_m"], "aspect": None, "aspect_deg": None,
+            "slope_deg": None, "route_top_m": None, "notes": "", "added_by": None}
+
+
+def purge_adhoc(older_than_days: int = 30) -> int:
+    """Убрать старые точки по координатам. Возвращает число удалённых."""
+    cutoff = (dt.datetime.now(dt.timezone.utc)
+              - dt.timedelta(days=older_than_days)).isoformat(timespec="seconds")
+    with connect() as conn:
+        cur = conn.execute("DELETE FROM adhoc_points WHERE created_at < ?", (cutoff,))
+        return cur.rowcount
