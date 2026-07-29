@@ -399,3 +399,113 @@ def purge_adhoc(older_than_days: int = 30) -> int:
     with connect() as conn:
         cur = conn.execute("DELETE FROM adhoc_points WHERE created_at < ?", (cutoff,))
         return cur.rowcount
+
+
+# ------------------------------------------------------------------ миграция
+# Разовый перенос с JSON-файлов. Файлы не удаляются, а переименовываются в
+# *.migrated: откат — вернуть имена и откатить образ.
+
+def _read_json(path: str):
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _mark_migrated(path: str) -> None:
+    os.replace(path, path + ".migrated")
+
+
+def migrate_from_json(data_dir: str, allowed_user_ids) -> dict:
+    """Перенести sites/routes/settings/model из JSON в БД.
+
+    allowed_user_ids — кому раздать бывшие общими маршруты. В открытом режиме
+    (список пуст) раздавать некому: маршруты пропускаются, файл остаётся, и
+    миграцию можно повторить, когда список появится.
+    """
+    report = {"sites": 0, "routes": 0, "users": 0, "skipped": []}
+
+    sites_path = os.path.join(data_dir, "sites.json")
+    if os.path.exists(sites_path):
+        try:
+            raw = _read_json(sites_path)
+            for s in raw.get("sites", []):
+                try:
+                    add_site(s)
+                    report["sites"] += 1
+                except ValueError:
+                    pass          # уже перенесён — повторный запуск не дублирует
+            _mark_migrated(sites_path)
+        except (OSError, ValueError, AttributeError):
+            report["skipped"].append("sites.json")
+
+    routes_path = os.path.join(data_dir, "routes.json")
+    if os.path.exists(routes_path):
+        if not allowed_user_ids:
+            report["skipped"].append("routes.json")
+        else:
+            try:
+                raw = _read_json(routes_path)
+                for name, entry in (raw or {}).items():
+                    pts = (entry or {}).get("points")
+                    if not isinstance(pts, list):
+                        continue
+                    for uid in allowed_user_ids:
+                        route_save(uid, name, pts)
+                        report["routes"] += 1
+                _mark_migrated(routes_path)
+            except (OSError, ValueError, AttributeError):
+                report["skipped"].append("routes.json")
+
+    defaults = {}
+    settings_path = os.path.join(data_dir, "settings.json")
+    if os.path.exists(settings_path):
+        try:
+            raw = _read_json(settings_path)
+            if isinstance(raw, dict):
+                for k in ("avg_route_speed_kmh", "wind_correction_enabled"):
+                    if k in raw:
+                        defaults[k] = raw[k]
+            _mark_migrated(settings_path)
+        except (OSError, ValueError):
+            report["skipped"].append("settings.json")
+
+    model_path = os.path.join(data_dir, "model.json")
+    if os.path.exists(model_path):
+        try:
+            raw = _read_json(model_path)
+            if isinstance(raw, dict) and raw.get("model"):
+                defaults["model_key"] = raw["model"]
+            _mark_migrated(model_path)
+        except (OSError, ValueError):
+            report["skipped"].append("model.json")
+
+    if defaults:
+        for uid in allowed_user_ids:
+            for column, value in defaults.items():
+                if column == "wind_correction_enabled":
+                    value = 1 if value else 0
+                _set_pref(uid, column, value)
+            report["users"] += 1
+
+    return report
+
+
+def bootstrap(data_dir: str, allowed_user_ids, packaged_sites: str) -> dict:
+    """Полная подготовка хранилища на старте: схема, миграция, засев.
+
+    Засев из упакованного sites.json срабатывает только на пустой библиотеке —
+    иначе удалённый старт возвращался бы после каждого рестарта.
+    """
+    init()
+    report = migrate_from_json(data_dir, allowed_user_ids)
+    if not load_sites() and os.path.exists(packaged_sites):
+        try:
+            for s in _read_json(packaged_sites).get("sites", []):
+                try:
+                    add_site(s)
+                    report["sites"] += 1
+                except ValueError:
+                    pass
+        except (OSError, ValueError, AttributeError):
+            report["skipped"].append(os.path.basename(packaged_sites))
+    purge_adhoc()
+    return report
