@@ -71,3 +71,58 @@ def test_cached_dates_model_is_mandatory_and_keyword_only():
     assert p.kind is inspect.Parameter.KEYWORD_ONLY, "cached_dates: model не keyword-only"
     with pytest.raises(TypeError):
         forecast.cached_dates("Гудаури", "1d")
+
+
+# ---------------------------------------------------------------- fix round 2
+#
+# Раунд 1 проверял только сигнатуру (`p.default is empty`) — она не видит
+# фолбэк, вернувшийся в ТЕЛЕ функции. Ре-ревью это показал: подставил обратно
+# `model or engine.DEFAULT_MODEL_KEY` в `return` у `_resolve` и отдельно в
+# тело `_ensure_route_weather`, сигнатуры не трогал — весь набор остался
+# зелёным (801 passed) оба раза. Тесты ниже реально вызывают функции с
+# `model=None` (мандаторный keyword-only параметр это по-прежнему разрешает)
+# и проверяют, что значение доходит до URL-строителя НЕПОДМЕНЁННЫМ.
+
+
+def test_resolve_propagates_none_instead_of_substituting_default():
+    """Если бы _resolve подставляла DEFAULT_MODEL_KEY, вызов с model=None и
+    вызов с model="auto" схлопнулись бы в один и тот же ключ кэша — один
+    пилот получил бы прогноз, посчитанный для другого."""
+    _site, _date, key = forecast._resolve("Гудаури", "1d", "2026-07-29", model=None)
+    assert key[3] is None
+
+
+async def test_fetch_path_propagates_none_instead_of_substituting_default(monkeypatch):
+    """_ensure → _fetch_build → engine.build_url. engine.model_id(None) кидает
+    KeyError ДО любого сетевого запроса; если бы _fetch_build подменяла
+    model=None на DEFAULT_MODEL_KEY, build_url собрал бы валидный URL под
+    best_match и тест ничего бы не заметил. _fetch_main/_fetch_ceiling
+    подмоканы на AssertionError — если фолбэк всё же вернётся, тест обязан
+    упасть сразу, а не зависнуть на настоящем HTTP-запросе."""
+    async def boom(*a, **k):
+        raise AssertionError("сетевой запрос не должен был случиться раньше KeyError")
+
+    monkeypatch.setattr(forecast, "_fetch_main", boom)
+    monkeypatch.setattr(forecast, "_fetch_ceiling", boom)
+    site = {"name": "Тест", "lat": 42.0, "lon": 44.0, "elevation_m": 1500,
+            "aspect": "Ю", "aspect_deg": 180.0, "notes": ""}
+    with pytest.raises(KeyError):
+        await forecast._ensure(site, "1d", "2026-07-29",
+                               ("Тест", "1d", "2026-07-29", None), model=None)
+
+
+async def test_ensure_route_weather_propagates_none_instead_of_substituting_default(monkeypatch):
+    """Тот же трюк для маршрута: engine.route_weather_url(model=None) кидает
+    KeyError раньше сети — если бы _ensure_route_weather подменяла None на
+    DEFAULT_MODEL_KEY, запрос ушёл бы под best_match незаметно."""
+    from route import Sample
+
+    async def boom(*a, **k):
+        raise AssertionError("сетевой запрос не должен был случиться раньше KeyError")
+
+    monkeypatch.setattr(forecast, "_fetch_route_weather", boom)
+    monkeypatch.setattr(forecast, "_fetch_ceiling", boom)
+    forecast._rcache.clear()
+    with pytest.raises(KeyError):
+        await forecast._ensure_route_weather([Sample(km=0.0, lat=42.0, lon=44.0)],
+                                             "2026-07-29", model=None)

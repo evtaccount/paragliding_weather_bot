@@ -211,8 +211,8 @@ async def cb_message(cb: CallbackQuery) -> Message | None:
 _WD = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
 
 
-def _day_picker_kb(site: str, rng: str, model: str | None = None,
-                   effective: str | None = None) -> InlineKeyboardMarkup | None:
+def _day_picker_kb(site: str, rng: str, model: str | None = None, *,
+                   effective) -> InlineKeyboardMarkup | None:
     """Buttons for each day of an overview period → detailed 1-day forecast.
 
     Dates come from the cached overview facts (site-local, straight from the
@@ -353,7 +353,7 @@ async def send_forecast(message: Message, site: str, rng: str, date: str | None 
     if kb_rows:
         await message.answer("Ещё:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows))
     if rng != "1d":  # overview → let the user drill into a single day
-        kb = _day_picker_kb(site, rng, model, eff)
+        kb = _day_picker_kb(site, rng, model, effective=eff)
         if kb is not None:
             await message.answer("📅 Подробно по дню:", reply_markup=kb)
     mkb = _model_switch_keyboard(site, rng, date, eff)  # let the user re-run in another model
