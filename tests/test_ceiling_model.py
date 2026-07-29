@@ -88,18 +88,16 @@ async def test_route_weather_splices_ceiling_from_gfs(monkeypatch):
 
     monkeypatch.setattr(forecast, "_fetch_route_weather", fake_weather)
     monkeypatch.setattr(forecast, "_fetch_ceiling", fake_ceiling)
-    monkeypatch.setattr(engine, "get_model_key", lambda: "ecmwf")
     forecast._rcache.clear()
 
     samples = [Sample(km=0.0, lat=42.0, lon=44.0)]
-    bodies = await forecast._ensure_route_weather(samples, "2026-07-29")
+    bodies = await forecast._ensure_route_weather(samples, "2026-07-29", "ecmwf")
 
     assert bodies[0]["hourly"]["boundary_layer_height"][0] == 1400.0
     assert any("models=gfs_seamless" in u for u in calls)
 
 
 async def test_route_weather_skips_side_request_when_gfs_selected(monkeypatch):
-    import engine
     from route import Sample
 
     async def fake_weather(url):
@@ -110,24 +108,24 @@ async def test_route_weather_skips_side_request_when_gfs_selected(monkeypatch):
 
     monkeypatch.setattr(forecast, "_fetch_route_weather", fake_weather)
     monkeypatch.setattr(forecast, "_fetch_ceiling", fail_ceiling)
-    monkeypatch.setattr(engine, "get_model_key", lambda: "gfs")
     forecast._rcache.clear()
 
-    await forecast._ensure_route_weather([Sample(km=0.0, lat=42.0, lon=44.0)], "2026-07-29")
+    await forecast._ensure_route_weather([Sample(km=0.0, lat=42.0, lon=44.0)],
+                                         "2026-07-29", "gfs")
 
 
 # ---------------------------------------------------------------- разовая модель
 
 
 def test_cache_key_separates_models():
-    """Разовый рендер не должен вытеснять запись глобальной модели и наоборот."""
-    import engine
-    engine.set_model_key("auto")
-    _s, _d, glob = forecast._resolve("Гудаури", "1d", "2026-07-29")
+    """Разовый рендер не должен вытеснять запись постоянной модели и наоборот."""
+    import store
+    from conftest import TEST_USER_ID
+    _s, _d, base = forecast._resolve("Гудаури", "1d", "2026-07-29")
     _s, _d, once = forecast._resolve("Гудаури", "1d", "2026-07-29", model="ecmwf")
-    assert glob != once
-    assert glob[3] == "auto" and once[3] == "ecmwf"
-    assert engine.get_model_key() == "auto"  # _resolve ничего не пишет
+    assert base != once
+    assert base[3] == "auto" and once[3] == "ecmwf"
+    assert store.prefs(TEST_USER_ID).model_key == "auto"  # _resolve ничего не пишет
 
 
 async def test_get_forecast_passes_model_down(monkeypatch):

@@ -115,9 +115,9 @@ async def test_past_date_rejected(api):
 
 
 async def test_arrival_past_midnight_is_truncated_and_reported(api):
-    import settings
-    settings.set_speed(10.0)                       # 40 км от 23:00 уходят за полночь
-    p = await forecast.get_route(PTS, "Тест", DATE, departure_h=23.0)
+    import store
+    slow = store.Prefs(avg_route_speed_kmh=10.0)   # 40 км от 23:00 уходят за полночь
+    p = await forecast.get_route(PTS, "Тест", DATE, departure_h=23.0, cfg=slow)
     assert any("сутк" in n.lower() for n in p["notes"])
     assert p["points"][-1]["eta"] is None
     assert p["points"][-1]["weather"] == {}        # погода за границей не считается

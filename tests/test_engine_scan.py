@@ -24,7 +24,7 @@ import forecast
 
 def test_scan_week_filters_flyable_and_reports_empty(monkeypatch):
     # Two saved sites; site A has one flyable day, site B has none.
-    monkeypatch.setattr(forecast.engine, "load_sites", lambda: [
+    monkeypatch.setattr(forecast.store, "load_sites", lambda: [
         {"name": "A", "aspect_deg": 180.0}, {"name": "B", "aspect_deg": 180.0},
     ])
     rows_by_site = {
@@ -56,7 +56,7 @@ def test_scan_week_filters_flyable_and_reports_empty(monkeypatch):
 
 
 def test_scan_week_records_failed_fetch(monkeypatch):
-    monkeypatch.setattr(forecast.engine, "load_sites", lambda: [{"name": "X", "aspect_deg": None}])
+    monkeypatch.setattr(forecast.store, "load_sites", lambda: [{"name": "X", "aspect_deg": None}])
 
     async def boom(site, rng, date, key):
         raise RuntimeError("open-meteo down")

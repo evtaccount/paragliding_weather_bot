@@ -9,8 +9,9 @@ import pytest
 
 import engine
 import forecast
+import store
 import bot as botmod
-from conftest import write_sites, DEFAULT_SITES
+from conftest import TEST_USER_ID, write_sites, DEFAULT_SITES
 from tg import (buttons, callback_update, cb_answers, dice_update, kb_for,
                 keyboards, location_update, markup_edits, media_groups, photos,
                 text_update, texts)
@@ -51,7 +52,7 @@ async def test_unknown_text_and_nontext_get_catchall(feed, session):
 async def test_add_oneshot_ok(feed, session, elevation):
     await feed(text_update("/add Тест 42.5 44.5 Ю"))
     assert any("✅ Старт добавлен: Тест" in t for t in texts(session))
-    assert engine.find_site("Тест")["aspect_deg"] == 180
+    assert store.find_site("Тест")["aspect_deg"] == 180
 
 
 async def test_add_oneshot_bad_coords(feed, session):
@@ -97,7 +98,7 @@ async def test_add_interactive_happy_path_decimal_comma(feed, session, elevation
     assert "Заметка" in texts(session)[-1]
     await feed(text_update("-"))
     assert any("✅ Старт добавлен: Новый" in t for t in texts(session))
-    site = engine.find_site("Новый")
+    site = store.find_site("Новый")
     assert site["lat"] == 42.47 and site["lon"] == 44.48 and site["notes"] == ""
 
 
@@ -108,7 +109,7 @@ async def test_add_interactive_location_pin_and_notes(feed, session, elevation):
     await feed(text_update("Пин"))
     await feed(text_update("180"))
     await feed(text_update("юг, лучше утром"))
-    site = engine.find_site("Пин")
+    site = store.find_site("Пин")
     assert site["lat"] == 41.0 and site["notes"] == "юг, лучше утром"
 
 
@@ -166,7 +167,7 @@ async def test_removesite_branches(feed, session):
     assert "не найден" in texts(session)[-1]
     await feed(text_update("/removesite Лалискури"))
     assert "удалён" in texts(session)[-1]
-    assert [s["name"] for s in engine.load_sites()] == ["Гудаури"]
+    assert [s["name"] for s in store.load_sites()] == ["Гудаури"]
 
 
 # ---------------------------------------------------------------- forecast commands
@@ -325,7 +326,7 @@ async def test_unexpected_error_reaches_user(feed, session, monkeypatch):
 
 async def test_existing_long_name_drops_buttons_but_sends_card(feed, session, fc_calls):
     long_name = "Д" * 30  # 60 байт UTF-8 — callback_data не влезает
-    write_sites(DEFAULT_SITES["sites"] + [
+    write_sites(DEFAULT_SITES + [
         {"name": long_name, "aliases": [], "lat": 41.0, "lon": 43.0,
          "elevation_m": 100, "aspect": "Ю", "aspect_deg": 180.0, "notes": ""}])
     await feed(text_update(f"/week {long_name}"))
@@ -381,10 +382,18 @@ async def test_malformed_callback_is_acked_silently(feed, session, an_calls):
     assert len(cb_answers(session)) == 1
 
 
-async def test_adhoc_point_after_restart_gets_clear_message(feed, session):
-    # _adhoc пуст (как после рестарта) — get_analysis НЕ патчим: _resolve падает до сети
+async def test_adhoc_point_survives_a_restart(feed, session, an_calls):
+    """Точка по координатам лежит в хранилище, а не в памяти процесса, поэтому
+    кнопка под старым сообщением работает и после рестарта бота."""
+    forecast.register_adhoc(42.47, 44.48, 1234)
     await feed(callback_update("llm|42.4700, 44.4800|week|"))
-    assert any("перезапускался" in t for t in texts(session))
+    assert an_calls == [("42.4700, 44.4800", "week", None, False, None)]
+
+
+async def test_an_unknown_point_says_the_site_is_not_found(feed, session):
+    # get_analysis НЕ патчим: _resolve падает до сети
+    await feed(callback_update("llm|42.4700, 44.4800|week|"))
+    assert any("не найден" in t for t in texts(session))
 
 
 # ---------------------------------------------------------------- day picker callbacks
@@ -434,7 +443,7 @@ async def test_adhoc_flow_text_coords(feed, session, fc_calls, elevation):
     assert "Пришли координаты" in texts(session)[-1]
     await feed(text_update("41,1234 43,9876"))  # decimal commas
     assert fc_calls == [("41.1234, 43.9876", "week", None, None)]
-    assert forecast._adhoc["41.1234, 43.9876"]["elevation_m"] == 1234
+    assert store.adhoc_get("41.1234, 43.9876")["elevation_m"] == 1234
 
 
 async def test_adhoc_flow_location_pin(feed, session, fc_calls, elevation):
@@ -560,13 +569,13 @@ async def test_model_no_arg_shows_picker_buttons(feed, session):
 
 async def test_model_button_sets_and_confirms(feed, session):
     await feed(callback_update("md|gfs"))
-    assert engine.get_model_key() == "gfs"
+    assert store.prefs(TEST_USER_ID).model_key == "gfs"
     assert any(a.text and "GFS" in a.text for a in cb_answers(session))  # answered
 
 
 async def test_model_button_unknown_key_alerts(feed, session):
     await feed(callback_update("md|bogus"))
-    assert engine.get_model_key() == "auto"  # unchanged
+    assert store.prefs(TEST_USER_ID).model_key == "auto"  # unchanged
     alert = cb_answers(session)[-1]
     assert "Неизвестная" in alert.text and alert.show_alert
 
@@ -585,18 +594,18 @@ async def test_overview_model_switch_has_empty_date(feed, session, fc_calls):
     assert [b.callback_data for b in buttons(kb)][0] == "mf|auto|Гудаури|week|"
 
 
-async def test_model_switch_button_does_not_change_global_model(feed, session, fc_calls):
-    """Кнопка под прогнозом — разовый выбор. Глобально модель меняет только
+async def test_model_switch_button_does_not_change_the_permanent_model(feed, session, fc_calls):
+    """Кнопка под прогнозом — разовый выбор. Постоянную модель меняет только
     /model: иначе один взгляд на альтернативную модель молча переопределял бы
     все последующие прогнозы, включая автоматические."""
-    engine.set_model_key("auto")
+    store.set_model(TEST_USER_ID, "auto")
     await feed(callback_update(f"mf|gfs|Гудаури|1d|{TODAY}"))
-    assert engine.get_model_key() == "auto"                 # глобальная не тронута
+    assert store.prefs(TEST_USER_ID).model_key == "auto"    # постоянная не тронута
     assert fc_calls == [("Гудаури", "1d", TODAY, "gfs")]    # пересчёт в выбранной
 
 
-async def test_model_switch_marks_the_one_off_model_and_names_the_global(feed, session, fc_calls):
-    engine.set_model_key("auto")
+async def test_model_switch_marks_the_one_off_model_and_names_the_permanent(feed, session, fc_calls):
+    store.set_model(TEST_USER_ID, "auto")
     await feed(callback_update(f"mf|ecmwf|Гудаури|1d|{TODAY}"))
     caption = [t for t in texts(session) if t.startswith("🌐")][-1]
     assert "ECMWF" in caption and "разово" in caption
@@ -616,7 +625,7 @@ async def test_model_switch_unknown_key_alerts_and_does_not_render(feed, session
 async def test_model_switch_persists(feed, session):
     await feed(text_update("/model gfs"))
     assert any("GFS" in t for t in texts(session))
-    assert engine.get_model_key() == "gfs"
+    assert store.prefs(TEST_USER_ID).model_key == "gfs"
 
 
 async def test_model_invalid_key_lists_options(feed, session):
@@ -624,7 +633,7 @@ async def test_model_invalid_key_lists_options(feed, session):
     out = texts(session)[-1]
     assert "plasma" not in engine.MODELS
     assert "ecmwf" in out and "gfs" in out  # error lists valid keys
-    assert engine.get_model_key() == "auto"  # unchanged
+    assert store.prefs(TEST_USER_ID).model_key == "auto"  # unchanged
 
 
 # ---------------------------------------------------------------- analysis HTML formatting
@@ -690,7 +699,7 @@ async def test_day_picker_carries_the_one_off_model(feed, session, fc_calls):
     assert fc_calls == [("Гудаури", "1d", TODAY, "gfs")]
 
 
-async def test_unknown_model_code_falls_back_to_global(feed, session, an_calls):
+async def test_unknown_model_code_falls_back_to_the_permanent_model(feed, session, an_calls):
     """Устаревшая кнопка из старого сообщения не должна ронять обработчик."""
     await feed(callback_update(f"llm|Гудаури|1d|{TODAY}|z"))
     assert an_calls == [("Гудаури", "1d", TODAY, False, None)]
@@ -698,7 +707,7 @@ async def test_unknown_model_code_falls_back_to_global(feed, session, an_calls):
 
 def test_every_model_button_fits_the_callback_limit():
     """Код модели съедает 2 байта из 64. Проверяем на реальных именах стартов."""
-    for site in [s["name"] for s in engine.load_sites()]:
+    for site in [s["name"] for s in store.load_sites()]:
         for code in engine.MODEL_CODES.values():
             for data in (f"llm|{site}|2weeks|2026-07-29|{code}",
                          f"deep|{site}|2weeks|2026-07-29|{code}",

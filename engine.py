@@ -17,23 +17,16 @@ Usage:
   python3 engine.py report --site Laliskuri --range 1d --date 2026-07-29 \
                            --json forecast.json --out /tmp/pgfc
 """
-import argparse, json, os, shutil, sys, math, datetime as dt
+import argparse, json, os, sys, math, datetime as dt
 from urllib.parse import quote
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)  # so `import criteria` / `from charts import ...` work from any cwd
 
 import criteria
-# The packaged default (baked into the image). SITES may be redirected via
-# SITES_FILE to a writable location (a mounted data volume) so /add and
-# /removesite can persist as a non-root container user.
-DEFAULT_SITES = os.path.join(HERE, "sites.json")
-SITES = os.environ.get("SITES_FILE") or DEFAULT_SITES
-
-# Meteo model — a global setting persisted next to sites.json (writable volume in
-# the container). Requesting a variable a model lacks is not an error: open-meteo
-# returns it as a null series (handled by the degradation in report_1day).
-MODEL_FILE = os.environ.get("MODEL_FILE") or os.path.join(os.path.dirname(SITES) or ".", "model.json")
+# Старты, маршруты и настройки живут в store.py — engine остался расчётами и
+# рендерингом и в хранилище не ходит. Запрос переменной, которой у модели нет,
+# ошибкой не считается: open-meteo отдаёт её пустой серией (деградация в report_1day).
 MODELS = {  # key → (UI label, open-meteo id)
     "auto":  ("Auto (best_match)", "best_match"),
     "ecmwf": ("ECMWF",             "ecmwf_ifs025"),
@@ -77,32 +70,6 @@ def model_label(key):
     return MODELS[key][0]
 
 
-def get_model_key():
-    """Current global model key; DEFAULT_MODEL_KEY when unset/invalid/corrupt."""
-    try:
-        with open(MODEL_FILE, encoding="utf-8") as f:
-            key = json.load(f).get("model")
-        return key if key in MODELS else DEFAULT_MODEL_KEY
-    except (OSError, ValueError):
-        return DEFAULT_MODEL_KEY
-
-
-def set_model_key(key):
-    """Persist the chosen model. Raises ValueError on an unknown key."""
-    if key not in MODELS:
-        raise ValueError(f"неизвестная модель: {key}. Доступно: {', '.join(MODELS)}")
-    with open(MODEL_FILE, "w", encoding="utf-8") as f:
-        json.dump({"model": key}, f, ensure_ascii=False)
-
-
-def ensure_sites_file():
-    """Seed SITES from the packaged default on first run (e.g. an empty volume)."""
-    if os.path.abspath(SITES) == os.path.abspath(DEFAULT_SITES):
-        return
-    if not os.path.exists(SITES):
-        os.makedirs(os.path.dirname(SITES) or ".", exist_ok=True)
-        shutil.copy(DEFAULT_SITES, SITES)
-
 # Пороги живут в criteria.py — здесь только псевдонимы для читаемости.
 # Собственных чисел у engine больше нет: раньше девять констант отсюда
 # дублировались литералами в charts и пересказывались текстом в промпте.
@@ -132,18 +99,7 @@ def wind_from_avg(dirs, speeds):
         return dirs[len(dirs) // 2]
     return math.degrees(math.atan2(su, sv)) % 360
 
-# ---------------------------------------------------------------- sites
-def load_sites():
-    with open(SITES, encoding="utf-8") as f:
-        return json.load(f)["sites"]
-
-def find_site(name):
-    key = name.strip().lower()
-    for s in load_sites():
-        if s["name"].lower() == key or key in [a.lower() for a in s.get("aliases", [])]:
-            return s
-    raise SystemExit(f"Сайт не найден: {name}. Есть: " + ", ".join(s["name"] for s in load_sites()))
-
+# ------------------------------------------------------------ разбор ввода
 _COMPASS = {"С": 0, "N": 0, "СВ": 45, "NE": 45, "В": 90, "E": 90, "ЮВ": 135, "SE": 135,
             "Ю": 180, "S": 180, "ЮЗ": 225, "SW": 225, "З": 270, "W": 270, "СЗ": 315, "NW": 315}
 
@@ -159,34 +115,6 @@ def parse_aspect(s: str) -> float:
     if 0 <= d < 360:
         return d
     raise ValueError("градусы экспозиции: 0–359")
-
-def _load_raw():
-    with open(SITES, encoding="utf-8") as f:
-        return json.load(f)
-
-def add_site(site: dict):
-    """Append a site to sites.json (raises if the name collides with a name OR an
-    alias — find_site matches aliases too, an alias-shadowed site would be unreachable)."""
-    data = _load_raw()
-    key = site["name"].lower()
-    for s in data["sites"]:
-        if key == s["name"].lower():
-            raise ValueError(f"старт «{site['name']}» уже есть")
-        if key in [a.lower() for a in s.get("aliases", [])]:
-            raise ValueError(f"имя «{site['name']}» уже занято как псевдоним старта «{s['name']}»")
-    data["sites"].append(site)
-    with open(SITES, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-
-def remove_site(name: str):
-    """Delete a site by name (raises if not found)."""
-    data = _load_raw()
-    kept = [s for s in data["sites"] if s["name"].lower() != name.strip().lower()]
-    if len(kept) == len(data["sites"]):
-        raise ValueError(f"старт «{name}» не найден")
-    data["sites"] = kept
-    with open(SITES, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
 
 # ---------------------------------------------------------------- URL
 H_1D = ("temperature_2m,wind_speed_10m,wind_gusts_10m,wind_direction_10m,cloud_cover_low,"
@@ -216,9 +144,9 @@ D_OV = ("sunrise,sunset,weather_code,temperature_2m_max,temperature_2m_min,wind_
         "sunshine_duration,shortwave_radiation_sum")
 
 def build_url(site, rng, date=None, model=None):
-    """`model` — разовый выбор для одного запроса; None означает глобальную настройку."""
+    """`model` — модель для этого запроса; None означает модель по умолчанию."""
     base = (f"https://api.open-meteo.com/v1/forecast?latitude={site['lat']}&longitude={site['lon']}"
-            f"&wind_speed_unit=ms&timezone=auto&models={model_id(model or get_model_key())}")
+            f"&wind_speed_unit=ms&timezone=auto&models={model_id(model or DEFAULT_MODEL_KEY)}")
     if rng == "1d":
         if not date:
             raise SystemExit("для --range 1d нужен --date YYYY-MM-DD")
@@ -237,7 +165,7 @@ def route_weather_url(coords, date, tz, model=None):
     lons = ",".join(f"{lon:.4f}" for _, lon in coords)
     return (f"https://api.open-meteo.com/v1/forecast?latitude={lats}&longitude={lons}"
             f"&wind_speed_unit=ms&timezone={quote(tz)}"
-            f"&models={model_id(model or get_model_key())}"
+            f"&models={model_id(model or DEFAULT_MODEL_KEY)}"
             f"&hourly={H_1D}&daily={D_1D}&start_date={date}&end_date={date}")
 
 def ceiling_url(site, rng, date=None):
@@ -403,7 +331,7 @@ def _model_note(data):
     оговорки читатель (и LLM) припишет число выбранной модели, у которой его нет.
     Штампы кладёт слой forecast; их отсутствие означает прямой вызов мимо него.
     """
-    key = data.get("_model_key") or get_model_key()
+    key = data.get("_model_key") or DEFAULT_MODEL_KEY
     label = model_label(key)
     ceiling = data.get("_ceiling_model")
     if ceiling and ceiling != key:
@@ -1128,7 +1056,11 @@ def main():
             p.add_argument("--json", required=True)
             p.add_argument("--out", required=True)
     a = ap.parse_args()
-    site = find_site(a.site)
+    import store
+    site = store.find_site(a.site)
+    if site is None:
+        raise SystemExit(f"Старт не найден: {a.site}. Есть: "
+                         + ", ".join(s["name"] for s in store.load_sites()))
     if a.cmd == "url":
         print(build_url(site, a.range, a.date)); return
     with open(a.json, encoding="utf-8") as f:

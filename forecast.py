@@ -12,11 +12,11 @@ Gemini only reasons over real data; it never invents numbers.
 import asyncio
 import copy
 import datetime as dt
+import json
 import logging
 import math
 import os
 import pathlib
-import re
 import shutil
 import tempfile
 import time
@@ -25,9 +25,9 @@ import httpx
 
 import analysis
 import criteria
-import engine  # find_site, build_url, report_*, facts_*, RANGE_DAYS
+import engine  # build_url, report_*, facts_*, RANGE_DAYS
 import route
-import settings
+import store
 
 log = logging.getLogger("pgbot.forecast")
 
@@ -36,12 +36,7 @@ _TTL = float(os.environ.get("CACHE_TTL_MIN", "15")) * 60
 # analysis cache: key -> (expires, text)   — so a repeat button press is free
 _fcache: dict[tuple, tuple] = {}
 _acache: dict[tuple, tuple[float, str]] = {}
-# ad-hoc points from "по координатам" — resolved by name like saved sites, but not
-# persisted; aspect is unknown (None), so the direction verdict is skipped.
-_adhoc: dict[str, dict] = {}
-# route caches: рельеф не меняется и живёт без срока, погода — по общему TTL
-_terrain_cache: dict[tuple, list] = {}
-_TERRAIN_CACHE_MAX = 64
+# route cache: рельеф лежит в хранилище и переживает рестарт, погода — по общему TTL
 _rcache: dict[tuple, tuple] = {}
 ELEVATION_CHUNK = 100          # документированный потолок Elevation API
 DEPARTURE_STEP_H = 0.5         # шаг скана времени вылета
@@ -53,7 +48,7 @@ class ForecastError(Exception):
 
 
 def known_sites():
-    return [s["name"] for s in engine.load_sites()]
+    return [s["name"] for s in store.load_sites()]
 
 
 # День попадает в /scan, если его категория ≥ «удовлетворительная». Раньше фильтр
@@ -68,10 +63,10 @@ async def scan_week() -> dict:
     "failed": [name...]}. Each row is an engine.overview_rows() dict. Fetches run
     concurrently and reuse (warm) the same week cache /week uses.
     """
-    sites = engine.load_sites()
+    sites = store.load_sites()
 
     async def fetch(site):
-        key = (site["name"], "week", None, engine.get_model_key())
+        key = (site["name"], "week", None, engine.DEFAULT_MODEL_KEY)
         _c, _p, _f, _fb, rows, _grid = await _ensure(site, "week", None, key)
         return rows
 
@@ -156,32 +151,20 @@ async def _detail_context(site: dict, date: str, model: str | None = None) -> di
     return ctx
 
 
-_ADHOC_NAME_RE = re.compile(r"^-?\d+\.\d{4}, -?\d+\.\d{4}$")  # register_adhoc's name format
-
-
 def register_adhoc(lat: float, lon: float, elev: int) -> str:
-    """Register an ad-hoc point (unknown aspect) and return its lookup name."""
-    name = f"{lat:.4f}, {lon:.4f}"
-    _adhoc[name] = {"name": name, "aliases": [], "lat": lat, "lon": lon,
-                    "elevation_m": elev, "aspect": None, "aspect_deg": None, "notes": ""}
-    return name
+    """Зарегистрировать точку по координатам и вернуть её имя для поиска."""
+    return store.adhoc_put(lat, lon, elev)
 
 
 def _resolve(site_name: str, rng: str, date: str | None, model: str | None = None):
     if rng not in engine.RANGE_DAYS:
         raise ForecastError(f"Неизвестный диапазон: {rng}")
-    try:
-        site = engine.find_site(site_name)
-    except SystemExit:
-        site = _adhoc.get(site_name)
-        if site is None:
-            if _ADHOC_NAME_RE.match(site_name):  # ad-hoc points don't survive a restart
-                raise ForecastError("Эта точка по координатам больше не в памяти (бот перезапускался). "
-                                    "Запроси её заново через «📍 По координатам».")
-            raise ForecastError(f"Старт не найден: {site_name}. /sites — список.")
+    site = store.find_site(site_name) or store.adhoc_get(site_name)
+    if site is None:
+        raise ForecastError(f"Старт не найден: {site_name}. /sites — список.")
     if rng == "1d" and not date:
         date = dt.date.today().isoformat()
-    return site, date, (site["name"], rng, date, model or engine.get_model_key())
+    return site, date, (site["name"], rng, date, model or engine.DEFAULT_MODEL_KEY)
 
 
 def cached_dates(site_name: str, rng: str, date: str | None = None,
@@ -283,7 +266,7 @@ async def _fetch_build(site: dict, rng: str, date: str | None, model: str | None
     Потолок всегда берётся из GFS отдельным узким запросом — конкурентно с
     основным, поэтому задержка не растёт. Когда выбрана сама GFS, запроса нет.
     """
-    key = model or engine.get_model_key()
+    key = model or engine.DEFAULT_MODEL_KEY
     main = _fetch_main(engine.build_url(site, rng, date, model=key))
     if key == engine.CEILING_MODEL_KEY:
         data, gfs = await main, None
@@ -390,15 +373,18 @@ async def _fetch_route_weather(url):
 
 
 async def _ensure_terrain(grid):
+    """Высоты сетки: из хранилища, иначе запрос к Elevation API.
+
+    Рельеф не меняется, поэтому срока годности у записи нет.
+    """
     coords = [(lat, lon) for _km, lat, lon in grid]
-    key = _route_key(coords)
-    if key in _terrain_cache:
-        return _terrain_cache[key]
+    key = json.dumps(_route_key(coords), separators=(",", ":"))
+    cached = store.terrain_get(key)
+    if cached is not None:
+        return cached
     elev = await fetch_terrain(coords)
     if elev is not None:
-        if len(_terrain_cache) >= _TERRAIN_CACHE_MAX:
-            _terrain_cache.pop(next(iter(_terrain_cache)))
-        _terrain_cache[key] = elev
+        store.terrain_put(key, elev)
     return elev
 
 
@@ -410,7 +396,7 @@ async def _ensure_route_weather(samples, date, model=None):
     с основным.
     """
     coords = [(s.lat, s.lon) for s in samples]
-    mkey = model or engine.get_model_key()
+    mkey = model or engine.DEFAULT_MODEL_KEY
     key = (_route_key(coords), date, mkey)
     now = time.monotonic()
     _purge(now)
@@ -603,7 +589,7 @@ def _evaluate(samples, bodies, date, departure_h, cfg):
     """
     work = copy.deepcopy(samples)
     notes = []
-    speed = cfg["avg_route_speed_kmh"]
+    speed = cfg.avg_route_speed_kmh
 
     def wind_for_segment(i, hour):
         pairs = []
@@ -618,7 +604,7 @@ def _evaluate(samples, bodies, date, departure_h, cfg):
                 sum(p[1] for p in pairs) / len(pairs))
 
     route.fixed_eta(work, speed, departure_h)
-    if cfg["wind_correction_enabled"]:
+    if cfg.wind_correction_enabled:
         route.march(work, speed, wind_for_segment, departure_h)
     else:
         for s in work:
@@ -664,10 +650,14 @@ def _departure_options(samples):
     return [w["start_hour"] + k * DEPARTURE_STEP_H for k in range(max(0, n))]
 
 
-async def get_route(points, name, date, departure_h=None):
-    """Профиль маршрута: два запроса, кэш, маршрутные величины, скоринг и вердикт."""
+async def get_route(points, name, date, departure_h=None, cfg=None):
+    """Профиль маршрута: два запроса, кэш, маршрутные величины, скоринг и вердикт.
+
+    `cfg` — личные настройки пилота (store.Prefs). None означает дефолты: у
+    расчёта маршрута нет доступа к user_id, его знает только вызывающий.
+    """
     _check_date(date)
-    cfg = settings.get()
+    cfg = cfg or store.DEFAULT_PREFS
     samples, step = route.resample(points)
     total_km = samples[-1].km
     notes = []
@@ -681,7 +671,7 @@ async def get_route(points, name, date, departure_h=None):
     route.attach_terrain(samples, grid, elev, step_km=step)
 
     bodies = await _ensure_route_weather(samples, date)
-    sites = {s["name"]: s for s in engine.load_sites()}
+    sites = {s["name"]: s for s in store.load_sites()}
 
     # Окно термической активности и совпадение с сохранённым стартом не зависят
     # от времени вылета — считаются один раз, до перебора вариантов.
@@ -725,10 +715,10 @@ async def get_route(points, name, date, departure_h=None):
             "name": name, "date": date, "departure": _hhmm(departure_h),
             "timezone": os.environ.get("TZ") or "Asia/Tbilisi",
             "total_km": round(total_km, 1),
-            "avg_route_speed_kmh": cfg["avg_route_speed_kmh"],
-            "wind_correction_enabled": cfg["wind_correction_enabled"],
+            "avg_route_speed_kmh": cfg.avg_route_speed_kmh,
+            "wind_correction_enabled": cfg.wind_correction_enabled,
             "sample_step_km": round(step, 1), "sample_count": len(work),
-            "model": engine.model_label(engine.get_model_key()),
+            "model": engine.model_label(engine.DEFAULT_MODEL_KEY),
         },
         "points": [_point_dict(s) for s in work],
         # Мелкая сетка рельефа отдаётся ЦЕЛИКОМ и со своим километражом.
@@ -756,10 +746,10 @@ async def get_route(points, name, date, departure_h=None):
     }
 
 
-async def get_route_section(points, name, date, departure_h=None) -> bytes:
+async def get_route_section(points, name, date, departure_h=None, cfg=None) -> bytes:
     """PNG-разрез вдоль маршрута. Профиль пересчитывается поверх тёплого кэша,
     поэтому кнопка не стоит ни одного нового запроса к open-meteo."""
-    profile = await get_route(points, name, date, departure_h)
+    profile = await get_route(points, name, date, departure_h, cfg)
     out = tempfile.mkdtemp(prefix="pgrs_")
     try:
         import charts
@@ -811,7 +801,7 @@ def route_facts(profile):
     }
 
 
-async def get_route_analysis(points, name, date, departure_h=None) -> str:
+async def get_route_analysis(points, name, date, departure_h=None, cfg=None) -> str:
     """ИИ-разбор маршрута. ForecastError, если разбора не будет.
 
     Карточка маршрута к этому моменту уже показана и остаётся в силе — поэтому
@@ -819,7 +809,7 @@ async def get_route_analysis(points, name, date, departure_h=None) -> str:
     """
     if not analysis.available():
         raise ForecastError("ИИ-разбор недоступен: не задан GEMINI_API_KEY.")
-    profile = await get_route(points, name, date, departure_h)
+    profile = await get_route(points, name, date, departure_h, cfg)
     facts = route_facts(profile)
     t0 = time.monotonic()
     try:

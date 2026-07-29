@@ -5,7 +5,8 @@ import pytest
 
 import forecast
 import route
-import routes
+import store
+from conftest import TEST_USER_ID
 from fixtures import om_route
 from tg import buttons, callback_update, keyboards, text_update, texts
 
@@ -13,6 +14,15 @@ BODY = ("/route\n"
         "42.4776, 44.4787, старт\n"
         "42.1176, 44.4787, финиш")
 PTS = [route.Point(42.4776, 44.4787, "старт"), route.Point(42.1176, 44.4787, "финиш")]
+ROWS = [[p.lat, p.lon, p.name] for p in PTS]
+
+
+def save(name, rows=None):
+    store.route_save(TEST_USER_ID, name, rows or ROWS)
+
+
+def saved():
+    return store.routes_list(TEST_USER_ID)
 
 
 def _n(url):
@@ -39,32 +49,32 @@ async def test_saveroute_without_a_computed_route_says_so(feed, session):
 async def test_saveroute_stores_the_last_computed_route(feed, session, api):
     await feed(text_update(BODY))
     await feed(text_update("/saveroute Гудаури"))
-    assert routes.get("Гудаури") is not None
+    assert store.route_rows(TEST_USER_ID, "Гудаури") is not None
     assert "Гудаури" in texts(session)[-1]
 
 
 async def test_saveroute_needs_a_name(feed, session, api):
     await feed(text_update(BODY))
     await feed(text_update("/saveroute"))
-    assert routes.list_all() == {}
+    assert saved() == {}
 
 
 async def test_saveroute_refuses_a_name_that_breaks_buttons(feed, session, api):
     await feed(text_update(BODY))
     await feed(text_update("/saveroute " + "я" * 40))
-    assert routes.list_all() == {}
+    assert saved() == {}
     assert "❌" in texts(session)[-1]
 
 
 async def test_routes_lists_what_is_saved(feed, session):
-    routes.save("Гудаури", PTS)
+    save("Гудаури")
     await feed(text_update("/routes"))
     out = texts(session)[-1]
     assert "Гудаури" in out and "км" in out
 
 
 async def test_routes_offers_a_button_per_route(feed, session):
-    routes.save("Гудаури", PTS)
+    save("Гудаури")
     await feed(text_update("/routes"))
     assert [b.callback_data for b in buttons(keyboards(session)[-1])] == ["rr|Гудаури"]
 
@@ -75,31 +85,31 @@ async def test_routes_when_empty_points_at_saveroute(feed, session):
 
 
 async def test_the_button_computes_the_saved_route(feed, session, api):
-    routes.save("Гудаури", PTS)
+    save("Гудаури")
     await feed(callback_update("rr|Гудаури"))
     assert any("Гудаури" in t for t in texts(session))
 
 
 async def test_delroute_removes_it(feed, session):
-    routes.save("Гудаури", PTS)
+    save("Гудаури")
     await feed(text_update("/delroute Гудаури"))
-    assert routes.list_all() == {}
+    assert saved() == {}
 
 
 async def test_delroute_of_an_unknown_name_lists_the_known_ones(feed, session):
-    routes.save("Гудаури", PTS)
+    save("Гудаури")
     await feed(text_update("/delroute Казбеги"))
     assert "Гудаури" in texts(session)[-1]
 
 
 async def test_route_by_saved_name(feed, session, api):
-    routes.save("Гудаури", PTS)
+    save("Гудаури")
     await feed(text_update("/route Гудаури"))
     assert any("🗺" in t for t in texts(session))
 
 
 async def test_route_by_saved_name_with_date_and_time(feed, session, api):
-    routes.save("Гудаури", PTS)
+    save("Гудаури")
     await feed(text_update("/route Гудаури завтра 11:30"))
     card = next(t for t in texts(session) if "🗺" in t)
     assert "11:30" in card
@@ -108,7 +118,7 @@ async def test_route_by_saved_name_with_date_and_time(feed, session, api):
 
 async def test_a_multi_word_name_still_resolves(feed, session, api):
     """Имя из нескольких слов — обычное дело: «Гудаури Пасанаури»."""
-    routes.save("Гудаури Пасанаури", PTS)
+    save("Гудаури Пасанаури")
     await feed(text_update("/route Гудаури Пасанаури завтра"))
     assert any("🗺" in t for t in texts(session))
 
