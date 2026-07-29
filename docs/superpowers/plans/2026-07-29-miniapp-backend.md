@@ -11,8 +11,8 @@
 ## Global Constraints
 
 - Спека: `docs/superpowers/specs/2026-07-28-miniapp-architecture-design.md`. При расхождении плана со спекой — права спека.
-- **Поведение бота не меняется** ни в одной задаче, кроме перехода на личные настройки. Пользователь не должен заметить рефакторинг.
-- Все 606 существующих тестов остаются зелёными к концу каждой задачи. Список тех, что правятся осознанно, — в задачах 7, 9, 11, 12.
+- **Поведение бота меняется только там, где это записано в спеке:** личные настройки вместо общих (задача 7), исчезает сообщение о потерянной точке по координатам (задача 7, точки теперь переживают рестарт), час пика для Gemini становится тем же, что в карточке (задача 10). Всё остальное пользователь заметить не должен.
+- **Тесты зелёные к концу каждой задачи, без исключений.** Красных коммитов в ветке не бывает: харнесс, домен и бот читают хранилище и переключаются одним коммитом в задаче 7. Тесты, которые правятся осознанно, перечислены в задачах 7, 9, 10.
 - Сообщения пользователю — по-русски, как в существующем коде. Комментарии в коде — по-русски там, где объясняют «почему»; докстринги — как в соседних функциях модуля.
 - Имена полей `avg_route_speed_kmh`, `wind_correction_enabled`, `model_key` фиксированы: совпадают с ключами нынешнего `settings.DEFAULTS`, чтобы переименования не было.
 - `store.py` не импортирует ни один модуль проекта. Это проверяется тестом в задаче 1.
@@ -1267,7 +1267,16 @@ git commit -m "feat(store): миграция с JSON-файлов и засев 
 
 ---
 
-### Task 7: `conftest.py` переезжает на SQLite
+### Task 7: переезд на `store` — харнесс, домен и бот одним коммитом
+
+Промежуточного зелёного состояния между харнессом, доменом и ботом не
+существует: все трое читают хранилище и должны переключиться разом. Поэтому
+одна задача и один коммит — красных коммитов в ветке не будет.
+
+Задача крупная, но правка механическая: перенос вызовов на уже готовый и
+оттестированный `store` из задач 1–6.
+
+#### 7a. Харнесс тестов
 
 **Files:**
 - Modify: `tests/conftest.py:1-60`, `tests/conftest.py:75-110`
@@ -1280,8 +1289,8 @@ git commit -m "feat(store): миграция с JSON-файлов и засев 
   - фикстура `fresh_state` пересоздаёт БД перед каждым тестом
   - `tests/test_settings.py` удаляется, его 7 тестов уже покрыты `test_store.py`
 
-На этом шаге ломается всё, что зовёт `engine.load_sites`. Это ожидаемо: задача 8
-чинит домен, задача 9 — бота. Плановая точка временной красноты.
+На этом подшаге ломается всё, что зовёт `engine.load_sites` — чинят подшаги 7b и
+7c. Коммита между ними нет, поэтому в ветку красное состояние не попадает.
 
 - [ ] **Step 1: Переписать `conftest.py`**
 
@@ -1359,27 +1368,8 @@ git rm tests/test_settings.py
 Все 7 его проверок уже есть в `tests/test_store.py` (дефолты, диапазон скорости,
 сохранение соседнего поля, порча файла → дефолты заменена на «нет строки → дефолты»).
 
-- [ ] **Step 3: Запустить и зафиксировать ожидаемую красноту**
 
-Run: `.venv/bin/python -m pytest -q 2>&1 | tail -20`
-Expected: FAIL. Ошибки вида `AttributeError: module 'engine' has no attribute 'load_sites'`
-или `FileNotFoundError` по `sites.json`. Тесты `test_store*.py` — зелёные.
-
-Записать число упавших: оно должно дойти до нуля к концу задачи 9.
-
-- [ ] **Step 4: Коммит**
-
-```bash
-git add tests/conftest.py
-git rm tests/test_settings.py
-git commit -m "test: харнесс переезжает на временную SQLite
-
-Домен и бот чинятся в задачах 8-9 — до них набор красный намеренно."
-```
-
----
-
-### Task 8: `engine.py` перестаёт трогать диск
+#### 7b. `engine` и `forecast` перестают трогать диск
 
 **Files:**
 - Modify: `engine.py:29-37`, `engine.py:80-107`, `engine.py:136-206`, `engine.py:1131`
@@ -1480,28 +1470,8 @@ async def _ensure_terrain(grid):
 Добавить `import json` в шапку `forecast.py`, если его там нет. Удалить
 `_terrain_cache` и `_TERRAIN_CACHE_MAX`, убрать `_terrain_cache` из `_purge`.
 
-- [ ] **Step 3: Прогнать доменные тесты**
 
-Run: `.venv/bin/python -m pytest tests/test_store.py tests/test_store_migration.py tests/test_engine_sun.py tests/test_criteria_golden.py tests/test_route_geometry.py -q`
-Expected: PASS
-
-Run: `.venv/bin/python -m pytest -q 2>&1 | tail -5`
-Expected: FAIL, но упавших заметно меньше, чем после задачи 7. Остаются те, что
-завязаны на `bot.py` — их чинит задача 9.
-
-- [ ] **Step 4: Коммит**
-
-```bash
-git add engine.py forecast.py
-git commit -m "refactor(engine): хранилище уезжает в store
-
-engine остаётся расчётами и рендерингом. Точки по координатам и рельеф
-переезжают в БД и перестают теряться при рестарте."
-```
-
----
-
-### Task 9: `bot.py` — личные настройки; `settings.py` и `routes.py` удаляются
+#### 7c. `bot` переходит на личные настройки
 
 **Files:**
 - Modify: `bot.py:296-302`, `bot.py:340-350`, `bot.py:395-420`, `bot.py:473-533`, `bot.py:534-560`, `bot.py:656-670`, `bot.py:960-1045`, `bot.py:1163-1178`
@@ -1622,11 +1592,33 @@ git commit -m "feat(bot): личные настройки, маршруты и �
 settings.py и routes.py удалены — их роль забрал store."
 ```
 
+#### 7d. Проверка и коммит
+
+- [ ] **Финальный шаг: прогнать весь набор и закоммитить**
+
+Run: `.venv/bin/python -m pytest -q 2>&1 | tail -5`
+Expected: PASS. Ожидаемое число — 606 минус 7 удалённых из `test_settings.py`,
+плюс новые из `test_store.py` (27), `test_store_migration.py` (11) и трёх
+добавленных в `test_routes_store.py` — итого около 640.
+
+Красным этот прогон быть не может: если он красный, задача не закончена.
+
+```bash
+git add store.py engine.py forecast.py route.py bot.py tests/
+git rm settings.py routes.py
+git commit -m "feat: хранилище переезжает в store, настройки становятся личными
+
+conftest, engine, forecast и bot читают хранилище и переключаются одним
+коммитом — промежуточного зелёного состояния между ними нет.
+
+settings.py и routes.py удалены: их роль забрал store."
+```
+
 ---
 
 # ФАЗА 2 — явные параметры и ленивый кэш
 
-### Task 10: `model` становится обязательным в `engine`
+### Task 8: `model` становится обязательным в `engine`
 
 **Files:**
 - Modify: `engine.py:218-268`, `engine.py:399-417`, `engine.py:1131-1136`
@@ -1722,7 +1714,7 @@ git commit -m "refactor(engine): model — обязательный параме
 
 ---
 
-### Task 11: `model` и `cfg` становятся обязательными в `forecast`
+### Task 9: `model` и `cfg` становятся обязательными в `forecast`
 
 **Files:**
 - Modify: `forecast.py:64-92`, `forecast.py:170-186`, `forecast.py:280-355`, `forecast.py:405-436`, `forecast.py:667-760`, `forecast.py:838-880`
@@ -1760,7 +1752,7 @@ REQUIRED = [
     (forecast.get_route,     "model"),
     (forecast.get_route,     "cfg"),
 ]
-# get_facts появляется в задаче 13 и дописывается в этот список там же.
+# get_facts появляется в задаче 11 и дописывается в этот список там же.
 
 
 def test_required_params_have_no_default():
@@ -1891,7 +1883,7 @@ git commit -m "refactor(forecast): model и cfg — обязательные п�
 
 ---
 
-### Task 12: единый источник чисел — час пика и оговорки
+### Task 10: единый источник чисел — час пика и оговорки
 
 **Files:**
 - Modify: `engine.py:767-860` (`report_1day`), `engine.py:991-1060` (`facts_1day`)
@@ -1912,6 +1904,7 @@ git commit -m "refactor(forecast): model и cfg — обязательные п�
 
 Дописать в `tests/test_engine_facts.py`. Файл уже импортирует билдеры строкой
 `from fixtures import om_1day as _full_1d, site as _site` — используем их же.
+В шапку файла добавить `import re`.
 
 ```python
 def test_peak_hour_matches_between_card_and_facts(tmp_path):
@@ -1930,7 +1923,12 @@ def test_peak_hour_matches_between_card_and_facts(tmp_path):
     data = _full_1d(temperature_2m=temps)
     facts = engine.facts_1day(data, _site())
     _text, _pngs, card = engine.report_1day(data, _site(), str(tmp_path))
-    assert f"пик {facts['peak_hour']:02d}" in card
+    # Карточка печатает не сам час, а диапазон вокруг него: «пик 12–14».
+    # Сравнивать со строкой «пик 13» нельзя — peak_lo это peak_hour - 1.
+    m = re.search(r"пик (\d{2})–(\d{2})", card)
+    assert m, f"в карточке нет строки пика:\n{card}"
+    lo, hi = int(m.group(1)), int(m.group(2))
+    assert lo <= facts["peak_hour"] <= hi
 
 
 def test_facts_carry_direction_verdict():
@@ -2051,7 +2049,7 @@ git commit -m "fix(engine): карточка и факты берут час п�
 
 ---
 
-### Task 13: кэш хранит сырьё, производные считаются лениво
+### Task 11: кэш хранит сырьё, производные считаются лениво
 
 **Files:**
 - Modify: `forecast.py:16-30` (объявления кэшей), `forecast.py:280-355`
@@ -2318,7 +2316,7 @@ git commit -m "perf(forecast): кэш держит сырьё, производ�
 
 ---
 
-### Task 14: Dockerfile, compose и README
+### Task 12: Dockerfile, compose и README
 
 **Files:**
 - Modify: `Dockerfile`, `docker-compose.yml`, `.env.example`, `README.md`
@@ -2403,15 +2401,15 @@ git commit -m "chore: деплой переходит на DB_PATH вместо 
 | Рельеф и ad-hoc переживают рестарт, уборка 30 дней | 5 |
 | Миграция, раздача по `ALLOWED_USER_IDS`, `*.migrated` | 6 |
 | Пустой `ALLOWED_USER_IDS` — маршруты не переносятся | 6 |
-| `conftest` на временной SQLite | 7 |
-| `engine` без хранилища | 8 |
-| `settings.py` и `routes.py` удаляются | 9 |
-| `model` обязателен в URL-функциях | 10 |
-| `model` и `cfg` обязательны в `forecast` | 11 |
-| 8 мест `cfg["…"]` → `cfg.…` | 11 |
-| Единый источник чисел, час пика | 12 |
-| Ленивый кэш, `get_facts` | 13 |
-| `DB_PATH` вместо четырёх переменных | 14 |
+| `conftest` на временной SQLite | 7a |
+| `engine` без хранилища | 7b |
+| `settings.py` и `routes.py` удаляются | 7c |
+| `model` обязателен в URL-функциях | 8 |
+| `model` и `cfg` обязательны в `forecast` | 9 |
+| 8 мест `cfg["…"]` → `cfg.…` | 9 |
+| Единый источник чисел, час пика | 10 |
+| Ленивый кэш, `get_facts` | 11 |
+| `DB_PATH` вместо четырёх переменных | 12 |
 
 Не покрыто планом намеренно: `store.py` не импортирует модули проекта — проверяется
 тестом в задаче 1, отдельной задачи не требует.
