@@ -88,7 +88,7 @@ def test_add_and_load_roundtrip(store):
     assert s["name"] == "Гудаури"
     assert s["lat"] == 42.47 and s["elevation_m"] == 2200
     assert s["aspect_deg"] == 180.0
-    assert sorted(s["aliases"]) == ["гуда", "gudauri"]
+    assert sorted(s["aliases"]) == ["gudauri", "гуда"]
     assert s["added_by"] == 777
 
 
