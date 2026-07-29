@@ -74,3 +74,74 @@ def test_store_imports_no_project_modules():
             imported.add(node.module.split(".")[0])
     assert not (imported & {"engine", "route", "forecast", "bot", "charts",
                             "criteria", "analysis", "guards"})
+
+
+SITE = {"name": "Гудаури", "aliases": ["gudauri", "гуда"], "lat": 42.47, "lon": 44.48,
+        "elevation_m": 2200, "aspect": "Ю", "aspect_deg": 180.0, "notes": "гребень"}
+
+
+def test_add_and_load_roundtrip(store):
+    store.add_site(SITE, added_by=777)
+    got = store.load_sites()
+    assert len(got) == 1
+    s = got[0]
+    assert s["name"] == "Гудаури"
+    assert s["lat"] == 42.47 and s["elevation_m"] == 2200
+    assert s["aspect_deg"] == 180.0
+    assert sorted(s["aliases"]) == ["гуда", "gudauri"]
+    assert s["added_by"] == 777
+
+
+def test_load_sites_sorted_by_name(store):
+    store.add_site({**SITE, "name": "Яремче", "aliases": []})
+    store.add_site({**SITE, "name": "Алушта", "aliases": []})
+    assert [s["name"] for s in store.load_sites()] == ["Алушта", "Яремче"]
+
+
+def test_find_site_by_name_case_insensitive(store):
+    store.add_site(SITE)
+    assert store.find_site("гудаури")["name"] == "Гудаури"
+    assert store.find_site("  ГУДАУРИ  ")["name"] == "Гудаури"
+
+
+def test_find_site_by_alias(store):
+    store.add_site(SITE)
+    assert store.find_site("GUDAURI")["name"] == "Гудаури"
+
+
+def test_find_site_missing_returns_none(store):
+    """Раньше engine.find_site бросал SystemExit, и forecast._resolve его ловил.
+    Отсутствие записи — обычный результат поиска, а не завершение программы."""
+    assert store.find_site("нет такого") is None
+
+
+def test_add_site_rejects_duplicate_name(store):
+    store.add_site(SITE)
+    with pytest.raises(ValueError, match="уже есть"):
+        store.add_site({**SITE, "aliases": []})
+
+
+def test_add_site_rejects_name_taken_by_alias(store):
+    store.add_site(SITE)
+    with pytest.raises(ValueError, match="псевдоним"):
+        store.add_site({**SITE, "name": "Гуда", "aliases": []})
+
+
+def test_add_site_optional_fields_default_to_none(store):
+    store.add_site({"name": "X", "lat": 1.0, "lon": 2.0, "elevation_m": 300})
+    s = store.find_site("X")
+    assert s["aspect_deg"] is None and s["route_top_m"] is None
+    assert s["slope_deg"] is None and s["aliases"] == []
+
+
+def test_remove_site_drops_aliases(store):
+    store.add_site(SITE)
+    store.remove_site("гудаури")
+    assert store.load_sites() == []
+    with store.connect() as conn:
+        assert conn.execute("SELECT count(*) c FROM site_aliases").fetchone()["c"] == 0
+
+
+def test_remove_site_missing_raises(store):
+    with pytest.raises(ValueError, match="не найден"):
+        store.remove_site("Нет")
