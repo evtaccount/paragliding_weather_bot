@@ -43,7 +43,7 @@ def test_scan_week_filters_flyable_and_reports_empty(monkeypatch):
         ],
     }
 
-    async def fake_ensure(site, rng, date, key):
+    async def fake_ensure(site, rng, date, key, model=None):
         return "card", [], {}, "fb", rows_by_site[site["name"]], None
 
     monkeypatch.setattr(forecast, "_ensure", fake_ensure)
@@ -58,7 +58,7 @@ def test_scan_week_filters_flyable_and_reports_empty(monkeypatch):
 def test_scan_week_records_failed_fetch(monkeypatch):
     monkeypatch.setattr(forecast.store, "load_sites", lambda: [{"name": "X", "aspect_deg": None}])
 
-    async def boom(site, rng, date, key):
+    async def boom(site, rng, date, key, model=None):
         raise RuntimeError("open-meteo down")
 
     monkeypatch.setattr(forecast, "_ensure", boom)

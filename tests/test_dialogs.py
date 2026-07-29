@@ -174,7 +174,7 @@ async def test_removesite_branches(feed, session):
 
 async def test_today_with_site_sends_card_and_two_analysis_buttons(feed, session, fc_calls):
     await feed(text_update("/today Гудаури"))
-    assert fc_calls == [("Гудаури", "1d", TODAY, None)]
+    assert fc_calls == [("Гудаури", "1d", TODAY, "auto")]
     assert f"CARD Гудаури 1d {TODAY}" in texts(session)
     kb = kb_for(session, "Ещё:")
     datas = [b.callback_data for b in buttons(kb)]
@@ -205,7 +205,7 @@ async def test_no_pngs_no_photo_messages(feed, session, monkeypatch):
 
 async def test_overview_has_single_analysis_button_and_day_picker(feed, session, fc_calls):
     await feed(text_update("/week Гудаури"))
-    assert fc_calls == [("Гудаури", "week", None, None)]
+    assert fc_calls == [("Гудаури", "week", None, "auto")]
     kb = kb_for(session, "Ещё:")
     assert [b.callback_data for b in buttons(kb)] == ["llm|Гудаури|week|"]  # без deep
     picker = kb_for(session, "📅 Подробно по дню:")
@@ -231,7 +231,7 @@ def fake_scan(monkeypatch):
     """Patch forecast.scan_week; set holder['result'] to the structure to return."""
     holder = {}
 
-    async def fake():
+    async def fake(model=None):
         return holder["result"]
 
     monkeypatch.setattr(forecast, "scan_week", fake)
@@ -261,7 +261,7 @@ async def test_scan_lists_sites_with_day_buttons(feed, session, fake_scan):
 async def test_scan_button_routes_to_pick_day(feed, session, fc_calls):
     # a scan day button IS a pd| callback → the existing cb_pick_day handler
     await feed(callback_update(f"pd|Гудаури|{TODAY}"))
-    assert fc_calls == [("Гудаури", "1d", TODAY, None)]
+    assert fc_calls == [("Гудаури", "1d", TODAY, "auto")]
 
 
 async def test_scan_no_flyable_days_message(feed, session, fake_scan):
@@ -290,9 +290,9 @@ async def test_scan_reports_failed_sites(feed, session, fake_scan):
 
 async def test_forecast_command_parsing(feed, session, fc_calls):
     await feed(text_update("/forecast Гудаури 3дня"))
-    assert fc_calls[-1] == ("Гудаури", "3d", None, None)
+    assert fc_calls[-1] == ("Гудаури", "3d", None, "auto")
     await feed(text_update("/forecast Гудаури"))  # без диапазона → week
-    assert fc_calls[-1] == ("Гудаури", "week", None, None)
+    assert fc_calls[-1] == ("Гудаури", "week", None, "auto")
     await feed(text_update("/forecast week"))  # только диапазон → выбор точки
     await feed(text_update("/forecast"))
     assert texts(session).count("Для какой точки?") == 2
@@ -344,20 +344,20 @@ async def test_existing_long_name_drops_buttons_but_sends_card(feed, session, fc
 
 async def test_llm_button_runs_fast_analysis(feed, session, an_calls):
     await feed(callback_update(f"llm|Гудаури|1d|{TODAY}"))
-    assert an_calls == [("Гудаури", "1d", TODAY, False, None)]
+    assert an_calls == [("Гудаури", "1d", TODAY, False, "auto")]
     assert "АНАЛИЗ ГОТОВ" in texts(session)
     assert any(a.text and "Считаю разбор" in a.text for a in cb_answers(session))
 
 
 async def test_deep_button_runs_deep_analysis(feed, session, an_calls):
     await feed(callback_update(f"deep|Гудаури|1d|{TODAY}"))
-    assert an_calls == [("Гудаури", "1d", TODAY, True, None)]
+    assert an_calls == [("Гудаури", "1d", TODAY, True, "auto")]
     assert any(a.text and "глубокий" in a.text for a in cb_answers(session))
 
 
 async def test_overview_llm_button_passes_no_date(feed, session, an_calls):
     await feed(callback_update("llm|Гудаури|week|"))
-    assert an_calls == [("Гудаури", "week", None, False, None)]
+    assert an_calls == [("Гудаури", "week", None, False, "auto")]
 
 
 async def test_analysis_forecast_error_reaches_user(feed, session, monkeypatch):
@@ -387,7 +387,7 @@ async def test_adhoc_point_survives_a_restart(feed, session, an_calls):
     кнопка под старым сообщением работает и после рестарта бота."""
     forecast.register_adhoc(42.47, 44.48, 1234)
     await feed(callback_update("llm|42.4700, 44.4800|week|"))
-    assert an_calls == [("42.4700, 44.4800", "week", None, False, None)]
+    assert an_calls == [("42.4700, 44.4800", "week", None, False, "auto")]
 
 
 async def test_an_unknown_point_says_the_site_is_not_found(feed, session):
@@ -400,7 +400,7 @@ async def test_an_unknown_point_says_the_site_is_not_found(feed, session):
 
 async def test_pick_day_sends_1d_forecast(feed, session, fc_calls):
     await feed(callback_update(f"pd|Гудаури|{TODAY}"))
-    assert fc_calls == [("Гудаури", "1d", TODAY, None)]
+    assert fc_calls == [("Гудаури", "1d", TODAY, "auto")]
     assert any(a.text and "Прогноз на" in a.text for a in cb_answers(session))
 
 
@@ -415,7 +415,7 @@ async def test_pick_day_past_date_is_rejected(feed, session, fc_calls):
 async def test_pick_day_yesterday_allowed_for_timezone_slack(feed, session, fc_calls):
     yesterday = (dt.date.today() - dt.timedelta(days=1)).isoformat()
     await feed(callback_update(f"pd|Гудаури|{yesterday}"))
-    assert fc_calls == [("Гудаури", "1d", yesterday, None)]
+    assert fc_calls == [("Гудаури", "1d", yesterday, "auto")]
 
 
 async def test_pick_day_malformed_date_is_acked_silently(feed, session, fc_calls):
@@ -427,13 +427,13 @@ async def test_pick_day_malformed_date_is_acked_silently(feed, session, fc_calls
 
 async def test_pick_site_collapses_picker_and_sends_forecast(feed, session, fc_calls):
     await feed(callback_update("pk|week||Гудаури"))
-    assert fc_calls == [("Гудаури", "week", None, None)]
+    assert fc_calls == [("Гудаури", "week", None, "auto")]
     assert len(markup_edits(session)) == 1  # пикер свёрнут
 
 
 async def test_pick_site_with_date(feed, session, fc_calls):
     await feed(callback_update(f"pk|1d|{TODAY}|Лалискури"))
-    assert fc_calls == [("Лалискури", "1d", TODAY, None)]
+    assert fc_calls == [("Лалискури", "1d", TODAY, "auto")]
 
 
 # ---------------------------------------------------------------- ad-hoc coordinates flow
@@ -442,14 +442,14 @@ async def test_adhoc_flow_text_coords(feed, session, fc_calls, elevation):
     await feed(callback_update("pc|week|"))
     assert "Пришли координаты" in texts(session)[-1]
     await feed(text_update("41,1234 43,9876"))  # decimal commas
-    assert fc_calls == [("41.1234, 43.9876", "week", None, None)]
+    assert fc_calls == [("41.1234, 43.9876", "week", None, "auto")]
     assert store.adhoc_get("41.1234, 43.9876")["elevation_m"] == 1234
 
 
 async def test_adhoc_flow_location_pin(feed, session, fc_calls, elevation):
     await feed(callback_update(f"pc|1d|{TODAY}"))
     await feed(location_update(41.5, 43.5))
-    assert fc_calls == [("41.5000, 43.5000", "1d", TODAY, None)]
+    assert fc_calls == [("41.5000, 43.5000", "1d", TODAY, "auto")]
 
 
 async def test_adhoc_bad_coords_reask_then_ok(feed, session, fc_calls, elevation):
@@ -458,13 +458,13 @@ async def test_adhoc_bad_coords_reask_then_ok(feed, session, fc_calls, elevation
     assert "Не понял координаты" in texts(session)[-1]
     assert "/cancel" in texts(session)[-1]
     await feed(text_update("41.5 43.5"))
-    assert fc_calls == [("41.5000, 43.5000", "week", None, None)]
+    assert fc_calls == [("41.5000, 43.5000", "week", None, "auto")]
 
 
 async def test_adhoc_state_cleared_by_site_pick(feed, session, fc_calls):
     await feed(callback_update("pc|week|"))  # вошёл в режим координат…
     await feed(callback_update("pk|week||Гудаури"))  # …но передумал и выбрал старт
-    assert fc_calls == [("Гудаури", "week", None, None)]
+    assert fc_calls == [("Гудаури", "week", None, "auto")]
     await feed(text_update("какой-то текст"))  # состояние сброшено — не парсится как координаты
     assert texts(session)[-1] == "Не понял. Список команд: /help"
 
@@ -472,7 +472,7 @@ async def test_adhoc_state_cleared_by_site_pick(feed, session, fc_calls):
 async def test_adhoc_state_cleared_by_day_pick(feed, session, fc_calls):
     await feed(callback_update("pc|week|"))
     await feed(callback_update(f"pd|Гудаури|{TODAY}"))
-    assert fc_calls == [("Гудаури", "1d", TODAY, None)]
+    assert fc_calls == [("Гудаури", "1d", TODAY, "auto")]
     await feed(text_update("42 43"))
     assert texts(session)[-1] == "Не понял. Список команд: /help"
 
@@ -521,7 +521,7 @@ async def test_overview_has_no_wind_grid_button(feed, session, fc_calls):
 
 async def test_wind_grid_button_sends_photo(feed, session, wg_calls):
     await feed(callback_update(f"wg|Гудаури|{TODAY}"))
-    assert wg_calls == [("Гудаури", TODAY, None)]
+    assert wg_calls == [("Гудаури", TODAY, "auto")]
     assert len(photos(session)) == 1
     assert any(a.text and "высот" in a.text for a in cb_answers(session))
 
@@ -677,7 +677,38 @@ async def test_without_one_off_model_callbacks_are_unchanged(feed, session, fc_c
     assert not any(d.endswith("|e") or d.endswith("|a") for d in more)
 
 
+async def test_permanent_model_reaches_the_forecast(feed, session, fc_calls):
+    """Постоянная модель пилота должна доезжать до самого запроса, а не только
+    до галочки в кнопках: иначе /model меняет подпись и не меняет прогноз."""
+    store.set_model(TEST_USER_ID, "gfs")
+    await feed(text_update("/today Гудаури"))
+    assert fc_calls == [("Гудаури", "1d", TODAY, "gfs")]
+
+
+async def test_permanent_model_reaches_the_analysis_button(feed, session, an_calls):
+    """Кнопка под прогнозом без разового кода считает по постоянной модели ТОГО,
+    КТО НАЖАЛ: автор сообщения под кнопками — сам бот."""
+    store.set_model(TEST_USER_ID, "icon")
+    await feed(callback_update(f"llm|Гудаури|1d|{TODAY}"))
+    assert an_calls == [("Гудаури", "1d", TODAY, False, "icon")]
+
+
+async def test_permanent_model_reaches_the_wind_grid_button(feed, session, monkeypatch):
+    seen = {}
+
+    async def fake(site, date, model=None):
+        seen["model"] = model
+        return b"png"
+
+    monkeypatch.setattr(forecast, "get_wind_grid", fake)
+    store.set_model(TEST_USER_ID, "ecmwf")
+    await feed(callback_update(f"wg|Гудаури|{TODAY}"))
+    assert seen["model"] == "ecmwf"
+
+
 async def test_analysis_button_carries_the_one_off_model(feed, session, an_calls):
+    """Разовый код в кнопке перебивает постоянную модель."""
+    store.set_model(TEST_USER_ID, "icon")
     await feed(callback_update(f"llm|Гудаури|1d|{TODAY}|e"))
     assert an_calls == [("Гудаури", "1d", TODAY, False, "ecmwf")]
 
@@ -700,9 +731,11 @@ async def test_day_picker_carries_the_one_off_model(feed, session, fc_calls):
 
 
 async def test_unknown_model_code_falls_back_to_the_permanent_model(feed, session, an_calls):
-    """Устаревшая кнопка из старого сообщения не должна ронять обработчик."""
+    """Устаревшая кнопка из старого сообщения не должна ронять обработчик:
+    разового выбора нет — считаем по постоянной модели пилота."""
+    store.set_model(TEST_USER_ID, "icon")
     await feed(callback_update(f"llm|Гудаури|1d|{TODAY}|z"))
-    assert an_calls == [("Гудаури", "1d", TODAY, False, None)]
+    assert an_calls == [("Гудаури", "1d", TODAY, False, "icon")]
 
 
 def test_every_model_button_fits_the_callback_limit():

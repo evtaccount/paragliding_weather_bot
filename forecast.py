@@ -56,18 +56,22 @@ def known_sites():
 # вердикта; теперь у каждой категории свой ключ, и сравнивать строки не нужно.
 
 
-async def scan_week() -> dict:
+async def scan_week(model: str | None = None) -> dict:
     """Week overview across ALL saved sites, keeping only flyable days.
 
     Returns {"sites": [{"name", "aspect", "days": [row, ...]}], "empty": [name...],
     "failed": [name...]}. Each row is an engine.overview_rows() dict. Fetches run
     concurrently and reuse (warm) the same week cache /week uses.
+
+    `model` — модель пилота; None означает модель по умолчанию. Ключ кэша тот же,
+    что у /week, поэтому обзор и скан по одной модели греют друг друга.
     """
     sites = store.load_sites()
+    mkey = model or engine.DEFAULT_MODEL_KEY
 
     async def fetch(site):
-        key = (site["name"], "week", None, engine.DEFAULT_MODEL_KEY)
-        _c, _p, _f, _fb, rows, _grid = await _ensure(site, "week", None, key)
+        key = (site["name"], "week", None, mkey)
+        _c, _p, _f, _fb, rows, _grid = await _ensure(site, "week", None, key, mkey)
         return rows
 
     gathered = await asyncio.gather(*(fetch(s) for s in sites), return_exceptions=True)
@@ -670,7 +674,7 @@ async def get_route(points, name, date, departure_h=None, cfg=None):
         notes.append("Рельеф недоступен — рабочий диапазон не посчитан")
     route.attach_terrain(samples, grid, elev, step_km=step)
 
-    bodies = await _ensure_route_weather(samples, date)
+    bodies = await _ensure_route_weather(samples, date, cfg.model_key)
     sites = {s["name"]: s for s in store.load_sites()}
 
     # Окно термической активности и совпадение с сохранённым стартом не зависят
@@ -718,7 +722,7 @@ async def get_route(points, name, date, departure_h=None, cfg=None):
             "avg_route_speed_kmh": cfg.avg_route_speed_kmh,
             "wind_correction_enabled": cfg.wind_correction_enabled,
             "sample_step_km": round(step, 1), "sample_count": len(work),
-            "model": engine.model_label(engine.DEFAULT_MODEL_KEY),
+            "model": engine.model_label(cfg.model_key),
         },
         "points": [_point_dict(s) for s in work],
         # Мелкая сетка рельефа отдаётся ЦЕЛИКОМ и со своим километражом.

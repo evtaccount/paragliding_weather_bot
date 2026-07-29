@@ -59,6 +59,18 @@ async def test_saveroute_needs_a_name(feed, session, api):
     assert saved() == {}
 
 
+async def test_saveroute_refuses_too_many_points(feed, session):
+    """Потолок числа точек. Разборщики маршрута до кэша столько не пропустят,
+    поэтому запрос кладём в кэш напрямую — проверяем именно страховку /saveroute.
+    """
+    import bot as botmod
+    long_route = [route.Point(42.0 + i / 1000.0, 44.0) for i in range(route.MAX_POINTS + 1)]
+    botmod._remember_route(long_route, None, "2026-07-29", None)
+    await feed(text_update("/saveroute Длинный"))
+    assert "слишком много точек" in texts(session)[-1]
+    assert saved() == {}
+
+
 async def test_saveroute_refuses_a_name_that_breaks_buttons(feed, session, api):
     await feed(text_update(BODY))
     await feed(text_update("/saveroute " + "я" * 40))

@@ -248,6 +248,25 @@ def test_route_rows_missing_returns_none(store):
     assert store.route_rows(1, "нет") is None
 
 
+def test_a_corrupt_entry_is_skipped_not_crashing(store):
+    """Битая запись не должна уносить с собой весь список маршрутов пилота."""
+    store.route_save(1, "Целый", PTS)
+    with store.connect() as conn:
+        conn.execute("INSERT INTO routes (user_id, name, points, saved_at)"
+                     " VALUES (?,?,?,?)", (1, "Битый", "{это не json", "2026-07-29"))
+    assert list(store.routes_list(1)) == ["Целый"]
+    assert store.route_rows(1, "Битый") is None
+
+
+def test_a_foreign_structure_is_ignored(store):
+    """Валидный JSON, но не список точек — такую запись читать нечем."""
+    with store.connect() as conn:
+        conn.execute("INSERT INTO routes (user_id, name, points, saved_at)"
+                     " VALUES (?,?,?,?)", (1, "Чужой", '{"points": "строка"}', "2026-07-29"))
+    assert store.routes_list(1) == {}
+    assert store.route_rows(1, "Чужой") is None
+
+
 def test_terrain_roundtrip(store):
     store.terrain_put("k1", [100, 200, 300])
     assert store.terrain_get("k1") == [100, 200, 300]

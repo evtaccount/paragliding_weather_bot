@@ -211,14 +211,18 @@ async def cb_message(cb: CallbackQuery) -> Message | None:
 _WD = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
 
 
-def _day_picker_kb(site: str, rng: str, model: str | None = None) -> InlineKeyboardMarkup | None:
+def _day_picker_kb(site: str, rng: str, model: str | None = None,
+                   effective: str | None = None) -> InlineKeyboardMarkup | None:
     """Buttons for each day of an overview period → detailed 1-day forecast.
 
     Dates come from the cached overview facts (site-local, straight from the
     open-meteo response) — the server's own "today" can differ from the site's
     around midnight. Cold cache → fall back to server-local dates.
+
+    `effective` — модель, которой посчитан показанный обзор: по ней ищется запись
+    в кэше. `model` — разовый выбор пользователя, он едет в callback_data кнопок.
     """
-    dates = forecast.cached_dates(site, rng, model=model)
+    dates = forecast.cached_dates(site, rng, model=effective or model)
     if dates is None:
         today = dt.date.today()
         dates = [(today + dt.timedelta(days=i)).isoformat() for i in range(engine.RANGE_DAYS[rng])]
@@ -308,12 +312,16 @@ async def send_forecast(message: Message, site: str, rng: str, date: str | None 
     кнопкой автор — сам бот, и `message.from_user.id` там не тот, кто нажал.
     """
     prefs = prefs or store.DEFAULT_PREFS
+    # Считаем по разовому выбору, если он есть, иначе по постоянной модели пилота.
+    # В кнопки (`sfx`, подпись ряда моделей) едет по-прежнему сырой `model`:
+    # там «разово» значит «пользователь нажал», а не «чем посчитано».
+    eff = model or prefs.model_key
     if rng == "1d" and not date:
         date = dt.date.today().isoformat()
     try:
         # keeps the "typing…" status alive while forecast/analysis runs (>5 s)
         async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
-            card, pngs = await forecast.get_forecast(site, rng, date, model=model)
+            card, pngs = await forecast.get_forecast(site, rng, date, model=eff)
     except forecast.ForecastError as e:
         await message.answer(f"⚠️ {e}\n\nСписок стартов: /sites")
         return
@@ -343,10 +351,9 @@ async def send_forecast(message: Message, site: str, rng: str, date: str | None 
     if kb_rows:
         await message.answer("Ещё:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows))
     if rng != "1d":  # overview → let the user drill into a single day
-        kb = _day_picker_kb(site, rng, model)
+        kb = _day_picker_kb(site, rng, model, eff)
         if kb is not None:
             await message.answer("📅 Подробно по дню:", reply_markup=kb)
-    eff = model or prefs.model_key
     mkb = _model_switch_keyboard(site, rng, date, eff)  # let the user re-run in another model
     if mkb is not None:
         await message.answer(_model_switch_caption(model, prefs.model_key), reply_markup=mkb)
@@ -723,7 +730,7 @@ async def cmd_scan(message: Message):
         return
     try:
         async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
-            result = await forecast.scan_week()
+            result = await forecast.scan_week(store.prefs(message.from_user.id).model_key)
     except Exception as e:  # noqa: BLE001 — surface any unexpected failure to the user
         log.exception("scan failed")
         await message.answer(f"⚠️ Ошибка: {e}")
@@ -745,10 +752,11 @@ async def cb_analysis(cb: CallbackQuery):
         return
     kind, site, rng, date = parts
     deep = kind == "deep"
+    eff = model or store.prefs(cb.from_user.id).model_key
     await cb.answer("Считаю глубокий разбор…" if deep else "Считаю разбор…")
     try:
         async with ChatActionSender.typing(bot=msg.bot, chat_id=msg.chat.id):
-            text = await forecast.get_analysis(site, rng, date or None, deep=deep, model=model)
+            text = await forecast.get_analysis(site, rng, date or None, deep=deep, model=eff)
     except forecast.ForecastError as e:
         await msg.answer(f"⚠️ {e}")
         return
@@ -809,10 +817,11 @@ async def cb_wind_grid(cb: CallbackQuery):
     if day < dt.date.today() - dt.timedelta(days=1):
         await cb.answer("Эта дата уже прошла — запроси свежий прогноз.", show_alert=True)
         return
+    eff = model or store.prefs(cb.from_user.id).model_key
     await cb.answer("Считаю ветер по высотам…")
     try:
         async with ChatActionSender.typing(bot=msg.bot, chat_id=msg.chat.id):
-            png = await forecast.get_wind_grid(site, date, model=model)
+            png = await forecast.get_wind_grid(site, date, model=eff)
     except forecast.ForecastError as e:
         await msg.answer(f"⚠️ {e}")
         return
