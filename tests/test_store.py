@@ -1,4 +1,5 @@
 """Тесты хранилища. Своя временная БД на тест — conftest переезжает на неё в задаче 7."""
+import dataclasses
 import importlib
 import os
 import sqlite3
@@ -145,3 +146,55 @@ def test_remove_site_drops_aliases(store):
 def test_remove_site_missing_raises(store):
     with pytest.raises(ValueError, match="не найден"):
         store.remove_site("Нет")
+
+
+def test_prefs_defaults_for_unknown_user(store):
+    p = store.prefs(12345)
+    assert p.avg_route_speed_kmh == 25.0
+    assert p.wind_correction_enabled is True
+    assert p.model_key == "auto"
+
+
+def test_prefs_read_does_not_create_row(store):
+    store.prefs(12345)
+    with store.connect() as conn:
+        assert conn.execute("SELECT count(*) c FROM user_prefs").fetchone()["c"] == 0
+
+
+def test_set_speed_roundtrip(store):
+    store.set_speed(1, 32.0)
+    assert store.prefs(1).avg_route_speed_kmh == 32.0
+
+
+def test_set_speed_keeps_neighbours(store):
+    store.set_model(1, "gfs")
+    store.set_speed(1, 30.0)
+    p = store.prefs(1)
+    assert p.model_key == "gfs" and p.avg_route_speed_kmh == 30.0
+
+
+@pytest.mark.parametrize("bad", [9.9, 45.1, 0.0, -5.0])
+def test_set_speed_rejects_out_of_range(store, bad):
+    with pytest.raises(ValueError):
+        store.set_speed(1, bad)
+
+
+def test_set_wind_correction_roundtrip(store):
+    store.set_wind_correction(1, False)
+    assert store.prefs(1).wind_correction_enabled is False
+    store.set_wind_correction(1, True)
+    assert store.prefs(1).wind_correction_enabled is True
+
+
+def test_prefs_are_per_user(store):
+    store.set_speed(1, 30.0)
+    store.set_speed(2, 40.0)
+    assert store.prefs(1).avg_route_speed_kmh == 30.0
+    assert store.prefs(2).avg_route_speed_kmh == 40.0
+    assert store.prefs(3).avg_route_speed_kmh == 25.0
+
+
+def test_prefs_is_frozen(store):
+    p = store.prefs(1)
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        p.model_key = "gfs"

@@ -193,3 +193,73 @@ def remove_site(name: str) -> None:
         if actual_name is None:
             raise ValueError(f"старт «{name}» не найден")
         conn.execute("DELETE FROM sites WHERE name = ?", (actual_name,))
+
+
+# ------------------------------------------------------------ личные настройки
+# 25 км/ч — разумный дефолт для уверенного XC-пилота на B+. Реальный разброс:
+# 18–22 в слабый день, 25–30 в рабочий, 30–35 у сильных пилотов на коротком маршруте.
+SPEED_MIN, SPEED_MAX = 10.0, 45.0
+
+
+@dataclasses.dataclass(frozen=True)
+class Prefs:
+    """Личные настройки пользователя.
+
+    Не словарь: обращения к нему расходятся по обоим адаптерам (бот и HTTP),
+    и опечатка в имени поля должна падать сразу, а не отдавать None.
+    Имена полей совпадают с ключами старого settings.DEFAULTS.
+    """
+    avg_route_speed_kmh: float = 25.0
+    wind_correction_enabled: bool = True
+    model_key: str = "auto"
+
+
+DEFAULT_PREFS = Prefs()
+
+
+def prefs(user_id: int) -> Prefs:
+    """Настройки пользователя; дефолты, если он ещё ничего не менял.
+
+    Строку не создаёт: новый пилот не должен ничего регистрировать, чтобы
+    посмотреть прогноз.
+    """
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT avg_route_speed_kmh, wind_correction_enabled, model_key"
+            " FROM user_prefs WHERE user_id = ?", (user_id,)).fetchone()
+    if row is None:
+        return DEFAULT_PREFS
+    return Prefs(avg_route_speed_kmh=row["avg_route_speed_kmh"],
+                 wind_correction_enabled=bool(row["wind_correction_enabled"]),
+                 model_key=row["model_key"])
+
+
+def _set_pref(user_id: int, column: str, value) -> None:
+    """UPSERT одного поля. Имя колонки подставляется из литералов вызывающих
+    функций — снаружи оно не приходит."""
+    with connect() as conn:
+        conn.execute(
+            f"INSERT INTO user_prefs (user_id, {column}) VALUES (?, ?)"
+            f" ON CONFLICT(user_id) DO UPDATE SET {column} = excluded.{column}",
+            (user_id, value))
+
+
+def set_speed(user_id: int, value: float) -> None:
+    """Средняя маршрутная скорость в км/ч. ValueError вне допустимого диапазона."""
+    value = float(value)
+    if not SPEED_MIN <= value <= SPEED_MAX:
+        raise ValueError(
+            f"средняя маршрутная скорость должна быть от {SPEED_MIN:.0f} "
+            f"до {SPEED_MAX:.0f} км/ч. Это средняя по маршруту с учётом наборов "
+            "в термиках, а не скорость крыла.")
+    _set_pref(user_id, "avg_route_speed_kmh", value)
+
+
+def set_wind_correction(user_id: int, on: bool) -> None:
+    _set_pref(user_id, "wind_correction_enabled", 1 if on else 0)
+
+
+def set_model(user_id: int, key: str) -> None:
+    """Постоянная модель пользователя. Ключ валидирует вызывающий (engine.MODELS):
+    список моделей — знание домена, а не хранилища."""
+    _set_pref(user_id, "model_key", key)
