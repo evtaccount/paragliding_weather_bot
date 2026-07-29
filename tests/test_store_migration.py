@@ -111,6 +111,63 @@ def test_corrupt_file_does_not_abort_migration(store, data_dir):
     assert store.prefs(111).model_key == "icon"
 
 
+def test_malformed_site_entry_does_not_abort_migration(store, data_dir):
+    """Регрессия: null/строка/число в sites — раньше add_site(s) роняла всю
+    миграцию TypeError'ом, до model.json дело не доходило."""
+    write(os.path.join(data_dir, "sites.json"),
+          {"sites": [None, "мусор", 42,
+                     {"name": "Ок", "lat": 1.0, "lon": 2.0, "elevation_m": 100}]})
+    write(os.path.join(data_dir, "model.json"), {"model": "icon"})
+    store.init()
+    report = store.migrate_from_json(data_dir, frozenset({111}))
+    assert report["sites"] == 1
+    assert [s["name"] for s in store.load_sites()] == ["Ок"]
+    assert store.prefs(111).model_key == "icon"
+    assert os.path.exists(os.path.join(data_dir, "sites.json.migrated"))
+
+
+def test_rerun_does_not_duplicate_routes(store, data_dir):
+    write(os.path.join(data_dir, "routes.json"),
+          {"Мой": {"points": [[1.0, 2.0, None], [3.0, 4.0, None]]}})
+    store.init()
+    store.migrate_from_json(data_dir, frozenset({111}))
+    second = store.migrate_from_json(data_dir, frozenset({111}))
+    assert second["routes"] == 0
+    assert list(store.routes_list(111)) == ["Мой"]
+
+
+def test_rerun_does_not_duplicate_settings_and_model(store, data_dir):
+    write(os.path.join(data_dir, "settings.json"), {"avg_route_speed_kmh": 32.0})
+    write(os.path.join(data_dir, "model.json"), {"model": "gfs"})
+    store.init()
+    store.migrate_from_json(data_dir, frozenset({111}))
+    second = store.migrate_from_json(data_dir, frozenset({111}))
+    assert second["users"] == 0
+    assert store.prefs(111).avg_route_speed_kmh == 32.0
+    assert store.prefs(111).model_key == "gfs"
+
+
+def test_second_run_migrates_once_allowlist_configured(store, data_dir):
+    """Первый прогон в открытом режиме ничего не переносит и оставляет файлы
+    на месте; второй — после появления allowlist — переносит их успешно."""
+    write(os.path.join(data_dir, "routes.json"),
+          {"Мой": {"points": [[1.0, 2.0, None], [3.0, 4.0, None]]}})
+    write(os.path.join(data_dir, "settings.json"), {"avg_route_speed_kmh": 32.0})
+    write(os.path.join(data_dir, "model.json"), {"model": "gfs"})
+    store.init()
+
+    first = store.migrate_from_json(data_dir, frozenset())
+    assert first["routes"] == 0 and first["users"] == 0
+    assert set(first["skipped"]) == {"routes.json", "settings.json", "model.json"}
+
+    second = store.migrate_from_json(data_dir, frozenset({111}))
+    assert second["routes"] == 1
+    assert second["users"] == 1
+    assert list(store.routes_list(111)) == ["Мой"]
+    assert store.prefs(111).avg_route_speed_kmh == 32.0
+    assert store.prefs(111).model_key == "gfs"
+
+
 def test_bootstrap_seeds_from_packaged_sites_when_empty(store, data_dir, tmp_path):
     packaged = tmp_path / "packaged.json"
     write(str(packaged), SITES_JSON)

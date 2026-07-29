@@ -417,9 +417,10 @@ def _mark_migrated(path: str) -> None:
 def migrate_from_json(data_dir: str, allowed_user_ids) -> dict:
     """Перенести sites/routes/settings/model из JSON в БД.
 
-    allowed_user_ids — кому раздать бывшие общими маршруты. В открытом режиме
-    (список пуст) раздавать некому: маршруты пропускаются, файл остаётся, и
-    миграцию можно повторить, когда список появится.
+    allowed_user_ids — кому раздать бывшие общими маршруты и личные настройки.
+    В открытом режиме (список пуст) раздавать некому: routes/settings/model
+    пропускаются, файлы остаются на месте, и миграцию можно повторить, когда
+    список появится.
     """
     report = {"sites": 0, "routes": 0, "users": 0, "skipped": []}
 
@@ -428,11 +429,13 @@ def migrate_from_json(data_dir: str, allowed_user_ids) -> dict:
         try:
             raw = _read_json(sites_path)
             for s in raw.get("sites", []):
+                if not isinstance(s, dict):
+                    continue      # битая запись (null/строка/число) — не весь файл
                 try:
                     add_site(s)
                     report["sites"] += 1
-                except ValueError:
-                    pass          # уже перенесён — повторный запуск не дублирует
+                except (ValueError, TypeError, KeyError):
+                    pass          # уже перенесён или запись без нужных полей
             _mark_migrated(sites_path)
         except (OSError, ValueError, AttributeError):
             report["skipped"].append("sites.json")
@@ -458,25 +461,31 @@ def migrate_from_json(data_dir: str, allowed_user_ids) -> dict:
     defaults = {}
     settings_path = os.path.join(data_dir, "settings.json")
     if os.path.exists(settings_path):
-        try:
-            raw = _read_json(settings_path)
-            if isinstance(raw, dict):
-                for k in ("avg_route_speed_kmh", "wind_correction_enabled"):
-                    if k in raw:
-                        defaults[k] = raw[k]
-            _mark_migrated(settings_path)
-        except (OSError, ValueError):
+        if not allowed_user_ids:
             report["skipped"].append("settings.json")
+        else:
+            try:
+                raw = _read_json(settings_path)
+                if isinstance(raw, dict):
+                    for k in ("avg_route_speed_kmh", "wind_correction_enabled"):
+                        if k in raw:
+                            defaults[k] = raw[k]
+                _mark_migrated(settings_path)
+            except (OSError, ValueError):
+                report["skipped"].append("settings.json")
 
     model_path = os.path.join(data_dir, "model.json")
     if os.path.exists(model_path):
-        try:
-            raw = _read_json(model_path)
-            if isinstance(raw, dict) and raw.get("model"):
-                defaults["model_key"] = raw["model"]
-            _mark_migrated(model_path)
-        except (OSError, ValueError):
+        if not allowed_user_ids:
             report["skipped"].append("model.json")
+        else:
+            try:
+                raw = _read_json(model_path)
+                if isinstance(raw, dict) and raw.get("model"):
+                    defaults["model_key"] = raw["model"]
+                _mark_migrated(model_path)
+            except (OSError, ValueError):
+                report["skipped"].append("model.json")
 
     if defaults:
         for uid in allowed_user_ids:
@@ -500,10 +509,12 @@ def bootstrap(data_dir: str, allowed_user_ids, packaged_sites: str) -> dict:
     if not load_sites() and os.path.exists(packaged_sites):
         try:
             for s in _read_json(packaged_sites).get("sites", []):
+                if not isinstance(s, dict):
+                    continue      # битая запись — не весь засев
                 try:
                     add_site(s)
                     report["sites"] += 1
-                except ValueError:
+                except (ValueError, TypeError, KeyError):
                     pass
         except (OSError, ValueError, AttributeError):
             report["skipped"].append(os.path.basename(packaged_sites))
