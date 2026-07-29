@@ -1185,11 +1185,15 @@ def migrate_from_json(data_dir: str, allowed_user_ids) -> dict:
         try:
             raw = _read_json(sites_path)
             for s in raw.get("sites", []):
+                # не-словарь в списке — битая запись; add_site(None) уронил бы
+                # TypeError'ом всю миграцию, и остальные файлы не переехали бы
+                if not isinstance(s, dict):
+                    continue
                 try:
                     add_site(s)
                     report["sites"] += 1
-                except ValueError:
-                    pass          # уже перенесён — повторный запуск не дублирует
+                except (ValueError, TypeError, KeyError):
+                    pass          # уже перенесён или битый — одна запись, не вся миграция
             _mark_migrated(sites_path)
         except (OSError, ValueError, AttributeError):
             report["skipped"].append("sites.json")
@@ -1212,9 +1216,14 @@ def migrate_from_json(data_dir: str, allowed_user_ids) -> dict:
             except (OSError, ValueError, AttributeError):
                 report["skipped"].append("routes.json")
 
+    # settings и model раздаются тем же, кому маршруты. Пустой список — значит
+    # раздавать некому: файл НЕ переименовываем, иначе значения пропадут
+    # безвозвратно и повторить миграцию будет уже не с чего.
     defaults = {}
     settings_path = os.path.join(data_dir, "settings.json")
-    if os.path.exists(settings_path):
+    if os.path.exists(settings_path) and not allowed_user_ids:
+        report["skipped"].append("settings.json")
+    elif os.path.exists(settings_path):
         try:
             raw = _read_json(settings_path)
             if isinstance(raw, dict):
@@ -1226,7 +1235,9 @@ def migrate_from_json(data_dir: str, allowed_user_ids) -> dict:
             report["skipped"].append("settings.json")
 
     model_path = os.path.join(data_dir, "model.json")
-    if os.path.exists(model_path):
+    if os.path.exists(model_path) and not allowed_user_ids:
+        report["skipped"].append("model.json")
+    elif os.path.exists(model_path):
         try:
             raw = _read_json(model_path)
             if isinstance(raw, dict) and raw.get("model"):
@@ -1257,10 +1268,12 @@ def bootstrap(data_dir: str, allowed_user_ids, packaged_sites: str) -> dict:
     if not load_sites() and os.path.exists(packaged_sites):
         try:
             for s in _read_json(packaged_sites).get("sites", []):
+                if not isinstance(s, dict):
+                    continue
                 try:
                     add_site(s)
                     report["sites"] += 1
-                except ValueError:
+                except (ValueError, TypeError, KeyError):
                     pass
         except (OSError, ValueError, AttributeError):
             report["skipped"].append(os.path.basename(packaged_sites))
@@ -1271,7 +1284,7 @@ def bootstrap(data_dir: str, allowed_user_ids, packaged_sites: str) -> dict:
 - [ ] **Step 4: Убедиться, что тесты проходят**
 
 Run: `.venv/bin/python -m pytest tests/test_store_migration.py -q`
-Expected: PASS, 11 тестов
+Expected: PASS, 10 тестов
 
 - [ ] **Step 5: Коммит**
 
