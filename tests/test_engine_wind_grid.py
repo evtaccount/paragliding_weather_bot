@@ -73,5 +73,5 @@ def test_get_wind_grid_uses_cache_and_returns_png(monkeypatch):
         raise AssertionError("re-fetched despite warm cache")
 
     monkeypatch.setattr(forecast, "_fetch_build", boom)
-    png = asyncio.run(forecast.get_wind_grid("Гудаури", "2026-07-25"))
+    png = asyncio.run(forecast.get_wind_grid("Гудаури", "2026-07-25", model=engine.DEFAULT_MODEL_KEY))
     assert isinstance(png, (bytes, bytearray)) and len(png) > 1000

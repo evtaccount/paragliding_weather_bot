@@ -123,7 +123,7 @@ def fc_calls(monkeypatch):
     """Patch forecast.get_forecast; returns the recorded (site, rng, date, model) calls."""
     calls = []
 
-    async def fake(site, rng, date=None, model=None):
+    async def fake(site, rng, date=None, *, model):
         calls.append((site, rng, date, model))
         return f"CARD {site} {rng} {date}", [b"png"]
 
@@ -136,7 +136,7 @@ def an_calls(monkeypatch):
     """Patch forecast.get_analysis; returns the recorded (site, rng, date, deep, model) calls."""
     calls = []
 
-    async def fake(site, rng, date=None, deep=False, model=None):
+    async def fake(site, rng, date=None, deep=False, *, model):
         calls.append((site, rng, date, deep, model))
         return "АНАЛИЗ ГОТОВ"
 

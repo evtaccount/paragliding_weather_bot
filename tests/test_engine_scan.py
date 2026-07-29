@@ -47,7 +47,7 @@ def test_scan_week_filters_flyable_and_reports_empty(monkeypatch):
         return "card", [], {}, "fb", rows_by_site[site["name"]], None
 
     monkeypatch.setattr(forecast, "_ensure", fake_ensure)
-    result = asyncio.run(forecast.scan_week())
+    result = asyncio.run(forecast.scan_week(model=engine.DEFAULT_MODEL_KEY))
     assert [s["name"] for s in result["sites"]] == ["A"]
     # маргинальный день отсеян — в /scan попадают категории от «удовлетворительной»
     assert [d["date"] for d in result["sites"][0]["days"]] == ["2026-07-25"]
@@ -62,7 +62,7 @@ def test_scan_week_records_failed_fetch(monkeypatch):
         raise RuntimeError("open-meteo down")
 
     monkeypatch.setattr(forecast, "_ensure", boom)
-    result = asyncio.run(forecast.scan_week())
+    result = asyncio.run(forecast.scan_week(model=engine.DEFAULT_MODEL_KEY))
     assert result["sites"] == [] and result["empty"] == [] and result["failed"] == ["X"]
 
 

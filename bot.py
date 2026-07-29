@@ -730,7 +730,7 @@ async def cmd_scan(message: Message):
         return
     try:
         async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
-            result = await forecast.scan_week(store.prefs(message.from_user.id).model_key)
+            result = await forecast.scan_week(model=store.prefs(message.from_user.id).model_key)
     except Exception as e:  # noqa: BLE001 — surface any unexpected failure to the user
         log.exception("scan failed")
         await message.answer(f"⚠️ Ошибка: {e}")
@@ -970,7 +970,7 @@ async def _send_route(message: Message, points, name, date, departure, cfg=None)
     """`cfg` — настройки пилота; как и у send_forecast, приходят параметром, потому
     что у сообщения под кнопкой автор — бот, а не тот, кто нажал."""
     try:
-        profile = await forecast.get_route(points, name, date, departure, cfg)
+        profile = await forecast.get_route(points, name, date, departure, cfg=cfg)
     except forecast.ForecastError as e:
         return await message.answer(str(e))
     token = _remember_route(points, name, date, departure)
@@ -1096,7 +1096,7 @@ async def _profile_from_token(cb: CallbackQuery, token: str, departure=None):
         return None
     dep = entry["departure"] if departure is None else departure
     return await forecast.get_route(entry["points"], entry["name"], entry["date"], dep,
-                                    store.prefs(cb.from_user.id))
+                                    cfg=store.prefs(cb.from_user.id))
 
 
 @dp.callback_query(F.data.regexp(r"^rt\|[^|]+\|pt\|"))

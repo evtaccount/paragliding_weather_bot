@@ -56,22 +56,22 @@ def known_sites():
 # вердикта; теперь у каждой категории свой ключ, и сравнивать строки не нужно.
 
 
-async def scan_week(model: str | None = None) -> dict:
+async def scan_week(*, model) -> dict:
     """Week overview across ALL saved sites, keeping only flyable days.
 
     Returns {"sites": [{"name", "aspect", "days": [row, ...]}], "empty": [name...],
     "failed": [name...]}. Each row is an engine.overview_rows() dict. Fetches run
     concurrently and reuse (warm) the same week cache /week uses.
 
-    `model` — модель пилота; None означает модель по умолчанию. Ключ кэша тот же,
-    что у /week, поэтому обзор и скан по одной модели греют друг друга.
+    `model` — модель пилота; вызывающий обязан разрешить её сам (store.prefs(uid))
+    и передать явно. Ключ кэша тот же, что у /week, поэтому обзор и скан по одной
+    модели греют друг друга.
     """
     sites = store.load_sites()
-    mkey = model or engine.DEFAULT_MODEL_KEY
 
     async def fetch(site):
-        key = (site["name"], "week", None, mkey)
-        _c, _p, _f, _fb, rows, _grid = await _ensure(site, "week", None, key, mkey)
+        key = (site["name"], "week", None, model)
+        _c, _p, _f, _fb, rows, _grid = await _ensure(site, "week", None, key, model)
         return rows
 
     gathered = await asyncio.gather(*(fetch(s) for s in sites), return_exceptions=True)
@@ -312,18 +312,18 @@ async def _ensure(site: dict, rng: str, date: str | None, key: tuple, model: str
     return card, pngs, facts, fallback, rows, grid
 
 
-async def get_forecast(site_name: str, rng: str, date: str | None = None,
-                       model: str | None = None):
+async def get_forecast(site_name: str, rng: str, date: str | None = None, *, model):
     """Factual card + charts. No LLM. rng: 1d | 3d | week | 2weeks.
 
-    `model` — разовый выбор кнопкой под прогнозом; глобальную настройку не трогает.
+    `model` — эффективная модель (разовый выбор кнопкой, иначе постоянная модель
+    пилота): вызывающий обязан разрешить её сам и передать явно.
     """
     site, date, key = _resolve(site_name, rng, date, model)
     card, pngs, _facts, _fallback, _rows, _grid = await _ensure(site, rng, date, key, model)
     return card, pngs
 
 
-async def get_wind_grid(site_name: str, date: str, model: str | None = None) -> bytes:
+async def get_wind_grid(site_name: str, date: str, *, model) -> bytes:
     """PNG of the altitude × hour wind grid for a single day. Reuses the warm 1d cache
     (no re-fetch) and builds the image on demand — /today never pays for it unused."""
     site, date, key = _resolve(site_name, "1d", date, model)
@@ -654,14 +654,14 @@ def _departure_options(samples):
     return [w["start_hour"] + k * DEPARTURE_STEP_H for k in range(max(0, n))]
 
 
-async def get_route(points, name, date, departure_h=None, cfg=None):
+async def get_route(points, name, date, departure_h=None, *, cfg):
     """Профиль маршрута: два запроса, кэш, маршрутные величины, скоринг и вердикт.
 
-    `cfg` — личные настройки пилота (store.Prefs). None означает дефолты: у
-    расчёта маршрута нет доступа к user_id, его знает только вызывающий.
+    `cfg` — личные настройки пилота (store.Prefs), включая модель (cfg.model_key):
+    расчёту маршрута недоступен user_id, поэтому вызывающий обязан разрешить
+    настройки сам (store.prefs(uid)) и передать явно — домен не должен угадывать.
     """
     _check_date(date)
-    cfg = cfg or store.DEFAULT_PREFS
     samples, step = route.resample(points)
     total_km = samples[-1].km
     notes = []
@@ -753,7 +753,7 @@ async def get_route(points, name, date, departure_h=None, cfg=None):
 async def get_route_section(points, name, date, departure_h=None, cfg=None) -> bytes:
     """PNG-разрез вдоль маршрута. Профиль пересчитывается поверх тёплого кэша,
     поэтому кнопка не стоит ни одного нового запроса к open-meteo."""
-    profile = await get_route(points, name, date, departure_h, cfg)
+    profile = await get_route(points, name, date, departure_h, cfg=cfg)
     out = tempfile.mkdtemp(prefix="pgrs_")
     try:
         import charts
@@ -813,7 +813,7 @@ async def get_route_analysis(points, name, date, departure_h=None, cfg=None) -> 
     """
     if not analysis.available():
         raise ForecastError("ИИ-разбор недоступен: не задан GEMINI_API_KEY.")
-    profile = await get_route(points, name, date, departure_h, cfg)
+    profile = await get_route(points, name, date, departure_h, cfg=cfg)
     facts = route_facts(profile)
     t0 = time.monotonic()
     try:
@@ -830,13 +830,15 @@ async def get_route_analysis(points, name, date, departure_h=None, cfg=None) -> 
 
 
 async def get_analysis(site_name: str, rng: str, date: str | None = None, deep: bool = False,
-                       model: str | None = None) -> str:
+                       *, model) -> str:
     """LLM analysis over the cached facts.
 
     deep=False — reuse the data get_forecast already fetched; NO open-meteo re-request
                  when the cache is warm.
     deep=True  — additionally fetch surrounding points + the previous day (new data, by
                  design) and feed them as context. 1-day only.
+
+    `model` — эффективная модель: вызывающий обязан разрешить её сам и передать явно.
 
     Falls back to the deterministic rule text when Gemini is unavailable.
     """

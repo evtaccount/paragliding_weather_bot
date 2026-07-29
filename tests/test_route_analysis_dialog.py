@@ -107,7 +107,7 @@ async def test_a_wrong_sign_comment_never_reaches_the_pilot(feed, session, api,
                                                             monkeypatch):
     """Сквозная проверка: карточка показана, а опасный комментарий отсеян."""
     async def get_route_capture(points, name, date, departure_h=None, cfg=None):
-        p = await orig(points, name, date, departure_h, cfg)
+        p = await orig(points, name, date, departure_h, cfg=cfg)
         p["points"][0]["wind_along_kmh"] = -12.0    # встречный на старте
         return p
 

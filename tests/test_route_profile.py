@@ -5,6 +5,7 @@ import pytest
 
 import forecast
 import route
+import store
 from fixtures import om_route
 
 PTS = [route.Point(42.0, 44.0, "старт"), route.Point(42.0 + 40.0 / 111.195, 44.0, "финиш")]
@@ -45,7 +46,7 @@ def api(monkeypatch):
 
 
 async def test_profile_shape(api):
-    p = await forecast.get_route(PTS, "Тест", DATE, departure_h=11.5)
+    p = await forecast.get_route(PTS, "Тест", DATE, departure_h=11.5, cfg=store.DEFAULT_PREFS)
     assert p["route"]["total_km"] == pytest.approx(40.0, abs=0.5)
     assert p["route"]["date"] == DATE
     assert p["route"]["sample_step_km"] == pytest.approx(10.0)
@@ -55,20 +56,20 @@ async def test_profile_shape(api):
 
 
 async def test_roles_assigned(api):
-    p = await forecast.get_route(PTS, "Тест", DATE, departure_h=11.5)
+    p = await forecast.get_route(PTS, "Тест", DATE, departure_h=11.5, cfg=store.DEFAULT_PREFS)
     assert p["points"][0]["role"] == "takeoff"
     assert p["points"][-1]["role"] == "goal"
 
 
 async def test_second_call_is_served_from_cache(api):
-    await forecast.get_route(PTS, "Тест", DATE, departure_h=11.5)
-    await forecast.get_route(PTS, "Тест", DATE, departure_h=12.5)
+    await forecast.get_route(PTS, "Тест", DATE, departure_h=11.5, cfg=store.DEFAULT_PREFS)
+    await forecast.get_route(PTS, "Тест", DATE, departure_h=12.5, cfg=store.DEFAULT_PREFS)
     assert api["weather"] == 1
     assert api["terrain"] == 1
 
 
 async def test_departure_defaults_to_window_start(api):
-    p = await forecast.get_route(PTS, "Тест", DATE)
+    p = await forecast.get_route(PTS, "Тест", DATE, cfg=store.DEFAULT_PREFS)
     assert p["route"]["departure"] is not None
     assert p["points"][0]["eta"] == p["route"]["departure"]
 
@@ -82,7 +83,7 @@ async def test_terrain_failure_degrades_loudly(monkeypatch):
 
     monkeypatch.setattr(forecast, "_fetch_route_weather", fake_weather)
     monkeypatch.setattr(forecast, "fetch_terrain", failing_terrain)
-    p = await forecast.get_route(PTS, "Тест", DATE, departure_h=11.5)
+    p = await forecast.get_route(PTS, "Тест", DATE, departure_h=11.5, cfg=store.DEFAULT_PREFS)
     assert all(pt["working_band_m"] is None for pt in p["points"])
     assert any("рельеф" in n.lower() for n in p["notes"])
 
@@ -97,21 +98,21 @@ async def test_no_thermal_window_at_start_is_reported(monkeypatch):
     monkeypatch.setattr(forecast, "_fetch_route_weather", fake_weather)
     monkeypatch.setattr(forecast, "fetch_terrain", fake_terrain)
     with pytest.raises(forecast.ForecastError) as e:
-        await forecast.get_route(PTS, "Тест", DATE)
+        await forecast.get_route(PTS, "Тест", DATE, cfg=store.DEFAULT_PREFS)
     assert "время" in str(e.value).lower()
 
 
 async def test_date_beyond_forecast_horizon_rejected(api):
     far = (dt.date.today() + dt.timedelta(days=40)).isoformat()
     with pytest.raises(forecast.ForecastError) as e:
-        await forecast.get_route(PTS, "Тест", far, departure_h=11.5)
+        await forecast.get_route(PTS, "Тест", far, departure_h=11.5, cfg=store.DEFAULT_PREFS)
     assert "прогноз" in str(e.value).lower()
 
 
 async def test_past_date_rejected(api):
     past = (dt.date.today() - dt.timedelta(days=1)).isoformat()
     with pytest.raises(forecast.ForecastError):
-        await forecast.get_route(PTS, "Тест", past, departure_h=11.5)
+        await forecast.get_route(PTS, "Тест", past, departure_h=11.5, cfg=store.DEFAULT_PREFS)
 
 
 async def test_arrival_past_midnight_is_truncated_and_reported(api):
