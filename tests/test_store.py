@@ -13,12 +13,23 @@ def store(tmp_path, monkeypatch):
 
     Модуль читает DB_PATH на импорте (как engine читает SITES_FILE), поэтому
     перезагружаем его после подмены переменной окружения.
+
+    reload() меняет модуль-синглтон целиком — на тот же объект ссылаются
+    conftest, bot и forecast (`import store` — тот же объект во всех). Если не
+    откатить DB_PATH и не перезагрузить модуль обратно на teardown, все файлы,
+    которые прогонятся после этого, останутся смотреть на протухший tmp_path:
+    autouse-фикстура fresh_state в conftest продолжит чистить харнесс-БД, а
+    store/bot/forecast будут читать и писать совсем другой файл (см. review
+    finding 1 — гонка по порядку тестовых файлов).
     """
+    harness_db_path = os.environ["DB_PATH"]  # conftest всегда ставит его до импорта
     monkeypatch.setenv("DB_PATH", str(tmp_path / "test.db"))
     import store as st
     importlib.reload(st)
     st.init()
-    return st
+    yield st
+    os.environ["DB_PATH"] = harness_db_path
+    importlib.reload(st)
 
 
 def test_init_creates_all_tables(store):
@@ -310,3 +321,19 @@ def test_purge_adhoc_removes_old_keeps_fresh(store):
     assert store.purge_adhoc(older_than_days=30) == 1
     assert store.adhoc_get(old) is None
     assert store.adhoc_get(fresh) is not None
+
+
+def test_reloading_store_fixture_does_not_leak_into_other_test_files():
+    """Regression for review finding 1.
+
+    Специально БЕЗ фикстуры `store`: каждый предыдущий тест в этом файле уже
+    брал её и на teardown должен был откатить DB_PATH обратно на гарнесс.
+    Проверяем именно это состояние — прямым импортом модуля-синглтона, на
+    который смотрят bot и forecast, — а не наше собственное (фикстура
+    поменяла бы DB_PATH ещё до входа в тело теста). Без отката на teardown
+    autouse-фикстура fresh_state из conftest продолжает чистить одну БД, а
+    store/bot/forecast читают и пишут другую.
+    """
+    import conftest
+    import store as st
+    assert st.DB_PATH == conftest.DB_PATH

@@ -72,7 +72,6 @@ def test_route_splice_applies_to_every_point():
 async def test_route_weather_splices_ceiling_from_gfs(monkeypatch):
     """На маршруте потолок должен быть из той же модели, что и на старте —
     иначе «потолок» значит разное в двух частях одного ответа."""
-    import engine
     from route import Sample
 
     times = om_1day()["hourly"]["time"]

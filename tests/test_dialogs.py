@@ -738,6 +738,40 @@ async def test_unknown_model_code_falls_back_to_the_permanent_model(feed, sessio
     assert an_calls == [("Гудаури", "1d", TODAY, False, "icon")]
 
 
+async def test_permanent_model_reaches_scan(feed, session, monkeypatch):
+    """Regression for review finding 4. Постоянная модель пилота должна доезжать
+    до /scan (cmd_scan передаёт store.prefs(uid).model_key в forecast.scan_week),
+    а не только до /forecast и кнопок под ним."""
+    seen = {}
+
+    async def fake(model=None):
+        seen["model"] = model
+        return {"sites": [], "empty": [], "failed": []}
+
+    monkeypatch.setattr(forecast, "scan_week", fake)
+    store.set_model(TEST_USER_ID, "gfs")
+    await feed(text_update("/scan"))
+    assert seen["model"] == "gfs"
+
+
+async def test_permanent_model_reaches_the_day_picker_cache_lookup(feed, session, fc_calls):
+    """Regression for review finding 4. `_day_picker_kb` ищет в тёплом кэше по
+    МОДЕЛИ, которой посчитан показанный обзор (`eff`), а не по сырому разовому
+    выбору (`model`, тут его нет — None): без этого четвёртого аргумента
+    day-picker у пилота с непустой постоянной моделью бьёт мимо кэша,
+    заполненного именно этим запросом, и откатывается на серверные даты
+    вместо дат старта."""
+    store.set_model(TEST_USER_ID, "gfs")
+    start = dt.date.today() + dt.timedelta(days=1)  # смещённые даты, как из чужой таймзоны
+    dates = [(start + dt.timedelta(days=i)).isoformat() for i in range(3)]
+    _site, _date, key = forecast._resolve("Гудаури", "3d", None, "gfs")
+    forecast._fcache[key] = (time.monotonic() + 999, "c", [],
+                             {"days_daytime": [{"date": d} for d in dates]}, "f", [], None)
+    await feed(text_update("/threedays Гудаури"))
+    picker = kb_for(session, "📅 Подробно по дню:")
+    assert [b.callback_data for b in buttons(picker)] == [f"pd|Гудаури|{d}" for d in dates]
+
+
 def test_every_model_button_fits_the_callback_limit():
     """Код модели съедает 2 байта из 64. Проверяем на реальных именах стартов."""
     for site in [s["name"] for s in store.load_sites()]:

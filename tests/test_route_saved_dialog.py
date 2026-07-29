@@ -85,6 +85,18 @@ async def test_routes_lists_what_is_saved(feed, session):
     assert "Гудаури" in out and "км" in out
 
 
+async def test_routes_shows_a_date_not_a_timestamp(feed, session):
+    """Regression for review finding 2. store хранит saved_at полным ISO-
+    таймстампом (store._now()); удалённый routes.py показывал в /routes только
+    дату сохранения (dt.date.today().isoformat()) — не время. Пилоту время не
+    нужно, а строка вида «...2026-07-29T12:18:55+00:00» выглядит как баг."""
+    save("Гудаури")
+    await feed(text_update("/routes"))
+    line = next(l for l in texts(session)[-1].splitlines() if "Гудаури" in l)
+    assert line.endswith(dt.date.today().isoformat())
+    assert "T" not in line
+
+
 async def test_routes_offers_a_button_per_route(feed, session):
     save("Гудаури")
     await feed(text_update("/routes"))

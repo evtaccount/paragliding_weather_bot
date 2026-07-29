@@ -559,14 +559,14 @@ async def _finish_add(message: Message, name: str, lat: float, lon: float,
     except ValueError as e:
         await message.answer(f"⚠️ {e}")
         return
-    except OSError as e:  # каталог данных не примонтирован на запись — не молчать
+    except Exception as e:  # noqa: BLE001 — отказ записи не должен молчать
+        # БД только на чтение бросает sqlite3.OperationalError, а он НЕ наследник
+        # OSError — ловить его отдельно тут смысла не было (issubclass(...) is
+        # False), поэтому берём широкий except, как уже сделано в cmd_model/
+        # cb_pick_model.
         log.exception("add_site: write failed")
-        await message.answer("⚠️ Не удалось сохранить старт — нет доступа к хранилищу на запись.\n"
-                             f"({e.strerror or e})\nПроверь, что каталог данных примонтирован с правами на запись.")
-        return
-    except Exception as e:  # noqa: BLE001 — any other failure must reach the user, not just the log
-        log.exception("add_site: unexpected failure")
-        await message.answer(f"⚠️ Не удалось сохранить старт: {e}")
+        await message.answer("⚠️ Не удалось сохранить старт — нет доступа к базе на запись.\n"
+                             f"({e})")
         return
     await message.answer(
         f"✅ Старт добавлен: {name}\n"
@@ -1032,12 +1032,20 @@ async def cmd_saveroute(message: Message, command: CommandObject):
         await message.answer(f"⚠️ слишком много точек: {len(pts)}, "
                              f"максимум {route.MAX_POINTS}")
         return
-    existed = name in store.routes_list(uid)
+    # routes_list() пропускает битые записи (порченый JSON в points), поэтому
+    # "name in routes_list(uid)" сказал бы "нет" про уже занятое имя с битой
+    # записью и бот отчитался бы "Сохранил" вместо "Перезаписал". Проверяем
+    # сырое наличие строки — тем же способом, каким это уже делает сам
+    # store.route_save() внутри (store.py трогать нельзя).
+    with store.connect() as conn:
+        existed = conn.execute(
+            "SELECT 1 FROM routes WHERE user_id = ? AND name = ?",
+            (uid, name)).fetchone() is not None
     try:
         store.route_save(uid, name, [[p.lat, p.lon, p.name] for p in pts])
     except ValueError as e:
         return await message.answer(f"❌ {e}")
-    n = len(entry["points"])
+    n = len(pts)
     await message.answer(("Перезаписал" if existed else "Сохранил") +
                          f" маршрут «{name}»: {n} "
                          f"{route.plural(n, 'точка', 'точки', 'точек')}.")
@@ -1055,9 +1063,13 @@ async def cmd_routes(message: Message):
     for name in sorted(saved):
         pts = route.points_from_rows(store.route_rows(uid, name)) or []
         n = len(pts)
+        # saved_at — полный ISO-таймстамп (store._now()); удалённый routes.py
+        # хранил дату сохранения (dt.date.today().isoformat()) — показываем
+        # только дату и здесь, без времени, которое пилоту не нужно.
+        saved_at = saved[name].get("saved", "—").split("T", 1)[0]
         lines.append(f"• {name} — {route.total_km(pts):.0f} км, {n} "
                      f"{route.plural(n, 'точка', 'точки', 'точек')}, "
-                     f"{saved[name].get('saved', '—')}")
+                     f"{saved_at}")
         btn = _btn(name, f"rr|{name}")
         if btn:
             rows.append([btn])

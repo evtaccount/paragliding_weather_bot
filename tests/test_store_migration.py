@@ -8,10 +8,20 @@ import pytest
 
 @pytest.fixture()
 def store(tmp_path, monkeypatch):
+    """Свежий модуль store с БД во временном каталоге.
+
+    reload() меняет модуль-синглтон целиком — на тот же объект ссылаются
+    conftest, bot и forecast. Без отката DB_PATH на teardown все тестовые
+    файлы, которые прогонятся после этого, останутся смотреть на протухший
+    tmp_path (см. review finding 1).
+    """
+    harness_db_path = os.environ["DB_PATH"]  # conftest всегда ставит его до импорта
     monkeypatch.setenv("DB_PATH", str(tmp_path / "test.db"))
     import store as st
     importlib.reload(st)
-    return st
+    yield st
+    os.environ["DB_PATH"] = harness_db_path
+    importlib.reload(st)
 
 
 @pytest.fixture()
@@ -184,3 +194,12 @@ def test_bootstrap_does_not_seed_when_sites_exist(store, data_dir, tmp_path):
     report = store.bootstrap(data_dir, frozenset(), str(packaged))
     assert report["sites"] == 0
     assert [s["name"] for s in store.load_sites()] == ["Свой"]
+
+
+def test_reloading_store_fixture_does_not_leak_into_other_test_files():
+    """Regression for review finding 1. Специально БЕЗ фикстуры `store` — см.
+    тот же тест в test_store.py: каждый предыдущий тест здесь уже брал её и на
+    teardown должен был откатить DB_PATH обратно на гарнесс."""
+    import conftest
+    import store as st
+    assert st.DB_PATH == conftest.DB_PATH

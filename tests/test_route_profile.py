@@ -122,3 +122,26 @@ async def test_arrival_past_midnight_is_truncated_and_reported(api):
     assert p["points"][-1]["eta"] is None
     assert p["points"][-1]["weather"] == {}        # погода за границей не считается
     assert p["points"][0]["eta"] == "23:00"
+
+
+async def test_permanent_model_reaches_the_route_weather_fetch(monkeypatch):
+    """Regression for review finding 4. cfg.model_key должен доехать и до самого
+    запроса погоды по маршруту (URL несёт models=<id выбранной модели>), и до
+    подписи в карточке — иначе /model меняет галочку, а маршрут всегда
+    считается по auto."""
+    import store
+    seen = {}
+
+    async def fake_weather(url):
+        seen["url"] = url
+        return om_route(_n(url))
+
+    async def fake_terrain(coords):
+        return [1000.0] * len(coords)
+
+    monkeypatch.setattr(forecast, "_fetch_route_weather", fake_weather)
+    monkeypatch.setattr(forecast, "fetch_terrain", fake_terrain)
+    cfg = store.Prefs(model_key="gfs")
+    p = await forecast.get_route(PTS, "Тест", DATE, departure_h=11.5, cfg=cfg)
+    assert "models=gfs_seamless" in seen["url"]
+    assert p["route"]["model"] == "GFS"
