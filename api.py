@@ -168,11 +168,19 @@ class Coords(BaseModel):
     lon: float
 
 
+def _public_site(site: dict) -> dict:
+    """Старт без added_by: Telegram id того, кто его завёл, клиенту не нужен,
+    а при пустом ALLOWED_USER_IDS (открытый режим, см.
+    test_empty_allowlist_lets_everyone_in) отдавался бы кому угодно в
+    интернете. В базе поле остаётся — там ему и место."""
+    return {k: v for k, v in site.items() if k != "added_by"}
+
+
 @router.get("/sites")
 async def list_sites(_user: webauth.TelegramUser = Depends(current_user)):
     """Библиотека общая, поэтому ответ не зависит от пилота. Зависимость
     оставлена: неавторизованный запрос не должен получать список стартов."""
-    return store.load_sites()
+    return [_public_site(s) for s in store.load_sites()]
 
 
 @router.get("/sites/{name}")
@@ -180,14 +188,17 @@ async def read_site(name: str, _user: webauth.TelegramUser = Depends(current_use
     site = store.find_site(name)
     if site is None:
         raise HTTPException(404, f"старт не найден: {name}")
-    return site
+    return _public_site(site)
 
 
 @router.post("/sites", status_code=201)
 async def create_site(body: SiteIn, user: webauth.TelegramUser = Depends(current_user)):
     site = body.model_dump()
-    # Правило одно на оба адаптера: см. store.name_error
+    # Правило одно на оба адаптера: см. store.name_error / store.coords_error
     bad = store.name_error(site["name"])
+    if bad:
+        raise HTTPException(400, bad)
+    bad = store.coords_error(site["lat"], site["lon"])
     if bad:
         raise HTTPException(400, bad)
     if store.find_site(site["name"]) is not None:
@@ -200,7 +211,7 @@ async def create_site(body: SiteIn, user: webauth.TelegramUser = Depends(current
         # sites.name») написан для разработчика и наружу не идёт — ровно по той
         # же причине, по которой обработчик httpx не отдаёт текст ошибки.
         raise HTTPException(409, f"Старт «{site['name']}» уже есть.") from None
-    return store.find_site(site["name"])
+    return _public_site(store.find_site(site["name"]))
 
 
 @router.delete("/sites/{name}", status_code=204)

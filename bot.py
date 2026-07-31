@@ -180,7 +180,7 @@ def parse_coords(text: str) -> tuple[float, float] | None:
     if len(nums) != 2:
         return None
     lat, lon = (float(n.replace(",", ".")) for n in nums)
-    if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+    if store.coords_error(lat, lon):
         return None
     return lat, lon
 
@@ -574,7 +574,7 @@ async def cmd_add(message: Message, command: CommandObject, state: FSMContext):
             return
         try:
             lat, lon = float(lat_s), float(lon_s)
-            if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+            if store.coords_error(lat, lon):
                 raise ValueError
         except ValueError:
             await message.answer("Координаты неверные. Формат: /add <Имя> <lat> <lon> <экспозиция>")
