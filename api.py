@@ -53,6 +53,25 @@ async def current_user(authorization: str = Header(default="")) -> webauth.Teleg
     return user
 
 
+async def one_at_a_time(user: webauth.TelegramUser = Depends(current_user)):
+    """Один тяжёлый запрос на пилота. Паузы нет — только занятость.
+
+    В приложении каждое действие продолжает уже показанный результат, и
+    10-секундный cooldown чата сделал бы его сломанным. Повторы гасит кэш.
+
+    Вешается только на эндпоинты, ходящие в сеть: запереть настройки вместе
+    с прогнозом значит подвесить весь экран из-за одного графика.
+    """
+    if not guards.INFLIGHT.acquire(user.id):
+        raise HTTPException(429, "Уже считаю — дождись ответа.")
+    try:
+        yield user
+    finally:
+        # finally, а не хвост функции: без него одна ошибка запирает пилота
+        # до перезапуска процесса
+        guards.INFLIGHT.release(user.id)
+
+
 # ------------------------------------------------------------------ ошибки
 @app.exception_handler(forecast.ForecastError)
 async def _forecast_error(_request, exc: forecast.ForecastError):
@@ -192,7 +211,7 @@ async def delete_site(name: str, _user: webauth.TelegramUser = Depends(current_u
 
 
 @router.post("/elevation")
-async def elevation(body: Coords, _user: webauth.TelegramUser = Depends(current_user)):
+async def elevation(body: Coords, _user: webauth.TelegramUser = Depends(one_at_a_time)):
     """Высота точки — для формы добавления старта."""
     return {"elevation_m": await forecast.fetch_elevation(body.lat, body.lon)}
 
@@ -227,7 +246,7 @@ def _site_or_404(name: str) -> dict:
 @router.get("/forecast")
 async def read_forecast(site: str, range: str, date: str | None = None,
                         model: str | None = None,
-                        user: webauth.TelegramUser = Depends(current_user)):
+                        user: webauth.TelegramUser = Depends(one_at_a_time)):
     """Факты, а не картинка: приложение рисует графики само."""
     _site_or_404(site)
     return await forecast.get_facts(site, range, date, model=_model_for(user.id, model))
@@ -235,14 +254,14 @@ async def read_forecast(site: str, range: str, date: str | None = None,
 
 @router.get("/forecast/wind-grid")
 async def read_wind_grid(site: str, date: str, model: str | None = None,
-                         user: webauth.TelegramUser = Depends(current_user)):
+                         user: webauth.TelegramUser = Depends(one_at_a_time)):
     _site_or_404(site)
     return await forecast.wind_grid_data(site, date, model=_model_for(user.id, model))
 
 
 @router.get("/scan")
 async def read_scan(model: str | None = None,
-                    user: webauth.TelegramUser = Depends(current_user)):
+                    user: webauth.TelegramUser = Depends(one_at_a_time)):
     return await forecast.scan_week(model=_model_for(user.id, model))
 
 
@@ -315,7 +334,7 @@ def _points_or_400(rows: list[list]) -> list:
 
 @router.post("/analysis")
 async def read_analysis(body: AnalysisIn,
-                        user: webauth.TelegramUser = Depends(current_user)):
+                        user: webauth.TelegramUser = Depends(one_at_a_time)):
     """Текст от Gemini. Ответ строкой, а не разметкой: она в приложении своя."""
     _site_or_404(body.site)
     text = await forecast.get_analysis(body.site, body.range, body.date, body.deep,
@@ -324,7 +343,7 @@ async def read_analysis(body: AnalysisIn,
 
 
 @router.post("/route")
-async def read_route(body: RouteIn, user: webauth.TelegramUser = Depends(current_user)):
+async def read_route(body: RouteIn, user: webauth.TelegramUser = Depends(one_at_a_time)):
     return await forecast.get_route(_points_or_400(body.points), body.name, body.date,
                                     _hours(body.departure),
                                     cfg=_cfg_for(user.id, body.model))
@@ -332,7 +351,7 @@ async def read_route(body: RouteIn, user: webauth.TelegramUser = Depends(current
 
 @router.post("/route/analysis")
 async def read_route_analysis(body: RouteIn,
-                              user: webauth.TelegramUser = Depends(current_user)):
+                              user: webauth.TelegramUser = Depends(one_at_a_time)):
     text = await forecast.get_route_analysis(_points_or_400(body.points), body.name,
                                              body.date, _hours(body.departure),
                                              cfg=_cfg_for(user.id, body.model))

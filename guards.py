@@ -69,27 +69,57 @@ class WhitelistMiddleware(BaseMiddleware):
         return None
 
 
+class InFlight:
+    """Кто из пилотов прямо сейчас чего-то ждёт.
+
+    Общий на чат и приложение намеренно: гарантия сформулирована про пилота,
+    а не про поверхность, и открыть приложение, пока бот считает тот же
+    прогноз, — это второй запрос того же человека.
+
+    Множество, а не счётчик: параллельных запросов одного пилота не бывает
+    по определению, а счётчик пришлось бы чинить после каждого падения.
+    """
+
+    def __init__(self):
+        self._busy: set[int] = set()
+
+    def acquire(self, uid: int) -> bool:
+        """True — слот занят нами. False — пилот уже что-то ждёт."""
+        if uid in self._busy:
+            return False
+        self._busy.add(uid)
+        return True
+
+    def release(self, uid: int) -> None:
+        self._busy.discard(uid)
+
+    def clear(self) -> None:
+        """Только для тестов: реестр процессный и переживает тест."""
+        self._busy.clear()
+
+
+INFLIGHT = InFlight()
+
+
 class ThrottleMiddleware(BaseMiddleware):
     def __init__(self):
         self.cooldown = float(os.environ.get("COOLDOWN_SEC", "10"))
         self._last: dict[int, float] = {}
-        self._inflight: set[int] = set()
 
     async def __call__(self, handler, event, data):
         if not get_flag(data, "forecast") or not event.from_user:
             return await handler(event, data)
         uid = event.from_user.id
-        if uid in self._inflight:
+        if not INFLIGHT.acquire(uid):
             return await event.answer("⏳ Уже готовлю — дождись ответа.")
-        # follow-up button presses aren't spam — only typed commands get the cooldown
-        if not isinstance(event, CallbackQuery):
-            now = time.monotonic()
-            wait = self._last.get(uid, -math.inf) + self.cooldown - now
-            if wait > 0:
-                return await event.answer(f"⏳ Не так часто: подожди {math.ceil(wait)} сек.")
-            self._last[uid] = now
-        self._inflight.add(uid)
         try:
+            # follow-up button presses aren't spam — only typed commands get the cooldown
+            if not isinstance(event, CallbackQuery):
+                now = time.monotonic()
+                wait = self._last.get(uid, -math.inf) + self.cooldown - now
+                if wait > 0:
+                    return await event.answer(f"⏳ Не так часто: подожди {math.ceil(wait)} сек.")
+                self._last[uid] = now
             return await handler(event, data)
         finally:
-            self._inflight.discard(uid)
+            INFLIGHT.release(uid)

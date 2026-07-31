@@ -35,6 +35,7 @@ from aiogram.client.session.base import BaseSession  # noqa: E402
 
 import bot as botmod  # noqa: E402
 import forecast  # noqa: E402
+import guards  # noqa: E402
 import store  # noqa: E402
 
 TEST_USER_ID = 1  # id, который подставляют tests/tg.py в сообщениях и колбэках
@@ -99,6 +100,7 @@ def fresh_state():
     forecast._rcache.clear()
     botmod.dp.fsm.storage.storage.clear()  # MemoryStorage internals
     botmod._route_cache.clear()            # токены маршрутов под кнопками
+    guards.INFLIGHT.clear()   # реестр процессный: упавший тест запер бы следующий
     yield
 
 
