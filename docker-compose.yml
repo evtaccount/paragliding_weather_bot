@@ -9,10 +9,37 @@ services:
       # БД в том же именованном томе, что раньше держал sites.json —
       # старые файлы там же, миграция подхватит их на первом старте
       - DB_PATH=/app/data/pgbot.db
+      - API_PORT=8080
     volumes:
       # named volume — owned by uid 10001 (app), so /add and /removesite can write.
       # A single-file bind mount kept host ownership and broke writes for non-root.
       - pgbot-data:/app/data
+    expose:
+      # Только внутрь сети compose: наружу смотрит Caddy, и опубликованный
+      # порт отдавал бы API без TLS всем, кто дотянется до сервера.
+      - "8080"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      - PUBLIC_DOMAIN=${PUBLIC_DOMAIN}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./static:/srv/www:ro
+      - ${TLS_CERT_DIR}:/certs:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - pgbot
     logging:
       driver: json-file
       options:
@@ -21,3 +48,5 @@ services:
 
 volumes:
   pgbot-data:
+  caddy-data:
+  caddy-config:

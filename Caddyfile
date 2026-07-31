@@ -1,0 +1,20 @@
+# Домен и пути к сертификату приходят из окружения (см. .env.example).
+{$PUBLIC_DOMAIN} {
+	# Свой купленный сертификат. Чтобы Caddy выпускал Let's Encrypt сам,
+	# удалить эту строку целиком — всё остальное менять не нужно.
+	tls /certs/fullchain.pem /certs/privkey.pem
+
+	encode zstd gzip
+
+	# Порядок обязателен: handle_path для /api/* стоит выше, иначе
+	# file_server отдал бы 404 на каждый запрос приложения.
+	handle /api/* {
+		reverse_proxy pgbot:8080
+	}
+
+	handle {
+		root * /srv/www
+		try_files {path} /index.html
+		file_server
+	}
+}

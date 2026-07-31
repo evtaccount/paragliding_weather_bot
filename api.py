@@ -13,6 +13,7 @@ import httpx
 from fastapi import (APIRouter, Depends, FastAPI, File, Form, Header,
                      HTTPException, UploadFile)
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 import engine
@@ -28,6 +29,8 @@ log = logging.getLogger("pgbot.api")
 # а открытый /docs на публичном домене показывает всю поверхность чужим.
 app = FastAPI(title="pgbot mini app", docs_url=None, redoc_url=None, openapi_url=None)
 router = APIRouter(prefix="/api")
+
+STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 
 
 async def current_user(authorization: str = Header(default="")) -> webauth.TelegramUser:
@@ -419,4 +422,19 @@ async def delete_route(name: str, user: webauth.TelegramUser = Depends(current_u
     return None
 
 
+# ------------------------------------------------------------------ здоровье
+@router.get("/health")
+async def health():
+    """Без авторизации: дёргает Docker, у которого подписи нет.
+
+    Число стартов показывает самую частую ошибку раскатки — не
+    примонтированный том и, как следствие, пустую базу.
+    """
+    return {"ok": True, "db": store.DB_PATH, "sites": len(store.load_sites())}
+
+
 app.include_router(router)
+
+# Монтируется ПОСЛЕ роутера: StaticFiles на "/" перехватывает всё, до чего
+# доходит, и повешенный первым съел бы /api/*.
+app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
