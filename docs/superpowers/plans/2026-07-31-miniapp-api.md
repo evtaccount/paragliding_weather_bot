@@ -1757,11 +1757,13 @@ from tma import header
 
 ROWS = [[42.4776, 44.4787, "старт"], [42.1176, 44.4787, "финиш"]]
 
-GPX = b"""<?xml version="1.0"?>
+# Кириллица внутри b"""...""" — синтаксическая ошибка: в bytes-литерал
+# помещаются только ASCII-символы. Поэтому str, а потом .encode().
+GPX = """<?xml version="1.0"?>
 <gpx version="1.1"><rte>
 <rtept lat="42.4776" lon="44.4787"><name>старт</name></rtept>
 <rtept lat="42.1176" lon="44.4787"><name>финиш</name></rtept>
-</rte></gpx>"""
+</rte></gpx>""".encode()
 
 
 # Путь один, тело всегда multipart: файл приезжает полем file, вставленный
@@ -1894,11 +1896,15 @@ _UPLOAD_PARSERS = ((".gpx", parse_gpx), (".kml", parse_kml))
 
 
 def parse_upload(filename: str, data: bytes):
-    """Точки из присланного файла. Разборщик выбирается по расширению.
+    """Точки и имя маршрута из присланного файла: `(points, name)`.
 
-    Общая на чат и приложение: два независимых определения «что такое KML»
-    разъедутся, и пилот получит из приложения ответ, которого не получил бы
-    из чата.
+    Разборщик выбирается по расширению. Общая на чат и приложение: два
+    независимых определения «что такое KML» разъедутся, и пилот получит из
+    приложения ответ, которого не получил бы из чата.
+
+    Возвращает ПАРУ, а не список: GPX и KML несут имя маршрута внутри, и
+    `parse_gpx` отдаёт его вторым элементом. Присвоение результата одной
+    переменной роняет любую загрузку.
     """
     name = (filename or "").lower()
     if name.endswith(".kmz"):
@@ -1935,7 +1941,10 @@ async def parse_route(file: UploadFile | None = File(default=None),
             raise HTTPException(
                 400, f"❌ файл больше {route.MAX_GPX_BYTES // 1024} КБ — "
                      "пришли маршрут покороче")
-        points = route.parse_upload(file.filename or "", data)
+        # parse_upload отдаёт ПАРУ (точки, имя маршрута из файла): GPX и KML
+        # несут имя внутри. Имя здесь не нужно — пилот задаёт его при
+        # сохранении, — но распаковать пару обязательно.
+        points, _name = route.parse_upload(file.filename or "", data)
     elif text:
         points = route.parse_text(text)
     else:
