@@ -279,6 +279,27 @@ def parse_kml(data):
     raise RouteError("в KML нет ни линии маршрута, ни точек")
 
 
+# ------------------------------------------------------------- выбор разборщика
+_UPLOAD_PARSERS = ((".gpx", parse_gpx), (".kml", parse_kml))
+
+
+def parse_upload(filename: str, data: bytes):
+    """Точки из присланного файла. Разборщик выбирается по расширению.
+
+    Общая на чат и приложение: два независимых определения «что такое KML»
+    разъедутся, и пилот получит из приложения ответ, которого не получил бы
+    из чата.
+    """
+    name = (filename or "").lower()
+    if name.endswith(".kmz"):
+        # KMZ — zip с kml внутри; разворачивать архив из сети мы не будем
+        raise RouteError("KMZ — это архив. Распакуй и пришли .kml")
+    for suffix, parser in _UPLOAD_PARSERS:
+        if name.endswith(suffix):
+            return parser(data)
+    raise RouteError("Не понял формат файла: пришли .gpx или .kml")
+
+
 # ---------------------------------------------------------------- геометрия
 EARTH_R_M = 6371008.8          # средний радиус Земли (IUGG)
 SAMPLE_STEP_KM = 10.0          # разрешение глобальных моделей open-meteo — 9–11 км;

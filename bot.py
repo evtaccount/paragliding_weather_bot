@@ -1228,17 +1228,14 @@ async def cb_saved_route(cb: CallbackQuery):
                       cfg=store.prefs(uid), uid=uid)
 
 
-_DOC_PARSERS = ((".gpx", route.parse_gpx), (".kml", route.parse_kml))
-
-
 @dp.message(F.document, flags={"forecast": True})
 async def route_document(message: Message):
     doc = message.document
     fname = (doc.file_name or "").lower()
-    if fname.endswith(".kmz"):
-        return await message.answer("KMZ — это архив. Распакуй и пришли .kml")
-    parser = next((p for ext, p in _DOC_PARSERS if fname.endswith(ext)), None)
-    if parser is None:
+    # Разборщик по расширению — знание route.parse_upload; здесь только фильтр
+    # «файл вообще похож на маршрут», чтобы неизвестное расширение отвечало
+    # своей репликой, а не текстом RouteError из route.py.
+    if not fname.endswith((".gpx", ".kml", ".kmz")):
         return await message.answer("Я понимаю маршруты в форматах GPX и KML.")
     if (doc.file_size or 0) > route.MAX_GPX_BYTES:
         return await message.answer(
@@ -1246,7 +1243,7 @@ async def route_document(message: Message):
     buf = io.BytesIO()
     await message.bot.download(doc, destination=buf)
     try:
-        points, name = parser(buf.getvalue())
+        points, name = route.parse_upload(fname, buf.getvalue())
     except route.RouteError as e:
         return await message.answer(f"❌ {e}")
     date, departure = _parse_when(message.caption or "")

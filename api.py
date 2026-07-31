@@ -10,7 +10,8 @@ import os
 import sqlite3
 
 import httpx
-from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException
+from fastapi import (APIRouter, Depends, FastAPI, File, Form, Header,
+                     HTTPException, UploadFile)
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -336,6 +337,67 @@ async def read_route_analysis(body: RouteIn,
                                              body.date, _hours(body.departure),
                                              cfg=_cfg_for(user.id, body.model))
     return {"text": text}
+
+
+# ------------------------------------------------------------ маршруты пилота
+@router.post("/route/parse")
+async def parse_route(file: UploadFile | None = File(default=None),
+                      text: str | None = Form(default=None),
+                      _user: webauth.TelegramUser = Depends(current_user)):
+    """GPX / KML / текст → точки. Ничего не сохраняет и погоду не считает.
+
+    Тело всегда multipart: файл полем `file`, вставленные координаты полем
+    `text`. Два разных типа тела на одном пути FastAPI не различает, а второй
+    путь ради текста удвоил бы контракт на ровном месте.
+    """
+    if file is not None:
+        # Читаем на байт больше потолка: так перебор виден без загрузки
+        # всего файла в память.
+        data = await file.read(route.MAX_GPX_BYTES + 1)
+        if len(data) > route.MAX_GPX_BYTES:
+            raise HTTPException(
+                400, f"❌ файл больше {route.MAX_GPX_BYTES // 1024} КБ — "
+                     "пришли маршрут покороче")
+        # parse_gpx/parse_kml (и, значит, parse_upload для .gpx/.kml) отдают
+        # (точки, имя маршрута) — имя здесь не нужно, разбор ничего не называет.
+        points, _name = route.parse_upload(file.filename or "", data)
+    elif text:
+        points = route.parse_text(text)
+    else:
+        raise HTTPException(400, "Пришли файл GPX/KML или список координат.")
+    return {"points": [[p.lat, p.lon, p.name] for p in points]}
+
+
+class RouteSaveIn(BaseModel):
+    name: str
+    points: list[list]
+
+
+@router.get("/routes")
+async def list_routes(user: webauth.TelegramUser = Depends(current_user)):
+    saved = store.routes_list(user.id)
+    return [{"name": name, **meta} for name, meta in saved.items()]
+
+
+@router.post("/routes", status_code=201)
+async def save_route(body: RouteSaveIn,
+                     user: webauth.TelegramUser = Depends(current_user)):
+    points = _points_or_400(body.points)
+    existed = store.route_exists(user.id, body.name)
+    if not existed and len(store.routes_list(user.id)) >= store.MAX_ROUTES:
+        raise HTTPException(400, f"Сохранено уже {store.MAX_ROUTES} маршрутов — "
+                                 "удали лишний через /delroute или в приложении.")
+    store.route_save(user.id, body.name, [[p.lat, p.lon, p.name] for p in points])
+    return {"name": body.name, "overwritten": existed}
+
+
+@router.delete("/routes/{name}", status_code=204)
+async def delete_route(name: str, user: webauth.TelegramUser = Depends(current_user)):
+    if not store.route_delete(user.id, name):
+        # Чужой маршрут для тебя просто не существует — 403 подтвердил бы,
+        # что такое имя у кого-то есть.
+        raise HTTPException(404, f"маршрут не найден: {name}")
+    return None
 
 
 app.include_router(router)
