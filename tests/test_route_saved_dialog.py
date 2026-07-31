@@ -113,6 +113,20 @@ async def test_routes_shows_a_date_not_a_timestamp(feed, session):
     assert "T" not in line
 
 
+async def test_routes_shows_the_date_in_the_bots_timezone(feed, session):
+    """store пишет UTC, а пилот живёт в TZ бота. Запись, сделанная в 21:00
+    по Тбилиси, — это 17:00 UTC того же дня; но запись в 01:00 по Тбилиси
+    лежит в UTC как 21:00 ПРЕДЫДУЩЕГО дня, и печать UTC-даты показала бы
+    маршрут сохранённым вчера сразу после сохранения."""
+    save("Гудаури")
+    with store.connect() as conn:
+        conn.execute("UPDATE routes SET saved_at = ? WHERE name = ?",
+                     ("2026-08-01T21:00:00+00:00", "Гудаури"))
+    await feed(text_update("/routes"))
+    line = next(l for l in texts(session)[-1].splitlines() if "Гудаури" in l)
+    assert line.endswith("2026-08-02"), "показана UTC-дата вместо местной"
+
+
 async def test_routes_offers_a_button_per_route(feed, session):
     save("Гудаури")
     await feed(text_update("/routes"))

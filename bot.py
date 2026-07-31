@@ -1055,6 +1055,22 @@ async def cmd_saveroute(message: Message, command: CommandObject):
                          f"{route.plural(n, 'точка', 'точки', 'точек')}.")
 
 
+def _local_date(iso: str | None) -> str:
+    """Дата сохранения в часовом поясе бота.
+
+    store пишет UTC (однозначно и сортируемо), а пилот живёт в TZ старта:
+    между 20:00 и полуночью по Тбилиси UTC-дата — это ещё вчера, и /routes
+    показывал бы маршрут сохранённым «вчера» сразу после сохранения.
+    """
+    if not iso:
+        return "—"
+    try:
+        return dt.datetime.fromisoformat(iso).astimezone().date().isoformat()
+    except ValueError:
+        # чужой формат в старой записи: лучше показать как есть, чем упасть
+        return iso.split("T", 1)[0]
+
+
 @dp.message(Command("routes"), flags={"forecast": True})
 async def cmd_routes(message: Message):
     uid = message.from_user.id
@@ -1067,10 +1083,9 @@ async def cmd_routes(message: Message):
     for name in sorted(saved):
         pts = route.points_from_rows(store.route_rows(uid, name)) or []
         n = len(pts)
-        # saved_at — полный ISO-таймстамп (store._now()); удалённый routes.py
-        # хранил дату сохранения (dt.date.today().isoformat()) — показываем
-        # только дату и здесь, без времени, которое пилоту не нужно.
-        saved_at = saved[name].get("saved", "—").split("T", 1)[0]
+        # saved_at — полный ISO-таймстамп (store._now()), в UTC; показываем
+        # дату в местном поясе бота, без времени, которое пилоту не нужно.
+        saved_at = _local_date(saved[name].get("saved"))
         lines.append(f"• {name} — {route.total_km(pts):.0f} км, {n} "
                      f"{route.plural(n, 'точка', 'точки', 'точек')}, "
                      f"{saved_at}")
