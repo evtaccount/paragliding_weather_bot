@@ -8,11 +8,8 @@ import dataclasses
 import hashlib
 import hmac
 import json
-import logging
 import time
 import urllib.parse
-
-log = logging.getLogger("pgbot.webauth")
 
 MAX_AGE_SEC = 24 * 3600
 
