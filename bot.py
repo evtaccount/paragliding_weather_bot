@@ -927,12 +927,12 @@ def _parse_when(args: str):
     return date, departure
 
 
-_ROUTE_CACHE_MAX = 8
+_ROUTE_CACHE_PER_USER = 8
 _route_cache: "OrderedDict[str, dict]" = OrderedDict()
 _route_token = itertools.count(1)
 
 
-def _remember_route(points, name, date, departure):
+def _remember_route(uid, points, name, date, departure):
     """Положить ЗАПРОС в кэш и вернуть короткий токен для callback_data.
 
     Хранится запрос, а не готовый профиль. Погода уже лежит в forecast._rcache,
@@ -940,13 +940,29 @@ def _remember_route(points, name, date, departure):
     обращений к API. Взамен «другое время вылета» становится тем же вызовом
     get_route с другим departure, а не отдельной веткой кода, и расхождений
     между показанной карточкой и данными кнопки быть не может.
+
+    `uid` — чей это маршрут. Кэш общий на процесс, но принадлежность записи
+    хранится явно: без неё /saveroute брал последнюю запись вообще и в командном
+    боте сохранял маршрут соседа, если тот посчитал свой между твоими /route и
+    /saveroute.
     """
     token = format(next(_route_token), "x")
-    _route_cache[token] = {"points": points, "name": name,
+    _route_cache[token] = {"user_id": uid, "points": points, "name": name,
                            "date": date, "departure": departure}
-    while len(_route_cache) > _ROUTE_CACHE_MAX:
-        _route_cache.popitem(last=False)
+    # Квота на пилота, а не на процесс: при общем потолке активный сосед вытеснял
+    # чужие записи, и кнопки под ещё живой карточкой отвечали «маршрут устарел».
+    mine = [t for t, e in _route_cache.items() if e["user_id"] == uid]
+    for stale in mine[:-_ROUTE_CACHE_PER_USER]:
+        del _route_cache[stale]
     return token
+
+
+def _last_route_of(uid):
+    """Последний маршрут, посчитанный ЭТИМ пилотом. None, если он ещё не считал."""
+    for entry in reversed(_route_cache.values()):
+        if entry["user_id"] == uid:
+            return entry
+    return None
 
 
 def _route_keyboard(token, profile):
@@ -968,7 +984,7 @@ def _route_keyboard(token, profile):
     return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
 
 
-async def _send_route(message: Message, points, name, date, departure, *, cfg):
+async def _send_route(message: Message, points, name, date, departure, *, cfg, uid):
     """`cfg` — настройки пилота; как и у send_forecast, приходят параметром, потому
     что у сообщения под кнопкой автор — бот, а не тот, кто нажал.
 
@@ -979,7 +995,7 @@ async def _send_route(message: Message, points, name, date, departure, *, cfg):
         profile = await forecast.get_route(points, name, date, departure, cfg=cfg)
     except forecast.ForecastError as e:
         return await message.answer(str(e))
-    token = _remember_route(points, name, date, departure)
+    token = _remember_route(uid, points, name, date, departure)
     chunks = list(_chunks(route.render_card(profile)))
     for chunk in chunks[:-1]:
         await message.answer(chunk)
@@ -1012,13 +1028,13 @@ async def cmd_route(message: Message, command: CommandObject):
         if pts is None:
             return await message.answer(ROUTE_HELP)
         date, departure = _parse_when(rest)
-        return await _send_route(message, pts, name, date, departure, cfg=cfg)
+        return await _send_route(message, pts, name, date, departure, cfg=cfg, uid=uid)
     date, departure = _parse_when(command.args or "")
     try:
         points = route.parse_text(body, first_line_no=2)  # первая строка — сама команда
     except route.RouteError as e:
         return await message.answer(f"❌ {e}")
-    await _send_route(message, points, None, date, departure, cfg=cfg)
+    await _send_route(message, points, None, date, departure, cfg=cfg, uid=uid)
 
 
 @dp.message(Command("saveroute"), flags={"forecast": True})
@@ -1029,10 +1045,10 @@ async def cmd_saveroute(message: Message, command: CommandObject):
     err = name_error(name)
     if err:
         return await message.answer(f"❌ {err}")
-    if not _route_cache:
-        return await message.answer("Сначала посчитай маршрут через /route.")
     uid = message.from_user.id
-    entry = next(reversed(_route_cache.values()))
+    entry = _last_route_of(uid)
+    if entry is None:
+        return await message.answer("Сначала посчитай маршрут через /route.")
     pts = entry["points"]
     if len(pts) > route.MAX_POINTS:
         await message.answer(f"⚠️ слишком много точек: {len(pts)}, "
@@ -1206,7 +1222,8 @@ async def cb_route_departure_pick(cb: CallbackQuery):
         return
     h, m = hhmm.split(":")
     await _send_route(msg, entry["points"], entry["name"], entry["date"],
-                      int(h) + int(m) / 60.0, cfg=store.prefs(cb.from_user.id))
+                      int(h) + int(m) / 60.0, cfg=store.prefs(cb.from_user.id),
+                      uid=cb.from_user.id)
 
 
 @dp.callback_query(F.data.startswith("rr|"))
@@ -1221,7 +1238,7 @@ async def cb_saved_route(cb: CallbackQuery):
     if not pts:
         return await msg.answer("Маршрут не читается — сохрани его заново.")
     await _send_route(msg, pts, name, dt.date.today().isoformat(), None,
-                      cfg=store.prefs(uid))
+                      cfg=store.prefs(uid), uid=uid)
 
 
 _DOC_PARSERS = ((".gpx", route.parse_gpx), (".kml", route.parse_kml))
@@ -1247,7 +1264,8 @@ async def route_document(message: Message):
         return await message.answer(f"❌ {e}")
     date, departure = _parse_when(message.caption or "")
     await _send_route(message, points, name, date, departure,
-                      cfg=store.prefs(message.from_user.id))
+                      cfg=store.prefs(message.from_user.id),
+                      uid=message.from_user.id)
 
 
 @dp.message()

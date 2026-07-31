@@ -61,14 +61,16 @@ async def test_every_callback_data_fits_telegram(feed, session, api):
 async def test_the_token_remembers_the_request_not_the_answer(feed, api):
     await feed(text_update(BODY))
     entry = botmod._route_cache[_last_token()]
-    assert set(entry) == {"points", "name", "date", "departure"}
+    # user_id — чей это маршрут: без него /saveroute брал последнюю запись вообще
+    assert set(entry) == {"user_id", "points", "name", "date", "departure"}
     assert all(isinstance(p, route.Point) for p in entry["points"])
 
 
 async def test_the_cache_has_a_ceiling(feed, api):
-    for _ in range(botmod._ROUTE_CACHE_MAX + 3):
+    """Потолок теперь на пилота, а не на процесс — см. соседний тест про соседа."""
+    for _ in range(botmod._ROUTE_CACHE_PER_USER + 3):
         await feed(text_update(BODY))
-    assert len(botmod._route_cache) == botmod._ROUTE_CACHE_MAX
+    assert len(botmod._route_cache) == botmod._ROUTE_CACHE_PER_USER
 
 
 async def test_the_analysis_button_is_hidden_without_a_key(feed, session, api):

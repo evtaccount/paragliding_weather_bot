@@ -81,7 +81,7 @@ async def test_saveroute_refuses_too_many_points(feed, session):
     """
     import bot as botmod
     long_route = [route.Point(42.0 + i / 1000.0, 44.0) for i in range(route.MAX_POINTS + 1)]
-    botmod._remember_route(long_route, None, "2026-07-29", None)
+    botmod._remember_route(TEST_USER_ID, long_route, None, "2026-07-29", None)
     await feed(text_update("/saveroute Длинный"))
     assert "слишком много точек" in texts(session)[-1]
     assert saved() == {}
@@ -169,3 +169,42 @@ async def test_a_multi_word_name_still_resolves(feed, session, api):
 async def test_an_unknown_name_falls_back_to_the_help(feed, session):
     await feed(text_update("/route Казбеги"))
     assert "координат" in texts(session)[-1]
+
+
+# ---------------------------------------------------------------- чужой маршрут
+OTHER_BODY = ("/route\n"
+              "41.0000, 43.0000, чужой старт\n"
+              "41.5000, 43.5000, чужой финиш")
+
+
+async def test_saveroute_takes_your_route_not_a_teammates(feed, session, api):
+    """Кэш посчитанных маршрутов один на процесс, и /saveroute брал из него
+    последнюю запись, не глядя на автора. Бот командный: пока ты набираешь
+    /saveroute, сосед считает свой маршрут — и ты сохраняешь чужой."""
+    await feed(text_update(BODY, uid=1))
+    await feed(text_update(OTHER_BODY, uid=2))
+    await feed(text_update("/saveroute Мой", uid=1))
+    rows = store.route_rows(1, "Мой")
+    assert rows is not None, "маршрут не сохранился вовсе"
+    assert rows[0][0] == pytest.approx(42.4776), "сохранён маршрут соседа"
+
+
+async def test_saveroute_ignores_a_teammates_route_when_you_have_none(feed, session, api):
+    """У соседа маршрут посчитан, у тебя нет — сохранять нечего."""
+    await feed(text_update(OTHER_BODY, uid=2))
+    await feed(text_update("/saveroute Мой", uid=1))
+    assert "/route" in texts(session)[-1]
+    assert store.route_rows(1, "Мой") is None
+
+
+async def test_a_teammate_cannot_evict_your_computed_route(feed, session, api):
+    """Квота кэша на пилота, а не на процесс: иначе активный сосед вытесняет
+    твои записи и кнопки под твоей карточкой отвечают «маршрут устарел»."""
+    import bot as botmod
+    await feed(text_update(BODY, uid=1))
+    for _ in range(botmod._ROUTE_CACHE_PER_USER + 2):
+        await feed(text_update(OTHER_BODY, uid=2))
+    await feed(text_update("/saveroute Мой", uid=1))
+    rows = store.route_rows(1, "Мой")
+    assert rows is not None, "маршрут вытеснен соседом"
+    assert rows[0][0] == pytest.approx(42.4776)
