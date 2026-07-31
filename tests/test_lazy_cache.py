@@ -4,6 +4,7 @@
 и рендерил бы их на каждый запрос из приложения, где они не нужны.
 """
 import asyncio
+import pathlib
 
 import pytest
 
@@ -79,3 +80,29 @@ def test_assess_day_computed_once_per_entry(net, monkeypatch):
     asyncio.run(forecast.get_facts("Гудаури", "1d", DATE, model="auto"))
     asyncio.run(forecast.get_forecast("Гудаури", "1d", DATE, model="auto"))
     assert len(calls) == 1
+
+
+async def test_wind_grid_data_returns_numbers_not_a_picture(net, monkeypatch):
+    """Приложение рисует графики само. get_wind_grid отдаёт PNG — он остаётся
+    чату; для HTTP нужен тот же словарь до отрисовки."""
+    drawn = []
+    monkeypatch.setattr(charts, "wind_grid_png",
+                        lambda *a, **kw: drawn.append(1) or "/dev/null")
+
+    grid = await forecast.wind_grid_data("Гудаури", DATE, model="auto")
+
+    assert not drawn, "числа не должны стоить отрисовки PNG"
+    assert grid["hours"], "часы светового дня"
+    assert grid["levels"][0]["hourly"][0]["wind_ms"] is not None
+
+
+async def test_wind_grid_png_and_data_share_the_warm_cache(net, monkeypatch):
+    """Кнопка в чате и экран в приложении не должны стоить двух запросов
+    к open-meteo: сетка берётся из того же тёплого кэша 1d."""
+    monkeypatch.setattr(charts, "wind_grid_png", lambda *a, **kw: "/dev/null")
+    monkeypatch.setattr(pathlib.Path, "read_bytes", lambda self: b"png")
+
+    await forecast.wind_grid_data("Гудаури", DATE, model="auto")
+    await forecast.get_wind_grid("Гудаури", DATE, model="auto")
+
+    assert len(net) == 1, f"сходили в сеть {len(net)} раза вместо одного"

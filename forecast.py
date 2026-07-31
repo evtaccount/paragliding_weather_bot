@@ -374,14 +374,28 @@ async def get_facts(site_name: str, rng: str, date: str | None = None, *, model)
     return _derive(site, rng, data, assessment, derived, "facts")
 
 
-async def get_wind_grid(site_name: str, date: str, *, model) -> bytes:
-    """PNG of the altitude × hour wind grid for a single day. Reuses the warm 1d cache
-    (no re-fetch) and builds the image on demand — /today never pays for it unused."""
+async def wind_grid_data(site_name: str, date: str, *, model) -> dict:
+    """Сетка «высота × час» числами. Тот же тёплый кэш 1d, что у карточки.
+
+    get_wind_grid отдаёт PNG для чата; приложение рисует сетку само, и
+    гонять картинку туда, где нужны числа, значит считать одно и то же
+    дважды — и разойтись в оформлении с остальными графиками приложения.
+    """
     site, date, key = _resolve(site_name, "1d", date, model)
     data, assessment, derived = await _ensure(site, "1d", date, key, model)
     grid = _derive(site, "1d", data, assessment, derived, "grid")
     if not grid:
         raise ForecastError("Данные по высотам недоступны для этого дня.")
+    return grid
+
+
+async def get_wind_grid(site_name: str, date: str, *, model) -> bytes:
+    """PNG сетки для чата. Данные берутся общей функцией: две независимые
+    выборки уровней разъехались бы при первой правке фильтра."""
+    grid = await wind_grid_data(site_name, date, model=model)
+    site = store.find_site(site_name)
+    if site is None:
+        raise ForecastError(f"Старт не найден: {site_name}. /sites — список.")
     out = tempfile.mkdtemp(prefix="pgwg_")
     try:
         import charts

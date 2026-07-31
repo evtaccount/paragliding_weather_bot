@@ -195,4 +195,47 @@ async def elevation(body: Coords, _user: webauth.TelegramUser = Depends(current_
     return {"elevation_m": await forecast.fetch_elevation(body.lat, body.lon)}
 
 
+# ------------------------------------------------------------------ прогноз
+def _model_for(uid: int, override: str | None) -> str:
+    """Эффективная модель: разовый выбор из query, иначе постоянная настройка.
+
+    Разрешается ЗДЕСЬ и передаётся домену явно: forecast обязан получать
+    model= параметром, угадывать он не имеет права (см. фазу 2).
+    """
+    if override is None:
+        return store.prefs(uid).model_key
+    if override not in engine.MODELS:
+        raise HTTPException(400, f"неизвестная модель: {override}")
+    return override
+
+
+def _site_or_404(name: str) -> dict:
+    site = store.find_site(name)
+    if site is None:
+        raise HTTPException(404, f"старт не найден: {name}")
+    return site
+
+
+@router.get("/forecast")
+async def read_forecast(site: str, range: str, date: str | None = None,
+                        model: str | None = None,
+                        user: webauth.TelegramUser = Depends(current_user)):
+    """Факты, а не картинка: приложение рисует графики само."""
+    _site_or_404(site)
+    return await forecast.get_facts(site, range, date, model=_model_for(user.id, model))
+
+
+@router.get("/forecast/wind-grid")
+async def read_wind_grid(site: str, date: str, model: str | None = None,
+                         user: webauth.TelegramUser = Depends(current_user)):
+    _site_or_404(site)
+    return await forecast.wind_grid_data(site, date, model=_model_for(user.id, model))
+
+
+@router.get("/scan")
+async def read_scan(model: str | None = None,
+                    user: webauth.TelegramUser = Depends(current_user)):
+    return await forecast.scan_week(model=_model_for(user.id, model))
+
+
 app.include_router(router)
