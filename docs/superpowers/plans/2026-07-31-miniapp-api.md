@@ -1098,6 +1098,17 @@ async def test_wind_grid_png_and_data_share_the_warm_cache(net, monkeypatch):
     await forecast.get_wind_grid("Гудаури", DATE, model="auto")
 
     assert len(net) == 1, f"сходили в сеть {len(net)} раза вместо одного"
+
+
+async def test_wind_grid_png_works_for_an_adhoc_point(net, monkeypatch):
+    """Разовая точка по координатам — не запись в библиотеке стартов, а строка
+    в adhoc. Резолв только через find_site теряет её: сетка успевала
+    посчитаться и падала на отрисовке, уже сходив в сеть."""
+    monkeypatch.setattr(charts, "wind_grid_png", lambda *a, **kw: "/dev/null")
+    monkeypatch.setattr(pathlib.Path, "read_bytes", lambda self: b"png")
+    name = forecast.register_adhoc(42.5, 44.5, 2000)
+
+    assert await forecast.get_wind_grid(name, DATE, model="auto") == b"png"
 ```
 
 Добавить `import pathlib` в начало файла, если его там ещё нет.
@@ -1142,7 +1153,38 @@ async def get_wind_grid(site_name: str, date: str, *, model) -> bytes:
         shutil.rmtree(out, ignore_errors=True)
 ```
 
-Внимание: `charts.wind_grid_png(grid, site, out)` нуждается в `site`, а после рефакторинга он в этой функции не резолвится. Вернуть его из `wind_grid_data` нельзя — там контракт «словарь сетки». Решение: `get_wind_grid` резолвит старт сам одной строкой `site = store.find_site(site_name)`; если `None` — та же `ForecastError`, что и раньше. Проверить, что существующие тесты `get_wind_grid` остаются зелёными без правок.
+Внимание: `charts.wind_grid_png(grid, site, out)` нуждается в `site`, а после рефакторинга он в этой функции не резолвится. Вернуть его из `wind_grid_data` нельзя — там контракт «словарь сетки».
+
+Резолвить старт **отдельной строкой `store.find_site(site_name)` нельзя**: `_resolve` (`forecast.py:173`) делает это иначе —
+
+```python
+site = store.find_site(site_name) or store.adhoc_get(site_name)
+```
+
+Разовые точки по координатам живут в `adhoc`: пилот шлёт боту координаты, `register_adhoc` кладёт точку туда, и она становится обычным «стартом» для прогноза. С резолвом только через `find_site` такая точка успешно посчиталась бы в `wind_grid_data` и упала бы строкой ниже, уже после запроса к сети, — «Ветер по высотам» под карточкой по координатам перестал бы работать.
+
+Поэтому резолв имени выносится в одну функцию, и обе стороны зовут её:
+
+```python
+def _site_by_name(site_name: str):
+    """Старт по имени: сохранённый в библиотеке или разовая точка по координатам.
+
+    Одна функция на всех, кто резолвит имя. Вторая строка `find_site(...)`
+    где-нибудь ещё молча теряла бы разовые точки — и обнаружилось бы это
+    не падением, а тем, что кнопка под карточкой по координатам не работает.
+    """
+    return store.find_site(site_name) or store.adhoc_get(site_name)
+```
+
+`_resolve` переходит на неё, `get_wind_grid` тоже:
+
+```python
+    site = _site_by_name(site_name)
+    if site is None:
+        raise ForecastError(f"Старт не найден: {site_name}. /sites — список.")
+```
+
+Существующие тесты `get_wind_grid` обязаны остаться зелёными без правок.
 
 - [ ] **Step 4: Тесты кэша проходят**
 
@@ -1341,7 +1383,7 @@ async def read_scan(model: str | None = None,
 - [ ] **Step 7: Тесты проходят**
 
 Run: `python -m pytest tests/test_api_forecast.py -q`
-Expected: PASS, 14 тестов.
+Expected: PASS, 13 тестов.
 
 - [ ] **Step 8: Полный прогон**
 
