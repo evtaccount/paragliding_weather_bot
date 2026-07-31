@@ -92,7 +92,11 @@ async def test_the_api_shares_the_registry_with_the_bot(client, slow):
     прогноз, — это второй запрос того же пилота."""
     guards.INFLIGHT.acquire(1)
     try:
-        r = await client.get("/api/forecast?site=Гудаури&range=1d", headers=header(uid=1))
+        # wait_for по той же причине, что и выше: без троттлинга запрос уходит
+        # в висящий расчёт, и тест зависает вместо красной фазы.
+        r = await asyncio.wait_for(
+            client.get("/api/forecast?site=Гудаури&range=1d", headers=header(uid=1)),
+            timeout=5)
         assert r.status_code == 429
     finally:
         guards.INFLIGHT.release(1)
