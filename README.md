@@ -352,8 +352,11 @@ journalctl -u pgbot -f
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env          # BOT_TOKEN (+ GEMINI_API_KEY)
-python bot.py
+python app.py                 # бот + API на 127.0.0.1:8080
 ```
+
+`python bot.py` по-прежнему поднимает только чат, без HTTP-слоя — пригодится,
+если API не нужен.
 
 Или через `make`: `make install`, `make run`, `make docker-up`, `make docker-logs`.
 
