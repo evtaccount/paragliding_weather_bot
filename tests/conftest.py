@@ -6,6 +6,7 @@ import os
 import pathlib
 import sys
 import tempfile
+import time
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -21,6 +22,13 @@ os.environ["BOT_TOKEN"] = "42:TEST"
 os.environ["ALLOWED_USER_IDS"] = ""  # open mode — whitelist passes everyone
 os.environ["COOLDOWN_SEC"] = "0"
 os.environ["GEMINI_API_KEY"] = ""
+
+# Часовой пояс закреплён: от него зависит вся датная логика бота — /today,
+# /tomorrow, выбор дня прогноза, дата сохранения маршрута. Без этого тесты
+# проверяют пояс машины, на которой их запустили, а не тот, в котором бот
+# живёт в проде (docker-compose: TZ=${TZ:-Asia/Tbilisi}).
+os.environ["TZ"] = "Asia/Tbilisi"
+time.tzset()
 
 DEFAULT_SITES = [
     {"name": "Гудаури", "aliases": ["gudauri", "гуда"], "lat": 42.47, "lon": 44.48,
