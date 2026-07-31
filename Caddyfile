@@ -11,7 +11,7 @@
 	# handle_path: handle_path срезает совпавший префикс из пути, и API
 	# получил бы "/health" вместо "/api/health" — 404 на каждый запрос.
 	handle /api/* {
-		reverse_proxy pgbot:{$API_PORT:-8080}
+		reverse_proxy pgbot:{$API_PORT:8080}
 	}
 
 	handle {

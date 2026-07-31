@@ -432,8 +432,6 @@ async def save_route(body: RouteSaveIn,
     маршруте при одной повреждённой записи давал 500 вместо 400.
     """
     name = body.name.strip()
-    if not name:
-        raise HTTPException(400, "Как назвать маршрут?")
     bad = store.name_error(name)
     if bad:
         raise HTTPException(400, bad)

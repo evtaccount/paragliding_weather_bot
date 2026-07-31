@@ -98,6 +98,22 @@ async def test_a_site_name_that_breaks_buttons_is_400(client):
     assert store.load_sites() and len(store.load_sites()) == len(DEFAULT_SITES)
 
 
+async def test_an_empty_site_name_is_400(client):
+    """store.name_error не проверял пустоту — та же дыра, что чинили для
+    маршрутов (см. tests/test_api_routes_crud.py): пустое имя дало бы кнопку
+    с пустым текстом, а библиотека стартов ОБЩАЯ — сломанная кнопка была бы
+    видна каждому пилоту, а не только тому, кто её завёл."""
+    r = await client.post("/api/sites", json={**NEW, "name": ""}, headers=header())
+    assert r.status_code == 400
+    assert store.load_sites() and len(store.load_sites()) == len(DEFAULT_SITES)
+
+
+async def test_a_whitespace_only_site_name_is_400(client):
+    r = await client.post("/api/sites", json={**NEW, "name": "   "}, headers=header())
+    assert r.status_code == 400
+    assert store.load_sites() and len(store.load_sites()) == len(DEFAULT_SITES)
+
+
 async def test_impossible_latitude_is_400(client):
     """bot.py проверяет -90..90/-180..180 в двух местах (cmd_add, parse_coords);
     приложение делило с ними общую библиотеку стартов, но не саму проверку —

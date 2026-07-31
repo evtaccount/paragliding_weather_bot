@@ -53,3 +53,30 @@ def test_api_port_is_driven_from_a_single_source():
     caddyfile = _read("Caddyfile")
     assert compose.count("${API_PORT:-8080}") >= 3  # pgbot env, expose, caddy env
     assert "{$API_PORT" in caddyfile
+
+
+def test_caddyfile_default_port_syntax_has_no_hyphen():
+    """Docker Compose пишет умолчания как ${VAR:-default} (с дефисом), у Caddy
+    свой синтаксис — {$VAR:default}, БЕЗ дефиса: плейсхолдер режется по
+    первому двоеточию, и {$API_PORT:-8080} превращается в литеральную строку
+    "-8080". `caddy adapt` на файле без API_PORT в окружении падает:
+    'parsing upstream "pgbot:-8080": invalid start port'. Конфиг не
+    загружается вообще — ни TLS, ни статика, ни прокси."""
+    text = _read("Caddyfile")
+    assert "{$API_PORT:-8080}" not in text
+    assert "{$API_PORT:8080}" in text
+
+
+def test_compose_sets_api_host_to_all_interfaces_for_pgbot():
+    """app.py по умолчанию слушает 127.0.0.1 (верно для bare metal, см.
+    tests/test_app_entry.py). В Docker pgbot и caddy — разные контейнеры с
+    разными сетевыми пространствами: loopback внутри pgbot снаружи контейнера
+    не виден, и Caddy получил бы ECONNREFUSED (502) на каждый /api/* запрос.
+    Это безопасно ТОЛЬКО потому, что pgbot публикует порт через `expose:` без
+    `ports:` — границу держит сеть compose, а не бинд. Без этой строки
+    пропуск остаётся зелёным: healthcheck стучится в 127.0.0.1 изнутри самого
+    контейнера pgbot и не видит, что снаружи (для caddy) порт недостижим —
+    так что регрессию тесты app.py/test_app_entry.py не ловят, только этот."""
+    text = _read("docker-compose.yml")
+    pgbot_block = text.split("\n  caddy:")[0]  # услуги идут по порядку: pgbot, затем caddy
+    assert "API_HOST=0.0.0.0" in pgbot_block
