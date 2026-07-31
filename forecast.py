@@ -165,12 +165,22 @@ def register_adhoc(lat: float, lon: float, elev: int) -> str:
     return store.adhoc_put(lat, lon, elev)
 
 
+def _site_by_name(site_name: str):
+    """Старт по имени: сохранённый в библиотеке или разовая точка по координатам.
+
+    Одна функция на всех, кто резолвит имя. Вторая строка `find_site(...)`
+    где-нибудь ещё молча теряла бы разовые точки — и обнаружилось бы это
+    не падением, а тем, что кнопка под карточкой по координатам не работает.
+    """
+    return store.find_site(site_name) or store.adhoc_get(site_name)
+
+
 def _resolve(site_name: str, rng: str, date: str | None, model):
     """`model` обязателен: вызывающий (одна из пяти публичных функций forecast)
     уже разрешил его сам, и угадывать здесь нечего."""
     if rng not in engine.RANGE_DAYS:
         raise ForecastError(f"Неизвестный диапазон: {rng}")
-    site = store.find_site(site_name) or store.adhoc_get(site_name)
+    site = _site_by_name(site_name)
     if site is None:
         raise ForecastError(f"Старт не найден: {site_name}. /sites — список.")
     if rng == "1d" and not date:
@@ -393,7 +403,7 @@ async def get_wind_grid(site_name: str, date: str, *, model) -> bytes:
     """PNG сетки для чата. Данные берутся общей функцией: две независимые
     выборки уровней разъехались бы при первой правке фильтра."""
     grid = await wind_grid_data(site_name, date, model=model)
-    site = store.find_site(site_name)
+    site = _site_by_name(site_name)
     if site is None:
         raise ForecastError(f"Старт не найден: {site_name}. /sites — список.")
     out = tempfile.mkdtemp(prefix="pgwg_")

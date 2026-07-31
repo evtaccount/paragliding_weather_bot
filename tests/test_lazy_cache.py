@@ -106,3 +106,14 @@ async def test_wind_grid_png_and_data_share_the_warm_cache(net, monkeypatch):
     await forecast.get_wind_grid("Гудаури", DATE, model="auto")
 
     assert len(net) == 1, f"сходили в сеть {len(net)} раза вместо одного"
+
+
+async def test_wind_grid_png_works_for_an_adhoc_point(net, monkeypatch):
+    """Разовая точка по координатам — не запись в библиотеке стартов, а строка
+    в adhoc. Резолв только через find_site теряет её: сетка успевала
+    посчитаться и падала на отрисовке, уже сходив в сеть."""
+    monkeypatch.setattr(charts, "wind_grid_png", lambda *a, **kw: "/dev/null")
+    monkeypatch.setattr(pathlib.Path, "read_bytes", lambda self: b"png")
+    name = forecast.register_adhoc(42.5, 44.5, 2000)
+
+    assert await forecast.get_wind_grid(name, DATE, model="auto") == b"png"
