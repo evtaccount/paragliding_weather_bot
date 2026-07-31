@@ -97,6 +97,19 @@ async def read_prefs(user: webauth.TelegramUser = Depends(current_user)):
 @router.patch("/prefs")
 async def update_prefs(body: PrefsPatch,
                        user: webauth.TelegramUser = Depends(current_user)):
+    """Порядок операций держит запрос неделимым: 400 означает, что не
+    сохранилось НИЧЕГО.
+
+    Проверка ключа модели идёт первой и ничего не пишет. `set_speed` —
+    единственная запись, способная бросить исключение, поэтому она вторая:
+    к моменту, когда пишутся остальные поля, упасть уже нечему. Порядок
+    «пишем по мере разбора» сохранял бы скорость и уходил с 400 из-за
+    модели — ответ говорил бы «не принято», а половина настроек уже
+    поменялась.
+    """
+    # Список моделей — знание домена: store ключ не проверяет намеренно.
+    if body.model_key is not None and body.model_key not in engine.MODELS:
+        raise HTTPException(400, f"неизвестная модель: {body.model_key}")
     if body.avg_route_speed_kmh is not None:
         try:
             store.set_speed(user.id, body.avg_route_speed_kmh)
@@ -105,9 +118,6 @@ async def update_prefs(body: PrefsPatch,
     if body.wind_correction_enabled is not None:
         store.set_wind_correction(user.id, body.wind_correction_enabled)
     if body.model_key is not None:
-        # Список моделей — знание домена: store ключ не проверяет намеренно.
-        if body.model_key not in engine.MODELS:
-            raise HTTPException(400, f"неизвестная модель: {body.model_key}")
         store.set_model(user.id, body.model_key)
     return _prefs_payload(user.id)
 

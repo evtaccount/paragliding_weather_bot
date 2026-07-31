@@ -76,3 +76,27 @@ async def test_prefs_are_personal(client):
     await client.patch("/api/prefs", json={"model_key": "icon"}, headers=header(uid=1))
     body = (await client.get("/api/prefs", headers=header(uid=2))).json()
     assert body["model_key"] == store.DEFAULT_PREFS.model_key, "настройки соседа"
+
+
+async def test_a_rejected_patch_saves_nothing_at_all(client):
+    """400 означает «не сохранилось ничего». Запись по мере разбора успевала
+    сохранить скорость и падала на модели: ответ говорил «не принято», а
+    половина настроек уже поменялась."""
+    r = await client.patch("/api/prefs",
+                           json={"avg_route_speed_kmh": 33.0,
+                                 "wind_correction_enabled": False,
+                                 "model_key": "нет-такой"},
+                           headers=header(uid=1))
+    assert r.status_code == 400
+    p = store.prefs(1)
+    assert p.avg_route_speed_kmh == store.DEFAULT_PREFS.avg_route_speed_kmh
+    assert p.wind_correction_enabled is store.DEFAULT_PREFS.wind_correction_enabled
+
+
+async def test_a_rejected_speed_leaves_the_other_fields_alone(client):
+    """Вторая половина того же: падает не модель, а скорость."""
+    r = await client.patch("/api/prefs",
+                           json={"avg_route_speed_kmh": 500.0, "model_key": "gfs"},
+                           headers=header(uid=1))
+    assert r.status_code == 400
+    assert store.prefs(1).model_key == store.DEFAULT_PREFS.model_key
