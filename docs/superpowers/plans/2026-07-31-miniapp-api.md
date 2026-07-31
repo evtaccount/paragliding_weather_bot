@@ -2751,10 +2751,16 @@ Expected: PASS, 4 теста.
 
 - [ ] **Step 9: Проверить конфиг Caddy, не поднимая его**
 
+`caddy validate` не просто разбирает конфиг, а **загружает** его — включая файлы сертификата, на которые указывает `tls`. Без них команда падает, и падает не из-за синтаксиса. Поэтому нужен одноразовый самоподписанный сертификат:
+
 ```bash
+CERTS=$(mktemp -d)
+openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj "/CN=fly.example.com" \
+  -keyout "$CERTS/privkey.pem" -out "$CERTS/fullchain.pem" 2>/dev/null
 docker run --rm -e PUBLIC_DOMAIN=fly.example.com \
-  -v "$PWD/Caddyfile:/etc/caddy/Caddyfile:ro" \
+  -v "$PWD/Caddyfile:/etc/caddy/Caddyfile:ro" -v "$CERTS:/certs:ro" \
   caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile
+rm -rf "$CERTS"
 ```
 Expected: `Valid configuration`. Ошибка синтаксиса, найденная на сервере в момент раскатки, стоит дороже.
 
@@ -2769,7 +2775,15 @@ Expected: `Valid configuration`. Ошибка синтаксиса, найден
 - как перейти на автоматический Let's Encrypt (удалить строку `tls`);
 - отметить, что `static/` — заглушка и уедет на фазе 4.
 
-Раздел раскатки на systemd (README:297) тоже правится: там `python bot.py` меняется на `python app.py`, и появляется оговорка, что без Caddy приложение работает только по 127.0.0.1.
+Раздел раскатки на systemd правится тоже, и правится **не в README**: строка запуска живёт в `deploy/pgbot.service.tmpl`:
+
+```
+ExecStart=__PY__ -u bot.py
+```
+
+Её надо перевести на `app.py`. Оставленная как есть, она поднимает на bare-metal бота **без** HTTP-слоя: чат работает, приложение мертво, и никакой ошибки при этом нет. В README к этому разделу добавляется оговорка, что без Caddy приложение доступно только по 127.0.0.1.
+
+`bot.py` при этом остаётся рабочей точкой входа — но точкой входа *раскатки* становится `app.py`.
 
 - [ ] **Step 11: Полный прогон**
 
