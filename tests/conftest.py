@@ -151,3 +151,31 @@ def elevation(monkeypatch):
         return 1234
 
     monkeypatch.setattr(forecast, "fetch_elevation", fake)
+
+
+@pytest.fixture()
+async def client():
+    """HTTP-клиент поверх ASGI-приложения: без сокета и свободного порта.
+
+    Импорт api откладывается до вызова фикстуры — модуль тянет FastAPI, и
+    падение импорта не должно ронять сбор тестов, которые до API не касаются.
+    """
+    import httpx
+
+    import api
+    transport = httpx.ASGITransport(app=api.app)
+    async with httpx.AsyncClient(transport=transport,
+                                 base_url="http://test") as c:
+        yield c
+
+
+@pytest.fixture()
+def allowlist(monkeypatch):
+    """Переписать ALLOWED_USER_IDS на время теста.
+
+    guards.allowed_ids() читает окружение на каждом вызове, поэтому
+    достаточно подменить переменную.
+    """
+    def _set(value: str):
+        monkeypatch.setenv("ALLOWED_USER_IDS", value)
+    return _set

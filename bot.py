@@ -1288,7 +1288,7 @@ def _bootstrap_store() -> dict:
     """
     repo_root = os.path.dirname(os.path.abspath(engine.__file__))
     data_dir = os.path.dirname(store.DB_PATH) or "."
-    report = store.bootstrap(data_dir, guards._allowed_ids(),
+    report = store.bootstrap(data_dir, guards.allowed_ids(),
                              os.path.join(repo_root, "sites.json"),
                              extra_dirs=(repo_root,),
                              valid_model_keys=set(engine.MODELS))

@@ -27,17 +27,31 @@ log = logging.getLogger("pgbot.guards")
 _REFUSAL_COOLDOWN = 60  # seconds between refusal replies to the same stranger
 
 
-def _allowed_ids() -> frozenset[int]:
+_warned_open = False
+
+
+def allowed_ids() -> frozenset[int]:
+    """Кому можно — общий список для чата и приложения.
+
+    Публичная: зовут три модуля (middleware, bootstrap хранилища, HTTP-слой),
+    и подчёркивание в чужом импорте означало бы, что граница проведена не там.
+
+    Предупреждение об открытом режиме печатается один раз за процесс: HTTP-слой
+    зовёт эту функцию на каждый запрос, и построчный вой в логе утопил бы всё
+    остальное.
+    """
+    global _warned_open
     raw = os.environ.get("ALLOWED_USER_IDS", "")
     ids = frozenset(int(p) for p in raw.replace(";", ",").split(",") if p.strip())
-    if not ids:
+    if not ids and not _warned_open:
+        _warned_open = True
         log.warning("ALLOWED_USER_IDS не задан — бот открыт для ВСЕХ пользователей")
     return ids
 
 
 class WhitelistMiddleware(BaseMiddleware):
     def __init__(self):
-        self.allowed = _allowed_ids()
+        self.allowed = allowed_ids()
         self._refused_at: dict[int, float] = {}
 
     async def __call__(self, handler, event, data):
