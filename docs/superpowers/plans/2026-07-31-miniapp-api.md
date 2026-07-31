@@ -1166,12 +1166,17 @@ site = store.find_site(site_name) or store.adhoc_get(site_name)
 Поэтому резолв имени выносится в одну функцию, и обе стороны зовут её:
 
 ```python
-def _site_by_name(site_name: str):
+def site_by_name(site_name: str):
     """Старт по имени: сохранённый в библиотеке или разовая точка по координатам.
 
-    Одна функция на всех, кто резолвит имя. Вторая строка `find_site(...)`
-    где-нибудь ещё молча теряла бы разовые точки — и обнаружилось бы это
-    не падением, а тем, что кнопка под карточкой по координатам не работает.
+    Одна функция на всех, кто резолвит имя, и публичная намеренно: её зовёт
+    и HTTP-слой. Вторая строка `find_site(...)` где-нибудь ещё молча теряла
+    бы разовые точки — и обнаружилось бы это не падением, а тем, что кнопка
+    под карточкой по координатам не работает.
+
+    Что считается стартом для прогноза — знание forecast, а не хранилища:
+    `store` про разовые точки знает, но не знает, что они равноправны
+    сохранённым.
     """
     return store.find_site(site_name) or store.adhoc_get(site_name)
 ```
@@ -1179,10 +1184,12 @@ def _site_by_name(site_name: str):
 `_resolve` переходит на неё, `get_wind_grid` тоже:
 
 ```python
-    site = _site_by_name(site_name)
+    site = site_by_name(site_name)
     if site is None:
         raise ForecastError(f"Старт не найден: {site_name}. /sites — список.")
 ```
+
+**Та же функция обязательна и в `api.py`** (задача 4, шаг 6): `_site_or_404` — третье место, где резолвится имя, и `store.find_site` там означал бы 404 на законную точку по координатам ещё до вызова домена.
 
 Существующие тесты `get_wind_grid` обязаны остаться зелёными без правок.
 
@@ -1330,6 +1337,17 @@ async def test_scan_uses_the_pilots_model(client, monkeypatch):
 
 async def test_forecast_needs_authorization(client, facts):
     assert (await client.get("/api/forecast?site=Гудаури&range=1d")).status_code == 401
+
+
+async def test_an_adhoc_point_is_a_site_for_the_endpoint_too(client, facts):
+    """Разовая точка по координатам живёт в adhoc, а не в библиотеке стартов.
+    Проверка существования только через find_site отдала бы 404 на законную
+    точку ещё до вызова домена — тест на уровне forecast этого не поймал бы,
+    он ходит мимо api.py."""
+    name = forecast.register_adhoc(42.5, 44.5, 2000)
+    r = await client.get(f"/api/forecast?site={name}&range=1d", headers=header())
+    assert r.status_code == 200
+    assert facts, "запрос должен был дойти до домена"
 ```
 
 - [ ] **Step 6: Дописать эндпоинты в `api.py`**
@@ -1350,7 +1368,13 @@ def _model_for(uid: int, override: str | None) -> str:
 
 
 def _site_or_404(name: str) -> dict:
-    site = store.find_site(name)
+    """Старт существует, или 404 до похода в сеть.
+
+    Резолвит ТОЙ ЖЕ функцией, что и домен: `store.find_site` в одиночку
+    отдал бы 404 на законную разовую точку по координатам, потому что она
+    живёт в adhoc, а не в библиотеке стартов.
+    """
+    site = forecast.site_by_name(name)
     if site is None:
         raise HTTPException(404, f"старт не найден: {name}")
     return site
@@ -1383,12 +1407,12 @@ async def read_scan(model: str | None = None,
 - [ ] **Step 7: Тесты проходят**
 
 Run: `python -m pytest tests/test_api_forecast.py -q`
-Expected: PASS, 13 тестов.
+Expected: PASS, 14 тестов.
 
 - [ ] **Step 8: Полный прогон**
 
 Run: `python -m pytest -q`
-Expected: 912 passed.
+Expected: 913 passed.
 
 - [ ] **Step 9: Коммит**
 
@@ -1654,7 +1678,7 @@ Expected: PASS, 11 тестов.
 - [ ] **Step 5: Полный прогон**
 
 Run: `python -m pytest -q`
-Expected: 923 passed.
+Expected: 924 passed.
 
 - [ ] **Step 6: Коммит**
 
@@ -1931,7 +1955,7 @@ Expected: PASS, 14 тестов.
 - [ ] **Step 7: Полный прогон**
 
 Run: `python -m pytest -q`
-Expected: 937 passed. Тесты загрузки документа в чат зелёные без правок.
+Expected: 938 passed. Тесты загрузки документа в чат зелёные без правок.
 
 - [ ] **Step 8: Коммит**
 
@@ -2173,7 +2197,7 @@ Expected: FAIL как минимум в `test_a_second_request_while_the_first_r
 - [ ] **Step 8: Полный прогон**
 
 Run: `python -m pytest -q`
-Expected: 944 passed. Тесты троттлинга бота остаются зелёными без правок — поведение чата не изменилось.
+Expected: 945 passed. Тесты троттлинга бота остаются зелёными без правок — поведение чата не изменилось.
 
 - [ ] **Step 9: Коммит**
 
@@ -2412,7 +2436,7 @@ Expected: строка `http: 127.0.0.1:8099` в логе. Polling с фальш
 - [ ] **Step 8: Полный прогон**
 
 Run: `python -m pytest -q`
-Expected: 949 passed.
+Expected: 950 passed.
 
 - [ ] **Step 9: Коммит**
 
@@ -2683,7 +2707,7 @@ Expected: `Valid configuration`. Ошибка синтаксиса, найден
 - [ ] **Step 11: Полный прогон**
 
 Run: `python -m pytest -q`
-Expected: 953 passed.
+Expected: 954 passed.
 
 - [ ] **Step 12: Коммит**
 
