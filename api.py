@@ -404,13 +404,30 @@ async def list_routes(user: webauth.TelegramUser = Depends(current_user)):
 @router.post("/routes", status_code=201)
 async def save_route(body: RouteSaveIn,
                      user: webauth.TelegramUser = Depends(current_user)):
+    """Имя проверяется как в bot.cmd_saveroute (bot.py:1029-1034): пустое имя
+    дало бы кнопку с пустым текстом, которую Telegram отклоняет целиком, а имя
+    с «|» или длиннее store.NAME_MAX_BYTES не влезло бы в callback_data и
+    оставило бы маршрут без кнопки — молча и навсегда, ровно то, что задача 3
+    предотвращала для стартов.
+
+    Потолок маршрутов считает только store.route_save (bot.cmd_saveroute тоже
+    зовёт только его, bot.py:1046-1050). Раздельный счёт — routes_list()
+    пропускает битые JSON-записи, а SQL COUNT(*) в route_save нет — на 21-м
+    маршруте при одной повреждённой записи давал 500 вместо 400.
+    """
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(400, "Как назвать маршрут?")
+    bad = store.name_error(name)
+    if bad:
+        raise HTTPException(400, bad)
     points = _points_or_400(body.points)
-    existed = store.route_exists(user.id, body.name)
-    if not existed and len(store.routes_list(user.id)) >= store.MAX_ROUTES:
-        raise HTTPException(400, f"Сохранено уже {store.MAX_ROUTES} маршрутов — "
-                                 "удали лишний через /delroute или в приложении.")
-    store.route_save(user.id, body.name, [[p.lat, p.lon, p.name] for p in points])
-    return {"name": body.name, "overwritten": existed}
+    existed = store.route_exists(user.id, name)
+    try:
+        store.route_save(user.id, name, [[p.lat, p.lon, p.name] for p in points])
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from None
+    return {"name": name, "overwritten": existed}
 
 
 @router.delete("/routes/{name}", status_code=204)

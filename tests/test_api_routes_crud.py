@@ -103,6 +103,54 @@ async def test_the_route_limit_is_enforced(client):
     assert r.status_code == 400
 
 
+async def test_saving_a_route_with_a_pipe_in_the_name_is_400(client):
+    """`|` — разделитель в callback_data кнопок бота (см. bot.py:1032,
+    store.name_error). Приложение и чат делят одну проверку имени: без неё
+    маршрут, сохранённый из приложения, был бы невидим для кнопок чата."""
+    r = await client.post("/api/routes", json={"name": "Каз|беги", "points": ROWS},
+                          headers=header(uid=1))
+    assert r.status_code == 400
+    assert store.routes_list(1) == {}
+
+
+async def test_saving_a_60_char_name_is_400(client):
+    """60 кириллических символов — 120 байт UTF-8, больше потолка
+    store.NAME_MAX_BYTES (40): callback_data "rr|<имя>" не влезла бы в 64
+    байта, и _btn молча вернула бы None — маршрут остался бы без кнопки
+    навсегда, ровно то, что задача 3 предотвращала для имён стартов."""
+    r = await client.post("/api/routes", json={"name": "я" * 60, "points": ROWS},
+                          headers=header(uid=1))
+    assert r.status_code == 400
+    assert store.routes_list(1) == {}
+
+
+async def test_saving_an_empty_name_is_400(client):
+    """Пустое имя дало бы кнопку с пустым текстом — Telegram отклоняет такую
+    кнопку целиком, и валится всё сообщение /routes, а не только эта строка."""
+    r = await client.post("/api/routes", json={"name": "  ", "points": ROWS},
+                          headers=header(uid=1))
+    assert r.status_code == 400
+    assert store.routes_list(1) == {}
+
+
+async def test_max_routes_counts_corrupt_rows_too(client):
+    """routes_list() пропускает битые JSON-записи; store.route_save считает
+    SQL COUNT(*), который их не пропускает. Раздельный счёт: при 19 читаемых
+    маршрутах и одной повреждённой записи API-предпроверка видела бы 19 (< 20)
+    и пропускала бы дальше, а route_save насчитал бы 20 и бросил ValueError,
+    который раньше никто не ловил — 500 вместо 400 на 21-м маршруте."""
+    for i in range(store.MAX_ROUTES - 1):  # 19 читаемых маршрутов
+        store.route_save(1, f"м{i}", ROWS)
+    with store.connect() as conn:
+        conn.execute(
+            "INSERT INTO routes (user_id, name, points, saved_at) VALUES (?,?,?,?)",
+            (1, "битый", "это не json", "2024-01-01T00:00:00+00:00"))
+    r = await client.post("/api/routes", json={"name": "ещё один", "points": ROWS},
+                          headers=header(uid=1))
+    assert r.status_code == 400
+    assert str(store.MAX_ROUTES) in r.text
+
+
 async def test_delete_a_route(client):
     store.route_save(1, "Мой", ROWS)
     assert (await client.delete("/api/routes/Мой",
