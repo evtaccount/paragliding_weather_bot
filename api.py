@@ -4,6 +4,7 @@
 апдейта, api из подписанной initData. Расчётов здесь нет: разбор запроса,
 резолв личных настроек, вызов forecast и перевод исключений в коды.
 """
+import dataclasses
 import logging
 import os
 import sqlite3
@@ -242,6 +243,98 @@ async def read_wind_grid(site: str, date: str, model: str | None = None,
 async def read_scan(model: str | None = None,
                     user: webauth.TelegramUser = Depends(current_user)):
     return await forecast.scan_week(model=_model_for(user.id, model))
+
+
+# ------------------------------------------------------------------ разбор и маршрут
+class AnalysisIn(BaseModel):
+    site: str
+    range: str
+    date: str | None = None
+    deep: bool = False
+    model: str | None = None
+
+
+class RouteIn(BaseModel):
+    """`points` — строки [lat, lon, name?], тот же формат, в котором маршруты
+    лежат в store: приложение получает их из /api/routes и шлёт обратно
+    без перекладывания."""
+    points: list[list]
+    name: str | None = None
+    date: str
+    departure: str | None = None
+    model: str | None = None
+
+
+def _hours(hhmm: str | None) -> float | None:
+    """«11:30» → 11.5. None означает «пусть домен выберет начало окна»."""
+    if hhmm is None:
+        return None
+    try:
+        h, m = hhmm.split(":")
+        return int(h) + int(m) / 60.0
+    except (ValueError, AttributeError):
+        raise HTTPException(400, f"время вылета не понято: {hhmm}") from None
+
+
+def _cfg_for(uid: int, override: str | None) -> store.Prefs:
+    """Личные настройки с разовой подменой модели.
+
+    Возвращается Prefs целиком: get_route берёт из него и скорость, и учёт
+    ветра, и модель — собирать их по одному значит однажды забыть одно.
+    """
+    p = store.prefs(uid)
+    if override is None:
+        return p
+    if override not in engine.MODELS:
+        raise HTTPException(400, f"неизвестная модель: {override}")
+    return dataclasses.replace(p, model_key=override)
+
+
+def _points_or_400(rows: list[list]) -> list:
+    """Строки [[lat, lon, name?], ...] → точки.
+
+    `points_from_rows` исключений не бросает: на битой записи и нехватке точек
+    он возвращает None, потому что писался для чтения из хранилища, где
+    уронить бота хуже, чем показать маршрут отсутствующим. На входе из сети
+    это, наоборот, ошибка запроса, и её надо назвать.
+
+    Потолок числа точек он тоже не проверяет — только нижнюю границу, — а
+    пятьдесят одна точка означает пятьдесят одну выборку погоды.
+    """
+    points = route.points_from_rows(rows)
+    if points is None:
+        raise HTTPException(400, f"Нужно минимум {route.MIN_POINTS} точки "
+                                 "в формате [широта, долгота, имя].")
+    if len(points) > route.MAX_POINTS:
+        raise HTTPException(400, f"Слишком много точек: {len(points)}, "
+                                 f"потолок {route.MAX_POINTS}.")
+    return points
+
+
+@router.post("/analysis")
+async def read_analysis(body: AnalysisIn,
+                        user: webauth.TelegramUser = Depends(current_user)):
+    """Текст от Gemini. Ответ строкой, а не разметкой: она в приложении своя."""
+    _site_or_404(body.site)
+    text = await forecast.get_analysis(body.site, body.range, body.date, body.deep,
+                                       model=_model_for(user.id, body.model))
+    return {"text": text}
+
+
+@router.post("/route")
+async def read_route(body: RouteIn, user: webauth.TelegramUser = Depends(current_user)):
+    return await forecast.get_route(_points_or_400(body.points), body.name, body.date,
+                                    _hours(body.departure),
+                                    cfg=_cfg_for(user.id, body.model))
+
+
+@router.post("/route/analysis")
+async def read_route_analysis(body: RouteIn,
+                              user: webauth.TelegramUser = Depends(current_user)):
+    text = await forecast.get_route_analysis(_points_or_400(body.points), body.name,
+                                             body.date, _hours(body.departure),
+                                             cfg=_cfg_for(user.id, body.model))
+    return {"text": text}
 
 
 app.include_router(router)
