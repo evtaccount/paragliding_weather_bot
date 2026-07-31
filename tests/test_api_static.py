@@ -16,6 +16,14 @@ async def test_health_says_which_db_is_open(client):
     assert body["sites"] == 2
 
 
+async def test_health_does_not_leak_the_absolute_db_path(client):
+    """/api/health не требует авторизации — путь на диске сервера не отвечает
+    ни на один вопрос, для которого этот эндпоинт существует, а посторонним
+    в интернете (открытый режим) знать его незачем."""
+    body = (await client.get("/api/health")).json()
+    assert "db" not in body
+
+
 async def test_the_smoke_page_is_served(client):
     r = await client.get("/")
     assert r.status_code == 200

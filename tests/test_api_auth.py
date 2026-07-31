@@ -1,4 +1,5 @@
 """Ворота HTTP-поверхности: подпись и список допущенных."""
+import logging
 import time
 
 import pytest
@@ -62,6 +63,18 @@ async def test_empty_allowlist_lets_everyone_in(client, allowlist):
     """Открытый режим — тот же, что у бота: пустой список никого не отсекает."""
     allowlist("")
     assert (await client.get("/api/prefs", headers=header(uid=99))).status_code == 200
+
+
+async def test_a_403_refusal_is_logged(client, allowlist, caplog):
+    """guards.WhitelistMiddleware логирует отказ чату (log.info("refused user
+    %s ...")). Здесь пришелец предъявляет ВАЛИДНУЮ подпись Telegram — это
+    ровно то событие, которое стоит видеть в логе новой публичной
+    поверхности, а не только молчаливый 403 в ответе."""
+    allowlist("1")
+    with caplog.at_level(logging.INFO, logger="pgbot.api"):
+        r = await client.get("/api/prefs", headers=header(uid=2))
+    assert r.status_code == 403
+    assert any("2" in rec.message for rec in caplog.records)
 
 
 async def test_the_api_uses_the_same_allowlist_as_the_bot(client, allowlist):

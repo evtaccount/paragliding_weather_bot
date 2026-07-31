@@ -50,6 +50,11 @@ async def current_user(authorization: str = Header(default="")) -> webauth.Teleg
 
     allowed = guards.allowed_ids()
     if allowed and user.id not in allowed:
+        # Мирроринг guards.WhitelistMiddleware: там такой же отказ пишет
+        # log.info("refused user %s (...)"). Здесь подпись ВАЛИДНА — значит,
+        # это не шум сканера, а живой чужой Telegram-аккаунт, и на новой
+        # публичной поверхности это стоит иметь в логе.
+        log.info("refused user %s (%s)", user.id, user.username)
         raise HTTPException(
             403, f"Это личный бот, доступ по списку. Твой Telegram ID: {user.id} — "
                  "пришли его владельцу бота, чтобы тебя добавили.")
@@ -453,12 +458,15 @@ async def delete_route(name: str, user: webauth.TelegramUser = Depends(current_u
 # ------------------------------------------------------------------ здоровье
 @router.get("/health")
 async def health():
-    """Без авторизации: дёргает Docker, у которого подписи нет.
+    """Без авторизации: дёргает Docker (HEALTHCHECK) и caddy (depends_on:
+    condition: service_healthy), у которых подписи нет.
 
     Число стартов показывает самую частую ошибку раскатки — не
-    примонтированный том и, как следствие, пустую базу.
+    примонтированный том и, как следствие, пустую базу. Абсолютный путь к
+    БД раньше уезжал в ответ без проверки подписи — посторонним в открытом
+    режиме он не помогает ничем, поэтому наружу не отдаётся.
     """
-    return {"ok": True, "db": store.DB_PATH, "sites": len(store.load_sites())}
+    return {"ok": True, "sites": len(store.load_sites())}
 
 
 app.include_router(router)

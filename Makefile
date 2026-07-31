@@ -24,7 +24,7 @@ run:                ## run bot + API locally (needs .env)
 	.venv/bin/python app.py
 
 check:              ## byte-compile all modules (quick syntax check)
-	python3 -m py_compile *.py && echo "SYNTAX OK"
+	.venv/bin/python -m py_compile *.py && echo "SYNTAX OK"
 
 test:               ## run the dialog test suite (needs requirements-dev.txt installed)
 	.venv/bin/python -m pytest -q
