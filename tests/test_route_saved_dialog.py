@@ -3,6 +3,7 @@ import datetime as dt
 
 import pytest
 
+import engine
 import forecast
 import route
 import store
@@ -137,7 +138,10 @@ async def test_route_by_saved_name_with_date_and_time(feed, session, api):
     await feed(text_update("/route Гудаури завтра 11:30"))
     card = next(t for t in texts(session) if "🗺" in t)
     assert "11:30" in card
-    assert (dt.date.today() + dt.timedelta(days=1)).strftime("%d") in card
+    # engine.fmt_date не паддирует число месяца: используем {d.day}, не strftime("%d"),
+    # поэтому 1–9 числа в карточке без нулей (1 авг, не 01 авг).
+    tomorrow = (dt.date.today() + dt.timedelta(days=1)).isoformat()
+    assert engine.fmt_date(tomorrow) in card
 
 
 async def test_a_multi_word_name_still_resolves(feed, session, api):
