@@ -18,4 +18,4 @@ COPY . .
 RUN mkdir -p /app/data && useradd -m -u 10001 app && chown -R app /app
 USER app
 
-CMD ["python", "-u", "bot.py"]
+CMD ["python", "-u", "app.py"]

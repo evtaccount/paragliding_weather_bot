@@ -1302,15 +1302,25 @@ def _bootstrap_store() -> dict:
     return report
 
 
-async def main():
-    token = os.environ.get("BOT_TOKEN")
-    if not token:
+def bootstrap() -> dict:
+    """Всё, что должно случиться ДО первого запроса, с любой поверхности."""
+    if not os.environ.get("BOT_TOKEN"):
         raise SystemExit("BOT_TOKEN не задан (см. .env.example)")
-    _bootstrap_store()
-    bot = Bot(token=token)
+    return _bootstrap_store()
+
+
+async def run_polling() -> None:
+    """Long polling. Хранилище должно быть готово — см. bootstrap()."""
+    bot = Bot(token=os.environ["BOT_TOKEN"])
     await bot.set_my_commands(BOT_COMMANDS)
     log.info("bot started, db: %s, sites: %s", store.DB_PATH, forecast.known_sites())
     await dp.start_polling(bot)
+
+
+async def main():
+    """Только чат — для запуска без HTTP-слоя (`python bot.py`)."""
+    bootstrap()
+    await run_polling()
 
 
 if __name__ == "__main__":
