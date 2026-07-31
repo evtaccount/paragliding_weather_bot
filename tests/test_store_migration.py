@@ -203,3 +203,150 @@ def test_reloading_store_fixture_does_not_leak_into_other_test_files():
     import conftest
     import store as st
     assert st.DB_PATH == conftest.DB_PATH
+
+
+# --------------------------------------------------- потери переноса видно снаружи
+#
+# Файлы после переноса переименовываются в *.migrated — значит любая
+# пропущенная запись исчезает молча: данные лежат рядом, но никто не знает,
+# что туда надо смотреть. Всё, что в БД не попало, теперь в report["dropped"].
+
+def test_dropped_records_are_counted_and_named(store, data_dir):
+    write(os.path.join(data_dir, "sites.json"),
+          {"sites": [None, {"name": "Ок", "lat": 1.0, "lon": 2.0, "elevation_m": 100}]})
+    write(os.path.join(data_dir, "routes.json"),
+          {"Кривой": {"points": "не список"},
+           "Целый": {"points": [[1.0, 2.0, None], [3.0, 4.0, None]]}})
+    store.init()
+    report = store.migrate_from_json(data_dir, frozenset({111}))
+    assert report["sites"] == 1 and report["routes"] == 1
+    assert len(report["dropped"]) == 2, report["dropped"]
+    assert any("запись #0" in d for d in report["dropped"])
+    assert any("Кривой" in d and "points" in d for d in report["dropped"])
+    # файлы всё равно переименованы — потому отчёт и обязан назвать потерю
+    assert os.path.exists(os.path.join(data_dir, "routes.json.migrated"))
+
+
+def test_clean_migration_drops_nothing(store, data_dir):
+    write(os.path.join(data_dir, "sites.json"), SITES_JSON)
+    store.init()
+    assert store.migrate_from_json(data_dir, frozenset())["dropped"] == []
+
+
+def test_site_with_null_coordinates_does_not_abort_the_start(store, data_dir):
+    """«lat»: null даёт NOT NULL constraint failed. Раньше он летел наружу из
+    bootstrap и ронял бота на старте — одинаково на каждом рестарте, и чинить
+    это можно было только правкой JSON руками."""
+    write(os.path.join(data_dir, "sites.json"),
+          {"sites": [{"name": "Дыра", "lat": None, "lon": 44.0, "elevation_m": 100},
+                     {"name": "Ок", "lat": 1.0, "lon": 2.0, "elevation_m": 100}]})
+    store.init()
+    report = store.migrate_from_json(data_dir, frozenset())
+    assert report["sites"] == 1
+    assert [s["name"] for s in store.load_sites()] == ["Ок"]
+    assert any("Дыра" in d for d in report["dropped"]), report["dropped"]
+
+
+def test_bootstrap_seed_survives_a_site_with_null_coordinates(store, data_dir, tmp_path):
+    """Та же беда во втором месте — засеве из упакованного файла."""
+    packaged = tmp_path / "packaged.json"
+    write(str(packaged), {"sites": [
+        {"name": "Дыра", "lat": None, "lon": 44.0, "elevation_m": 100},
+        {"name": "Ок", "lat": 1.0, "lon": 2.0, "elevation_m": 100}]})
+    report = store.bootstrap(data_dir, frozenset(), str(packaged))
+    assert report["sites"] == 1
+    assert any("Дыра" in d for d in report["dropped"]), report["dropped"]
+
+
+# -------------------------------------------- значения настроек проверяются здесь
+#
+# Миграция — единственный путь записи, перед которым нет валидации set_speed() /
+# выбора модели в боте. Неизвестный ключ модели ронял engine.model_id KeyError'ом
+# на каждом запросе пилота, нечисловая скорость доезжала до колонки как есть.
+
+def test_unknown_model_key_falls_back_to_the_default(store, data_dir):
+    write(os.path.join(data_dir, "model.json"), {"model": "wrf"})
+    store.init()
+    report = store.migrate_from_json(data_dir, frozenset({111}),
+                                     valid_model_keys={"auto", "ecmwf", "gfs", "icon"})
+    assert store.prefs(111).model_key == store.DEFAULT_PREFS.model_key
+    assert any("wrf" in d for d in report["dropped"]), report["dropped"]
+
+
+def test_known_model_key_still_migrates(store, data_dir):
+    write(os.path.join(data_dir, "model.json"), {"model": "gfs"})
+    store.init()
+    report = store.migrate_from_json(data_dir, frozenset({111}),
+                                     valid_model_keys={"auto", "ecmwf", "gfs", "icon"})
+    assert store.prefs(111).model_key == "gfs"
+    assert report["dropped"] == []
+
+
+def test_non_numeric_speed_falls_back_to_the_default(store, data_dir):
+    write(os.path.join(data_dir, "settings.json"), {"avg_route_speed_kmh": "быстро"})
+    store.init()
+    report = store.migrate_from_json(data_dir, frozenset({111}))
+    speed = store.prefs(111).avg_route_speed_kmh
+    assert speed == store.DEFAULT_PREFS.avg_route_speed_kmh
+    assert isinstance(speed, float)
+    assert any("быстро" in d for d in report["dropped"]), report["dropped"]
+
+
+def test_out_of_range_speed_falls_back_to_the_default(store, data_dir):
+    write(os.path.join(data_dir, "settings.json"),
+          {"avg_route_speed_kmh": 500.0, "wind_correction_enabled": False})
+    store.init()
+    report = store.migrate_from_json(data_dir, frozenset({111}))
+    assert store.prefs(111).avg_route_speed_kmh == store.DEFAULT_PREFS.avg_route_speed_kmh
+    assert store.prefs(111).wind_correction_enabled is False   # соседнее поле уцелело
+    assert any("500" in d for d in report["dropped"]), report["dropped"]
+
+
+# ------------------------------------------ старые файлы ищутся и в корне репозитория
+#
+# Каталог БД — это <repo>/data при незаданном DB_PATH, а systemd-путь запускает
+# бота из корня репозитория, куда старые дефолты SITES_FILE / ROUTES_FILE /
+# SETTINGS_FILE / MODEL_FILE и клали файлы. Под Docker оба каталога совпадали с
+# томом, поэтому промах был виден только на bare metal.
+
+def test_legacy_files_are_found_in_the_extra_dir(store, data_dir, tmp_path):
+    root = tmp_path / "root"
+    root.mkdir()
+    write(str(root / "routes.json"), {"Мой": {"points": [[1.0, 2.0, None], [3.0, 4.0, None]]}})
+    write(str(root / "settings.json"), {"avg_route_speed_kmh": 32.0})
+    write(str(root / "model.json"), {"model": "gfs"})
+    store.init()
+    report = store.migrate_from_json(data_dir, frozenset({111}), extra_dirs=(str(root),))
+    assert report["routes"] == 1 and report["users"] == 1
+    assert list(store.routes_list(111)) == ["Мой"]
+    assert store.prefs(111).avg_route_speed_kmh == 32.0
+    assert store.prefs(111).model_key == "gfs"
+    assert os.path.exists(str(root / "model.json.migrated"))
+
+
+def test_data_dir_wins_over_the_extra_dir(store, data_dir, tmp_path):
+    """Docker-путь не должен пострадать: личные файлы там лежат в томе."""
+    root = tmp_path / "root"
+    root.mkdir()
+    write(os.path.join(data_dir, "model.json"), {"model": "icon"})
+    write(str(root / "model.json"), {"model": "gfs"})
+    store.init()
+    store.migrate_from_json(data_dir, frozenset({111}), extra_dirs=(str(root),))
+    assert store.prefs(111).model_key == "icon"
+    assert os.path.exists(str(root / "model.json"))    # второй не тронут
+
+
+def test_packaged_seed_is_not_eaten_by_migration(store, data_dir, tmp_path):
+    """Упакованный sites.json лежит в корне репозитория под тем же именем.
+
+    Съешь его миграцией — и он уедет в *.migrated; после пересборки образа
+    файл вернётся, миграция прогонится снова и вернёт удалённые старты.
+    """
+    root = tmp_path / "root"
+    root.mkdir()
+    packaged = root / "sites.json"
+    write(str(packaged), SITES_JSON)
+    report = store.bootstrap(data_dir, frozenset(), str(packaged), extra_dirs=(str(root),))
+    assert os.path.exists(str(packaged))
+    assert not os.path.exists(str(packaged) + ".migrated")
+    assert report["sites"] == 1            # в БД попал засевом, а не переносом

@@ -801,9 +801,13 @@ async def get_route(points, name, date, departure_h=None, *, cfg):
     }
 
 
-async def get_route_section(points, name, date, departure_h=None, cfg=None) -> bytes:
+async def get_route_section(points, name, date, departure_h=None, *, cfg) -> bytes:
     """PNG-разрез вдоль маршрута. Профиль пересчитывается поверх тёплого кэша,
-    поэтому кнопка не стоит ни одного нового запроса к open-meteo."""
+    поэтому кнопка не стоит ни одного нового запроса к open-meteo.
+
+    `cfg` обязателен, как и у get_route: с `cfg=None` пропуск всплывал бы
+    AttributeError'ом в глубине _evaluate, а не TypeError'ом на границе.
+    """
     profile = await get_route(points, name, date, departure_h, cfg=cfg)
     out = tempfile.mkdtemp(prefix="pgrs_")
     try:
@@ -856,11 +860,13 @@ def route_facts(profile):
     }
 
 
-async def get_route_analysis(points, name, date, departure_h=None, cfg=None) -> str:
+async def get_route_analysis(points, name, date, departure_h=None, *, cfg) -> str:
     """ИИ-разбор маршрута. ForecastError, если разбора не будет.
 
     Карточка маршрута к этому моменту уже показана и остаётся в силе — поэтому
     отказ здесь это сообщение, а не откат на другой текст, как у разбора старта.
+
+    `cfg` обязателен по той же причине, что и у get_route.
     """
     if not analysis.available():
         raise ForecastError("ИИ-разбор недоступен: не задан GEMINI_API_KEY.")

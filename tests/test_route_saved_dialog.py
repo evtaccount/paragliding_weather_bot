@@ -54,6 +54,21 @@ async def test_saveroute_stores_the_last_computed_route(feed, session, api):
     assert "Гудаури" in texts(session)[-1]
 
 
+async def test_saveroute_over_a_corrupt_route_says_overwritten(feed, session, api):
+    """Занятое имя с нечитаемым points — всё равно «Перезаписал».
+
+    routes_list() битую запись пропускает, поэтому проверка занятости по нему
+    сказала бы «нет» и бот отчитался бы «Сохранил», хотя чужие точки исчезли.
+    """
+    with store.connect() as conn:
+        conn.execute("INSERT INTO routes (user_id, name, points, saved_at)"
+                     " VALUES (?,?,?,?)", (TEST_USER_ID, "Гудаури", "{битый", "2026-07-29"))
+    await feed(text_update(BODY))
+    await feed(text_update("/saveroute Гудаури"))
+    assert texts(session)[-1].startswith("Перезаписал")
+    assert store.route_rows(TEST_USER_ID, "Гудаури") == ROWS
+
+
 async def test_saveroute_needs_a_name(feed, session, api):
     await feed(text_update(BODY))
     await feed(text_update("/saveroute"))

@@ -968,9 +968,13 @@ def _route_keyboard(token, profile):
     return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
 
 
-async def _send_route(message: Message, points, name, date, departure, cfg=None):
+async def _send_route(message: Message, points, name, date, departure, *, cfg):
     """`cfg` — настройки пилота; как и у send_forecast, приходят параметром, потому
-    что у сообщения под кнопкой автор — бот, а не тот, кто нажал."""
+    что у сообщения под кнопкой автор — бот, а не тот, кто нажал.
+
+    Обязателен и keyword-only: пропуск должен падать TypeError'ом здесь, а не
+    AttributeError'ом в глубине скоринга.
+    """
     try:
         profile = await forecast.get_route(points, name, date, departure, cfg=cfg)
     except forecast.ForecastError as e:
@@ -1008,13 +1012,13 @@ async def cmd_route(message: Message, command: CommandObject):
         if pts is None:
             return await message.answer(ROUTE_HELP)
         date, departure = _parse_when(rest)
-        return await _send_route(message, pts, name, date, departure, cfg)
+        return await _send_route(message, pts, name, date, departure, cfg=cfg)
     date, departure = _parse_when(command.args or "")
     try:
         points = route.parse_text(body, first_line_no=2)  # первая строка — сама команда
     except route.RouteError as e:
         return await message.answer(f"❌ {e}")
-    await _send_route(message, points, None, date, departure, cfg)
+    await _send_route(message, points, None, date, departure, cfg=cfg)
 
 
 @dp.message(Command("saveroute"), flags={"forecast": True})
@@ -1036,13 +1040,8 @@ async def cmd_saveroute(message: Message, command: CommandObject):
         return
     # routes_list() пропускает битые записи (порченый JSON в points), поэтому
     # "name in routes_list(uid)" сказал бы "нет" про уже занятое имя с битой
-    # записью и бот отчитался бы "Сохранил" вместо "Перезаписал". Проверяем
-    # сырое наличие строки — тем же способом, каким это уже делает сам
-    # store.route_save() внутри (store.py трогать нельзя).
-    with store.connect() as conn:
-        existed = conn.execute(
-            "SELECT 1 FROM routes WHERE user_id = ? AND name = ?",
-            (uid, name)).fetchone() is not None
+    # записью и бот отчитался бы "Сохранил" вместо "Перезаписал".
+    existed = store.route_exists(uid, name)
     try:
         store.route_save(uid, name, [[p.lat, p.lon, p.name] for p in pts])
     except ValueError as e:
@@ -1128,7 +1127,7 @@ async def cb_route_section(cb: CallbackQuery):
     try:
         png = await forecast.get_route_section(
             entry["points"], entry["name"], entry["date"], entry["departure"],
-            store.prefs(cb.from_user.id))
+            cfg=store.prefs(cb.from_user.id))
     except forecast.ForecastError as e:
         return await msg.answer(str(e))
     await msg.answer_photo(BufferedInputFile(png, filename="route_section.png"))
@@ -1148,7 +1147,7 @@ async def cb_route_analysis(cb: CallbackQuery):
         try:
             text = await forecast.get_route_analysis(
                 entry["points"], entry["name"], entry["date"], entry["departure"],
-                store.prefs(cb.from_user.id))
+                cfg=store.prefs(cb.from_user.id))
         except forecast.ForecastError as e:
             return await msg.answer(str(e))
     for chunk in _chunks(text):
@@ -1207,7 +1206,7 @@ async def cb_route_departure_pick(cb: CallbackQuery):
         return
     h, m = hhmm.split(":")
     await _send_route(msg, entry["points"], entry["name"], entry["date"],
-                      int(h) + int(m) / 60.0, store.prefs(cb.from_user.id))
+                      int(h) + int(m) / 60.0, cfg=store.prefs(cb.from_user.id))
 
 
 @dp.callback_query(F.data.startswith("rr|"))
@@ -1221,7 +1220,8 @@ async def cb_saved_route(cb: CallbackQuery):
     pts = route.points_from_rows(store.route_rows(uid, name))
     if not pts:
         return await msg.answer("Маршрут не читается — сохрани его заново.")
-    await _send_route(msg, pts, name, dt.date.today().isoformat(), None, store.prefs(uid))
+    await _send_route(msg, pts, name, dt.date.today().isoformat(), None,
+                      cfg=store.prefs(uid))
 
 
 _DOC_PARSERS = ((".gpx", route.parse_gpx), (".kml", route.parse_kml))
@@ -1247,7 +1247,7 @@ async def route_document(message: Message):
         return await message.answer(f"❌ {e}")
     date, departure = _parse_when(message.caption or "")
     await _send_route(message, points, name, date, departure,
-                      store.prefs(message.from_user.id))
+                      cfg=store.prefs(message.from_user.id))
 
 
 @dp.message()
@@ -1258,15 +1258,38 @@ async def unhandled(message: Message):
     await message.answer("Не понял. Список команд: /help")
 
 
+def _bootstrap_store() -> dict:
+    """Схема, миграция, засев — плюс громкий отчёт о том, что не перенеслось.
+
+    Старые JSON ищем и в каталоге БД, и в корне репозитория: под Docker они
+    лежали в примонтированном томе (DB_PATH указывает туда же), а на
+    systemd-пути бот запускается из корня репозитория, и старые дефолты
+    ROUTES_FILE / SETTINGS_FILE / MODEL_FILE клали файлы рядом с кодом —
+    при поиске только по каталогу БД маршруты и настройки такой установки
+    не нашлись бы никогда.
+    """
+    repo_root = os.path.dirname(os.path.abspath(engine.__file__))
+    data_dir = os.path.dirname(store.DB_PATH) or "."
+    report = store.bootstrap(data_dir, guards._allowed_ids(),
+                             os.path.join(repo_root, "sites.json"),
+                             extra_dirs=(repo_root,),
+                             valid_model_keys=set(engine.MODELS))
+    log.info("store: %s", report)
+    dropped = report.get("dropped") or []
+    if dropped:
+        # файлы к этому моменту уже переименованы в *.migrated: без этой строки
+        # оператор никогда не узнает, что запись пропала и где её искать
+        log.warning("МИГРАЦИЯ ПРОПУСТИЛА %d ЗАПИСЕЙ, в БД они не попали. "
+                    "Исходные данные остались в файлах *.migrated. Причины: %s",
+                    len(dropped), "; ".join(dropped))
+    return report
+
+
 async def main():
     token = os.environ.get("BOT_TOKEN")
     if not token:
         raise SystemExit("BOT_TOKEN не задан (см. .env.example)")
-    data_dir = os.path.dirname(store.DB_PATH) or "."
-    report = store.bootstrap(data_dir, guards._allowed_ids(),
-                             os.path.join(os.path.dirname(os.path.abspath(engine.__file__)),
-                                          "sites.json"))
-    log.info("store: %s", report)
+    _bootstrap_store()
     bot = Bot(token=token)
     await bot.set_my_commands(BOT_COMMANDS)
     log.info("bot started, db: %s, sites: %s", store.DB_PATH, forecast.known_sites())

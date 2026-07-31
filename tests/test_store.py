@@ -269,6 +269,45 @@ def test_a_corrupt_entry_is_skipped_not_crashing(store):
     assert store.route_rows(1, "Битый") is None
 
 
+def test_route_exists_reports_a_saved_name(store):
+    store.route_save(1, "Мой", PTS)
+    assert store.route_exists(1, "Мой") is True
+    assert store.route_exists(1, "Чужой") is False
+    assert store.route_exists(2, "Мой") is False   # маршруты личные
+
+
+def test_route_exists_sees_a_corrupt_row(store):
+    """«Имя занято» — факт о строке, а не о читаемости её JSON.
+
+    routes_list() битую запись пропускает; если бы занятость проверяли по ней,
+    перезапись такого маршрута отчиталась бы «Сохранил» вместо «Перезаписал».
+    """
+    with store.connect() as conn:
+        conn.execute("INSERT INTO routes (user_id, name, points, saved_at)"
+                     " VALUES (?,?,?,?)", (1, "Битый", "{это не json", "2026-07-29"))
+    assert store.routes_list(1) == {}          # для списка его нет
+    assert store.route_exists(1, "Битый") is True   # а имя занято
+
+
+def test_only_store_knows_sql(store):
+    """Модульная граница из спеки: SQL и user_id живут только здесь.
+
+    Регрессия: /saveroute обходил хранилище и открывал store.connect() c сырым
+    `SELECT 1 FROM routes` — ровно для проверки выше, потому что тогда нельзя
+    было трогать store.py. Теперь для этого есть route_exists().
+    """
+    import inspect
+    import bot as botmod
+    import engine
+    import forecast
+    import route as routemod
+    for mod in (botmod, forecast, engine, routemod):
+        src = inspect.getsource(mod)
+        assert "store.connect(" not in src, f"{mod.__name__}: своё соединение с БД"
+        for kw in ("SELECT ", "INSERT INTO ", "DELETE FROM ", "UPDATE "):
+            assert kw not in src, f"{mod.__name__}: свой SQL ({kw.strip()})"
+
+
 def test_a_foreign_structure_is_ignored(store):
     """Валидный JSON, но не список точек — такую запись читать нечем."""
     with store.connect() as conn:

@@ -127,3 +127,40 @@ async def test_ensure_route_weather_propagates_none_instead_of_substituting_defa
     with pytest.raises(KeyError):
         await forecast._ensure_route_weather([Sample(km=0.0, lat=42.0, lon=44.0)],
                                              "2026-07-29", model=None)
+
+
+# ---------------------------------------------------------------- fix round 3
+#
+# Обёртки вокруг get_route объявляли `cfg=None` позиционно и передавали дальше.
+# Все вызывающие cfg передают, поэтому дефолт был недостижим — но пропуск в
+# будущем всплыл бы AttributeError'ом в глубине _evaluate вместо TypeError'а на
+# границе, ровно того, ради чего cfg делали обязательным.
+
+WRAPPERS = [
+    (forecast.get_route_section,  "cfg"),
+    (forecast.get_route_analysis, "cfg"),
+]
+
+
+def test_route_wrappers_require_cfg():
+    for fn, name in WRAPPERS:
+        p = inspect.signature(fn).parameters[name]
+        assert p.default is inspect.Parameter.empty, f"{fn.__name__}: {name} с дефолтом"
+        assert p.kind is inspect.Parameter.KEYWORD_ONLY, f"{fn.__name__}: {name} не keyword-only"
+
+
+def test_route_wrappers_raise_type_error_without_cfg():
+    """Именно TypeError на границе, а не падение внутри скоринга."""
+    for fn, _name in WRAPPERS:
+        with pytest.raises(TypeError):
+            fn([], None, "2026-07-29")
+
+
+def test_send_route_requires_cfg():
+    """bot._send_route — та же обёртка одним слоем выше."""
+    import bot as botmod
+    p = inspect.signature(botmod._send_route).parameters["cfg"]
+    assert p.default is inspect.Parameter.empty, "_send_route: cfg с дефолтом"
+    assert p.kind is inspect.Parameter.KEYWORD_ONLY, "_send_route: cfg не keyword-only"
+    with pytest.raises(TypeError):
+        botmod._send_route(None, [], None, "2026-07-29", None)

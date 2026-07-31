@@ -290,6 +290,19 @@ def routes_list(user_id: int) -> dict[str, dict]:
     return out
 
 
+def route_exists(user_id: int, name: str) -> bool:
+    """Занято ли имя маршрута. Отдельно от routes_list() намеренно.
+
+    routes_list() пропускает битые записи, а «имя занято» — факт о строке в
+    таблице, а не о том, читается ли её JSON. Иначе перезапись маршрута с
+    порченым points отчиталась бы «Сохранил» вместо «Перезаписал».
+    """
+    with connect() as conn:
+        return conn.execute(
+            "SELECT 1 FROM routes WHERE user_id = ? AND name = ?",
+            (user_id, name)).fetchone() is not None
+
+
 def route_rows(user_id: int, name: str) -> list | None:
     """Сырые строки точек: [[lat, lon, name], ...]. None, если нет или битая."""
     with connect() as conn:
@@ -414,109 +427,197 @@ def _mark_migrated(path: str) -> None:
     os.replace(path, path + ".migrated")
 
 
-def migrate_from_json(data_dir: str, allowed_user_ids) -> dict:
+def _legacy_path(dirs, filename: str, skip_paths) -> str | None:
+    """Первый существующий старый файл среди каталогов, или None.
+
+    Каталогов два, и порядок важен. Под Docker личные файлы лежали в
+    примонтированном томе — там же, где теперь БД, поэтому каталог БД первый.
+    На systemd-пути бот запускается из корня репозитория, а старые дефолты
+    SITES_FILE / ROUTES_FILE / SETTINGS_FILE / MODEL_FILE клали файлы рядом с
+    кодом — без второго каталога личные маршруты и настройки такой установки
+    не нашлись бы никогда.
+
+    `skip_paths` — что переносить нельзя. Упакованный засев стартов лежит в
+    корне репозитория под именем sites.json: переименуй его в *.migrated — и
+    после первой же пересборки образа удалённые старты вернутся.
+    """
+    skip = {os.path.realpath(p) for p in skip_paths}
+    for d in dirs:
+        p = os.path.join(d, filename)
+        if os.path.exists(p) and os.path.realpath(p) not in skip:
+            return p
+    return None
+
+
+def _add_site_counted(site, index: int, source: str, report: dict) -> None:
+    """Добавить старт из JSON; причину неудачи записать в report["dropped"].
+
+    Ни одна порченая запись не роняет перенос целиком — файл после него
+    переименовывается в *.migrated, и упавший старт исчез бы молча.
+    sqlite3.Error здесь такая же построчная беда, как ValueError: старт с
+    "lat": null даёт NOT NULL constraint failed, и раньше он вылетал наружу
+    из bootstrap и ронял старт бота одинаково на каждом рестарте.
+    """
+    if not isinstance(site, dict):
+        report["dropped"].append(f"{source}: запись #{index} не словарь ({site!r})")
+        return
+    name = site.get("name")
+    label = name if isinstance(name, str) else f"запись #{index}"
+    try:
+        add_site(site)
+        report["sites"] += 1
+    except (ValueError, TypeError, KeyError, sqlite3.Error) as e:
+        report["dropped"].append(f"{source}: «{label}» — {e}")
+
+
+def _take_speed(value, source: str, defaults: dict, report: dict) -> None:
+    """Средняя скорость из settings.json — только если это число в диапазоне.
+
+    Миграция — единственный путь записи, перед которым нет валидации set_speed():
+    строка вместо числа доезжала до колонки как есть (SQLite типы не навязывает)
+    и потом падала уже в расчёте маршрута.
+    """
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        v = None
+    if v is None or not SPEED_MIN <= v <= SPEED_MAX:
+        report["dropped"].append(
+            f"{source}: avg_route_speed_kmh={value!r} — не скорость "
+            f"{SPEED_MIN:.0f}–{SPEED_MAX:.0f} км/ч, взят дефолт "
+            f"{DEFAULT_PREFS.avg_route_speed_kmh:.0f}")
+        return
+    defaults["avg_route_speed_kmh"] = v
+
+
+def _take_model(key, source: str, defaults: dict, report: dict, valid_model_keys) -> None:
+    """Ключ метеомодели из model.json — только известный вызывающему."""
+    if valid_model_keys is not None and key not in valid_model_keys:
+        report["dropped"].append(
+            f"{source}: model={key!r} — неизвестная модель, взят дефолт "
+            f"«{DEFAULT_PREFS.model_key}»")
+        return
+    defaults["model_key"] = key
+
+
+def migrate_from_json(data_dir: str, allowed_user_ids, *, extra_dirs=(),
+                      skip_paths=(), valid_model_keys=None) -> dict:
     """Перенести sites/routes/settings/model из JSON в БД.
 
     allowed_user_ids — кому раздать бывшие общими маршруты и личные настройки.
     В открытом режиме (список пуст) раздавать некому: routes/settings/model
     пропускаются, файлы остаются на месте, и миграцию можно повторить, когда
     список появится.
-    """
-    report = {"sites": 0, "routes": 0, "users": 0, "skipped": []}
 
-    sites_path = os.path.join(data_dir, "sites.json")
-    if os.path.exists(sites_path):
+    extra_dirs — где ещё искать старые файлы, кроме каталога БД (см. _legacy_path).
+    skip_paths — пути, которые личными данными не считаются (упакованный засев).
+    valid_model_keys — допустимые ключи метеомодели. Список моделей — знание
+      домена, хранилище его не держит, поэтому он приходит параметром; None
+      значит «не проверять». Без проверки неизвестный ключ из model.json
+      доезжал до колонки и потом ронял engine.model_id на каждом запросе пилота.
+
+    report["dropped"] — всё, что в БД не попало, строкой с причиной. Файлы после
+    переноса переименовываются, и без этого списка потеря была бы молчаливой:
+    данные лежат в *.migrated, но никто не знает, что туда надо смотреть.
+    """
+    report = {"sites": 0, "routes": 0, "users": 0, "skipped": [], "dropped": []}
+    dirs = [data_dir, *extra_dirs]
+
+    sites_path = _legacy_path(dirs, "sites.json", skip_paths)
+    if sites_path:
+        src = os.path.basename(sites_path)
         try:
             raw = _read_json(sites_path)
-            for s in raw.get("sites", []):
-                if not isinstance(s, dict):
-                    continue      # битая запись (null/строка/число) — не весь файл
-                try:
-                    add_site(s)
-                    report["sites"] += 1
-                except (ValueError, TypeError, KeyError):
-                    pass          # уже перенесён или запись без нужных полей
+            for k, s in enumerate(raw.get("sites", [])):
+                _add_site_counted(s, k, src, report)
             _mark_migrated(sites_path)
         except (OSError, ValueError, AttributeError):
-            report["skipped"].append("sites.json")
+            report["skipped"].append(src)
 
-    routes_path = os.path.join(data_dir, "routes.json")
-    if os.path.exists(routes_path):
+    routes_path = _legacy_path(dirs, "routes.json", skip_paths)
+    if routes_path:
+        src = os.path.basename(routes_path)
         if not allowed_user_ids:
-            report["skipped"].append("routes.json")
+            report["skipped"].append(src)
         else:
             try:
                 raw = _read_json(routes_path)
                 for name, entry in (raw or {}).items():
-                    pts = (entry or {}).get("points")
+                    pts = entry.get("points") if isinstance(entry, dict) else None
                     if not isinstance(pts, list):
+                        report["dropped"].append(f"{src}: «{name}» — points не список")
                         continue
                     for uid in allowed_user_ids:
-                        route_save(uid, name, pts)
-                        report["routes"] += 1
+                        try:
+                            route_save(uid, name, pts)
+                            report["routes"] += 1
+                        except (ValueError, TypeError, sqlite3.Error) as e:
+                            report["dropped"].append(f"{src}: «{name}» → {uid} — {e}")
                 _mark_migrated(routes_path)
             except (OSError, ValueError, AttributeError):
-                report["skipped"].append("routes.json")
+                report["skipped"].append(src)
 
     defaults = {}
-    settings_path = os.path.join(data_dir, "settings.json")
-    if os.path.exists(settings_path):
+    settings_path = _legacy_path(dirs, "settings.json", skip_paths)
+    if settings_path:
+        src = os.path.basename(settings_path)
         if not allowed_user_ids:
-            report["skipped"].append("settings.json")
+            report["skipped"].append(src)
         else:
             try:
                 raw = _read_json(settings_path)
                 if isinstance(raw, dict):
-                    for k in ("avg_route_speed_kmh", "wind_correction_enabled"):
-                        if k in raw:
-                            defaults[k] = raw[k]
+                    if "avg_route_speed_kmh" in raw:
+                        _take_speed(raw["avg_route_speed_kmh"], src, defaults, report)
+                    if "wind_correction_enabled" in raw:
+                        defaults["wind_correction_enabled"] = \
+                            1 if raw["wind_correction_enabled"] else 0
                 _mark_migrated(settings_path)
             except (OSError, ValueError):
-                report["skipped"].append("settings.json")
+                report["skipped"].append(src)
 
-    model_path = os.path.join(data_dir, "model.json")
-    if os.path.exists(model_path):
+    model_path = _legacy_path(dirs, "model.json", skip_paths)
+    if model_path:
+        src = os.path.basename(model_path)
         if not allowed_user_ids:
-            report["skipped"].append("model.json")
+            report["skipped"].append(src)
         else:
             try:
                 raw = _read_json(model_path)
-                if isinstance(raw, dict) and raw.get("model"):
-                    defaults["model_key"] = raw["model"]
+                key = raw.get("model") if isinstance(raw, dict) else None
+                if key:
+                    _take_model(key, src, defaults, report, valid_model_keys)
                 _mark_migrated(model_path)
             except (OSError, ValueError):
-                report["skipped"].append("model.json")
+                report["skipped"].append(src)
 
     if defaults:
         for uid in allowed_user_ids:
             for column, value in defaults.items():
-                if column == "wind_correction_enabled":
-                    value = 1 if value else 0
                 _set_pref(uid, column, value)
             report["users"] += 1
 
     return report
 
 
-def bootstrap(data_dir: str, allowed_user_ids, packaged_sites: str) -> dict:
+def bootstrap(data_dir: str, allowed_user_ids, packaged_sites: str, *,
+              extra_dirs=(), valid_model_keys=None) -> dict:
     """Полная подготовка хранилища на старте: схема, миграция, засев.
 
     Засев из упакованного sites.json срабатывает только на пустой библиотеке —
-    иначе удалённый старт возвращался бы после каждого рестарта.
+    иначе удалённый старт возвращался бы после каждого рестарта. По той же
+    причине упакованный файл исключён из поиска старых файлов миграцией.
     """
     init()
-    report = migrate_from_json(data_dir, allowed_user_ids)
+    report = migrate_from_json(data_dir, allowed_user_ids, extra_dirs=extra_dirs,
+                               skip_paths=(packaged_sites,),
+                               valid_model_keys=valid_model_keys)
     if not load_sites() and os.path.exists(packaged_sites):
+        src = os.path.basename(packaged_sites)
         try:
-            for s in _read_json(packaged_sites).get("sites", []):
-                if not isinstance(s, dict):
-                    continue      # битая запись — не весь засев
-                try:
-                    add_site(s)
-                    report["sites"] += 1
-                except (ValueError, TypeError, KeyError):
-                    pass
+            for k, s in enumerate(_read_json(packaged_sites).get("sites", [])):
+                _add_site_counted(s, k, src, report)
         except (OSError, ValueError, AttributeError):
-            report["skipped"].append(os.path.basename(packaged_sites))
+            report["skipped"].append(src)
     purge_adhoc()
     return report

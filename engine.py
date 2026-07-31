@@ -739,22 +739,37 @@ def _day_frame(data, site, assessment=None):
             "fly_dir": fly_dir, "dir_verdict": dv, "dir_class": dc}
 
 
+def lcl_agl_at(H, i):
+    """Высота конденсации над стартом в час i, м. Формула Хеннига (122·спред)."""
+    return 122 * (H["temperature_2m"][i] - H["dew_point_2m"][i])
+
+
+def blue_thermals(H, tmax_i, has_blh):
+    """«Голубая» термичка в час пика: потоки есть, облаков-маркеров нет.
+
+    Оба члена берутся на ОДИН час — тот же, что показывает карточка. Раньше
+    facts_1day сравнивал LCL часа пика с максимумом пограничного слоя за сутки,
+    то есть с другим часом: в день с пиком температуры в 10:00 (blh 300 м) и
+    развитым слоем к 14:00 (blh 2500 м) факты отдавали blue_thermals=False,
+    а карточка и оговорки в том же ответе — «голубой». Один и тот же payload
+    противоречил сам себе.
+    """
+    if not has_blh:
+        return False
+    return (H["cloud_cover_low"][tmax_i] < 15
+            and lcl_agl_at(H, tmax_i) > H["boundary_layer_height"][tmax_i])
+
+
 def day_caveats(data, site, frame):
     """Оговорки под карточкой. Возвращает список строк — их же кладут в факты."""
     H = data["hourly"]
-    t = H["time"]
-    temp = H["temperature_2m"]; clow = H["cloud_cover_low"]; dew = H["dew_point_2m"]
     blh = H["boundary_layer_height"]
     has_blh = _series_available(H, "boundary_layer_height")
     day = frame["day"]; tmax_i = frame["tmax_i"]; dc = frame["dir_class"]
     assess = frame["assess"]
-    lcl_agl = 122 * (temp[tmax_i] - dew[tmax_i])
-    if has_blh:
-        top_agl = round(max(blh[i] for i in day))
-        blue = clow[tmax_i] < 15 and lcl_agl > blh[tmax_i]
-    else:  # model without a boundary-layer series (e.g. ECMWF) — no ceiling
-        top_agl = None
-        blue = False
+    blue = blue_thermals(H, tmax_i, has_blh)
+    # без пограничного слоя (ECMWF) потолка нет — оговорка о нём пропускается
+    top_agl = round(max(blh[i] for i in day)) if has_blh else None
     elev = site["elevation_m"]
     no_route_top = site.get("route_top_m") is None
 
@@ -784,7 +799,7 @@ def report_1day(data, site, out, assessment=None):
     elev = site["elevation_m"]; aspect = site["aspect_deg"]
     temp = H["temperature_2m"]; wind = H["wind_speed_10m"]; gust = H["wind_gusts_10m"]
     precip = H["precipitation"]; cape = H["cape"]
-    clow = H["cloud_cover_low"]; dew = H["dew_point_2m"]; blh = H["boundary_layer_height"]
+    blh = H["boundary_layer_height"]
     has_blh = _series_available(H, "boundary_layer_height")
 
     dt_temp = [temp[i] for i in day]
@@ -809,15 +824,12 @@ def report_1day(data, site, out, assessment=None):
     else:
         peak_lo, peak_hi = max(hour_of(sr), peak_h - 1), peak_h + 1
     # ceiling
-    midday = min(day, key=lambda i: abs(hour_of(t[i]) - hour_of(t[tmax_i])))
-    lcl_agl = 122 * (temp[midday] - dew[midday])
+    blue = blue_thermals(H, tmax_i, has_blh)
     if has_blh:
         top_agl = round(max(blh[i] for i in day))
         top_msl = elev + top_agl
-        blue = (clow[midday] < 15 and lcl_agl > blh[midday])
     else:  # model without a boundary-layer series (e.g. ECMWF) — no ceiling
         top_agl = top_msl = None
-        blue = False
     fly_dir, dv, dc = frame["fly_dir"], frame["dir_verdict"], frame["dir_class"]
     precip_sum = D["precipitation_sum"][0]
 
@@ -989,7 +1001,7 @@ def facts_1day(data, site, assessment=None):
     elev = site["elevation_m"]; aspect = site["aspect_deg"]
     temp = H["temperature_2m"]; wind = H["wind_speed_10m"]; gust = H["wind_gusts_10m"]
     wdir = H["wind_direction_10m"]; precip = H["precipitation"]; cape = H["cape"]
-    clow = H["cloud_cover_low"]; dew = H["dew_point_2m"]; blh = H["boundary_layer_height"]
+    clow = H["cloud_cover_low"]; blh = H["boundary_layer_height"]
     has_blh = _series_available(H, "boundary_layer_height")
     has_frz = _series_available(H, "freezing_level_height")
     # час пика — общий расчёт с report_1day (см. _day_frame), а не отдельный
@@ -997,13 +1009,13 @@ def facts_1day(data, site, assessment=None):
     # мог относиться не к тому часу, что видит пилот на карточке.
     frame = _day_frame(data, site, assessment)
     tmax_i = frame["tmax_i"]
-    lcl_agl = round(122 * (temp[tmax_i] - dew[tmax_i]))
-    if has_blh:
-        top_agl = round(max(blh[i] for i in day))
-        blue = clow[tmax_i] < 15 and (elev + lcl_agl) > (elev + top_agl)
-    else:  # model without a boundary-layer series (e.g. ECMWF)
-        top_agl = None
-        blue = False
+    lcl_agl = round(lcl_agl_at(H, tmax_i))
+    # «голубой» день считается ОДНОЙ формулой на весь модуль (см. blue_thermals):
+    # раньше здесь стояло своё сравнение с максимумом пограничного слоя за сутки,
+    # и один и тот же ответ мог отдать blue_thermals=False рядом с оговоркой
+    # «голубая термичка» и строкой «· голубой» в карточке.
+    blue = blue_thermals(H, tmax_i, has_blh)
+    top_agl = round(max(blh[i] for i in day)) if has_blh else None
 
     levels = [("10m", elev + 10, "wind_speed_10m", "wind_direction_10m"),
               ("925hPa", "geopotential_height_925hPa", "wind_speed_925hPa", "wind_direction_925hPa"),
