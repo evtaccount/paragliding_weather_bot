@@ -162,16 +162,20 @@ async def read_site(name: str, _user: webauth.TelegramUser = Depends(current_use
 @router.post("/sites", status_code=201)
 async def create_site(body: SiteIn, user: webauth.TelegramUser = Depends(current_user)):
     site = body.model_dump()
-    if len(site["name"].encode()) > store.NAME_MAX_BYTES:
-        raise HTTPException(400, "Слишком длинное имя: не больше "
-                                 f"{store.NAME_MAX_BYTES} байт.")
+    # Правило одно на оба адаптера: см. store.name_error
+    bad = store.name_error(site["name"])
+    if bad:
+        raise HTTPException(400, bad)
     if store.find_site(site["name"]) is not None:
         raise HTTPException(409, f"Старт «{site['name']}» уже есть.")
     try:
         store.add_site(site, added_by=user.id)
-    except sqlite3.IntegrityError as e:
-        # гонка двух добавлений одного имени: проверка выше не атомарна
-        raise HTTPException(409, str(e)) from None
+    except sqlite3.IntegrityError:
+        # Гонка двух добавлений одного имени: проверка выше не атомарна.
+        # Сообщение своё, а не str(e): текст SQLite («UNIQUE constraint failed:
+        # sites.name») написан для разработчика и наружу не идёт — ровно по той
+        # же причине, по которой обработчик httpx не отдаёт текст ошибки.
+        raise HTTPException(409, f"Старт «{site['name']}» уже есть.") from None
     return store.find_site(site["name"])
 
 

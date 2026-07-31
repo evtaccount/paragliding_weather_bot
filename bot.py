@@ -139,15 +139,6 @@ def _analysis_html(text: str) -> str:
     return re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", esc, flags=re.S)
 
 
-def name_error(name: str) -> str | None:
-    """Why a site name can't live inside inline-button callback_data, or None if it can."""
-    if "|" in name:
-        return "Имя не должно содержать символ «|»."
-    if len(name.encode("utf-8")) > store.NAME_MAX_BYTES:
-        return "Слишком длинное имя — не влезет в кнопки Telegram. До ~20 символов, короче?"
-    return None
-
-
 def _btn(text: str, data: str) -> InlineKeyboardButton | None:
     """Inline button, or None (with a warning) when callback_data exceeds Telegram's
     64-byte limit — otherwise Telegram rejects the WHOLE message with the keyboard."""
@@ -578,7 +569,7 @@ async def cmd_add(message: Message, command: CommandObject, state: FSMContext):
     if len(parts) >= 4:  # one-shot: /add <Имя> <lat> <lon> <экспозиция>
         *name_parts, lat_s, lon_s, aspect_s = parts
         name = " ".join(name_parts)
-        if err := name_error(name):
+        if err := store.name_error(name):
             await message.answer(f"⚠️ {err}")
             return
         try:
@@ -628,7 +619,7 @@ async def add_name(message: Message, state: FSMContext):
     if not name:
         await message.answer("Пустое название. Введи имя старта.")
         return
-    if err := name_error(name):
+    if err := store.name_error(name):
         await message.answer(f"{err}\nДругое имя?")
         return
     await state.update_data(name=name)
@@ -1038,7 +1029,7 @@ async def cmd_saveroute(message: Message, command: CommandObject):
     name = (command.args or "").strip()
     if not name:
         return await message.answer("Как назвать маршрут? /saveroute <имя>")
-    err = name_error(name)
+    err = store.name_error(name)
     if err:
         return await message.answer(f"❌ {err}")
     uid = message.from_user.id

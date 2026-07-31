@@ -73,6 +73,16 @@ async def test_a_site_name_that_breaks_buttons_is_400(client):
     assert store.load_sites() and len(store.load_sites()) == len(DEFAULT_SITES)
 
 
+async def test_a_pipe_in_the_name_is_400(client):
+    """`|` — разделитель полей в callback_data. Старт с таким именем не падает
+    и не ругается: _split_cb получает лишнее поле, возвращает (None, None), и
+    кнопки под этим стартом молча перестают работать навсегда."""
+    r = await client.post("/api/sites", json={**NEW, "name": "Каз|беги"},
+                          headers=header())
+    assert r.status_code == 400
+    assert store.find_site("Каз|беги") is None
+
+
 async def test_elevation_by_coordinates(client, elevation):
     r = await client.post("/api/elevation", json={"lat": 42.5, "lon": 44.5},
                           headers=header())
