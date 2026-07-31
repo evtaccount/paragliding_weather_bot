@@ -318,7 +318,12 @@ docker compose logs -f
 - `static/` — однофайловая заглушка ровно для проверки подписи живым
   клиентом Telegram; настоящий интерфейс (`webapp/`) появится на фазе 4, и
   `./static:/srv/www` в `docker-compose.yml` тогда сменится на
-  `./webapp/dist:/srv/www`.
+  `./webapp/dist:/srv/www`. Вместе с этим нужно передвинуть и
+  `api.STATIC_DIR` (`api.py`) на `webapp/dist` — Caddy в Docker-раскатке эту
+  константу не использует (отдаёт статику сам, в обход pgbot), но
+  bare-metal-раскатка (вариант B, без Caddy) идёт ровно через неё: не
+  подвинуть — и systemd-путь продолжит отдавать старую заглушку из
+  `static/`, пока Docker-путь уже открывает настоящее приложение.
 
 ## Раскатка — вариант B: systemd + venv (bare metal / VPS)
 

@@ -6,10 +6,12 @@
 
 	encode zstd gzip
 
-	# Порядок обязателен: handle_path для /api/* стоит выше, иначе
-	# file_server отдал бы 404 на каждый запрос приложения.
+	# Порядок обязателен: handle для /api/* стоит выше, иначе file_server
+	# отдал бы 404 на каждый запрос приложения. Именно handle, а не
+	# handle_path: handle_path срезает совпавший префикс из пути, и API
+	# получил бы "/health" вместо "/api/health" — 404 на каждый запрос.
 	handle /api/* {
-		reverse_proxy pgbot:8080
+		reverse_proxy pgbot:{$API_PORT:-8080}
 	}
 
 	handle {

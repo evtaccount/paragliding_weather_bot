@@ -1,5 +1,7 @@
 """Точка входа: бот и API живут в одном процессе."""
 import asyncio
+import importlib
+import os
 
 import pytest
 
@@ -83,8 +85,35 @@ async def test_storage_is_migrated_before_either_surface_starts(monkeypatch):
     assert order[0] == "bootstrap"
 
 
-def test_api_binds_loopback_only():
-    """Наружу смотрит Caddy. uvicorn на 0.0.0.0 отдал бы API без TLS всем,
-    кто дотянется до порта."""
+def test_api_binds_loopback_by_default():
+    """Дефолт — bare metal: перед процессом никто не стоит, и loopback —
+    единственная граница. Compose переопределяет его на 0.0.0.0, см.
+    test_api_host_can_be_overridden_for_docker."""
     import app
     assert app.API_HOST == "127.0.0.1"
+
+
+def test_api_host_can_be_overridden_for_docker():
+    """pgbot и caddy — разные контейнеры с разными сетевыми пространствами:
+    сокет на loopback внутри pgbot снаружи контейнера не виден, и
+    reverse_proxy pgbot:8080 в Caddy упирался бы в ECONNREFUSED на КАЖДЫЙ
+    запрос. docker-compose.yml поэтому кладёт API_HOST=0.0.0.0 в environment
+    pgbot — граница «наружу не выходим» держит раскладка портов (expose без
+    ports), а не бинд.
+    """
+    import app
+
+    old = os.environ.get("API_HOST")
+    os.environ["API_HOST"] = "0.0.0.0"
+    try:
+        importlib.reload(app)
+        assert app.API_HOST == "0.0.0.0"
+    finally:
+        # Реестр модулей общий на весь тестовый процесс: не откатить —
+        # значит, что все тесты после этого увидят app.API_HOST == "0.0.0.0",
+        # включая test_api_binds_loopback_by_default при другом порядке сбора.
+        if old is None:
+            os.environ.pop("API_HOST", None)
+        else:
+            os.environ["API_HOST"] = old
+        importlib.reload(app)
