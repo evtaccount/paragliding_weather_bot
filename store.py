@@ -491,8 +491,13 @@ def _take_speed(value, source: str, defaults: dict, report: dict) -> None:
 
 
 def _take_model(key, source: str, defaults: dict, report: dict, valid_model_keys) -> None:
-    """Ключ метеомодели из model.json — только известный вызывающему."""
-    if valid_model_keys is not None and key not in valid_model_keys:
+    """Ключ метеомодели из model.json — только известный вызывающему.
+
+    Отката «не передали список — не проверяем» здесь нет намеренно: он и был
+    дырой. Неизвестный ключ доезжал до колонки и потом ронял engine.model_id
+    KeyError'ом на КАЖДОМ запросе этого пилота, навсегда и без самолечения.
+    """
+    if key not in valid_model_keys:
         report["dropped"].append(
             f"{source}: model={key!r} — неизвестная модель, взят дефолт "
             f"«{DEFAULT_PREFS.model_key}»")
@@ -500,8 +505,8 @@ def _take_model(key, source: str, defaults: dict, report: dict, valid_model_keys
     defaults["model_key"] = key
 
 
-def migrate_from_json(data_dir: str, allowed_user_ids, *, extra_dirs=(),
-                      skip_paths=(), valid_model_keys=None) -> dict:
+def migrate_from_json(data_dir: str, allowed_user_ids, *, valid_model_keys,
+                      extra_dirs=(), skip_paths=()) -> dict:
     """Перенести sites/routes/settings/model из JSON в БД.
 
     allowed_user_ids — кому раздать бывшие общими маршруты и личные настройки.
@@ -509,12 +514,16 @@ def migrate_from_json(data_dir: str, allowed_user_ids, *, extra_dirs=(),
     пропускаются, файлы остаются на месте, и миграцию можно повторить, когда
     список появится.
 
+    valid_model_keys — допустимые ключи метеомодели, ОБЯЗАТЕЛЕН. Список моделей
+      это знание домена, хранилище его не держит и импортировать engine не
+      может (цикл), поэтому список приходит параметром — но без дефолта:
+      «забыли передать» означало бы «не проверяем», а миграция это единственный
+      путь записи model_key без валидации перед ним. Неизвестный ключ доезжал
+      бы до колонки и ронял engine.model_id на каждом запросе этого пилота.
+      set_model() при этом валидацию по-прежнему не делает — там её место у
+      вызывающего, и это осознанное решение, а не недосмотр.
     extra_dirs — где ещё искать старые файлы, кроме каталога БД (см. _legacy_path).
     skip_paths — пути, которые личными данными не считаются (упакованный засев).
-    valid_model_keys — допустимые ключи метеомодели. Список моделей — знание
-      домена, хранилище его не держит, поэтому он приходит параметром; None
-      значит «не проверять». Без проверки неизвестный ключ из model.json
-      доезжал до колонки и потом ронял engine.model_id на каждом запросе пилота.
 
     report["dropped"] — всё, что в БД не попало, строкой с причиной. Файлы после
     переноса переименовываются, и без этого списка потеря была бы молчаливой:
@@ -601,17 +610,21 @@ def migrate_from_json(data_dir: str, allowed_user_ids, *, extra_dirs=(),
 
 
 def bootstrap(data_dir: str, allowed_user_ids, packaged_sites: str, *,
-              extra_dirs=(), valid_model_keys=None) -> dict:
+              valid_model_keys, extra_dirs=()) -> dict:
     """Полная подготовка хранилища на старте: схема, миграция, засев.
 
     Засев из упакованного sites.json срабатывает только на пустой библиотеке —
     иначе удалённый старт возвращался бы после каждого рестарта. По той же
     причине упакованный файл исключён из поиска старых файлов миграцией.
+
+    valid_model_keys обязателен и просто передаётся дальше: дефолт здесь снова
+    сделал бы проверку модели необязательной, на слой выше.
     """
     init()
-    report = migrate_from_json(data_dir, allowed_user_ids, extra_dirs=extra_dirs,
-                               skip_paths=(packaged_sites,),
-                               valid_model_keys=valid_model_keys)
+    report = migrate_from_json(data_dir, allowed_user_ids,
+                               valid_model_keys=valid_model_keys,
+                               extra_dirs=extra_dirs,
+                               skip_paths=(packaged_sites,))
     if not load_sites() and os.path.exists(packaged_sites):
         src = os.path.basename(packaged_sites)
         try:
