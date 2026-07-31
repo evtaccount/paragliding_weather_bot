@@ -1566,6 +1566,39 @@ async def test_route_analysis_returns_text(client, monkeypatch):
 
 async def test_route_needs_authorization(client):
     assert (await client.post("/api/route", json=BODY)).status_code == 401
+
+
+@pytest.fixture()
+def route_cfg(monkeypatch):
+    """Записывает cfg, с которым позвали расчёт маршрута."""
+    seen = []
+
+    async def fake(points, name, date, departure_h=None, *, cfg):
+        seen.append(cfg)
+        return {"route": {}, "points": [], "verdict": {}, "terrain": None, "notes": []}
+
+    monkeypatch.setattr(forecast, "get_route", fake)
+    return seen
+
+
+async def test_route_model_overrides_the_permanent_one(client, route_cfg):
+    store.set_model(1, "ecmwf")
+    await client.post("/api/route", json={**BODY, "model": "gfs"}, headers=header(uid=1))
+    assert route_cfg[0].model_key == "gfs"
+
+
+async def test_route_model_does_not_persist(client, route_cfg):
+    """Разовый выбор модели не должен менять постоянную настройку пилота."""
+    store.set_model(1, "ecmwf")
+    await client.post("/api/route", json={**BODY, "model": "gfs"}, headers=header(uid=1))
+    assert store.prefs(1).model_key == "ecmwf"
+
+
+async def test_an_unknown_route_model_is_400(client, route_cfg):
+    r = await client.post("/api/route", json={**BODY, "model": "нет-такой"},
+                          headers=header(uid=1))
+    assert r.status_code == 400
+    assert not route_cfg, "неизвестная модель не должна доехать до домена"
 ```
 
 - [ ] **Step 2: Убедиться, что тесты падают**
@@ -1612,13 +1645,14 @@ def _cfg_for(uid: int, override: str | None) -> store.Prefs:
 
     Возвращается Prefs целиком: get_route берёт из него и скорость, и учёт
     ветра, и модель — собирать их по одному значит однажды забыть одно.
+
+    Ключ проверяет `_model_for`, и только он: вторая такая же проверка здесь
+    разъехалась бы с первой при первой правке списка моделей.
     """
     p = store.prefs(uid)
     if override is None:
         return p
-    if override not in engine.MODELS:
-        raise HTTPException(400, f"неизвестная модель: {override}")
-    return dataclasses.replace(p, model_key=override)
+    return dataclasses.replace(p, model_key=_model_for(uid, override))
 
 
 def _points_or_400(rows: list[list]) -> list:
@@ -1673,12 +1707,12 @@ async def read_route_analysis(body: RouteIn,
 - [ ] **Step 4: Тесты проходят**
 
 Run: `python -m pytest tests/test_api_route.py -q`
-Expected: PASS, 11 тестов.
+Expected: PASS, 14 тестов.
 
 - [ ] **Step 5: Полный прогон**
 
 Run: `python -m pytest -q`
-Expected: 924 passed.
+Expected: 927 passed.
 
 - [ ] **Step 6: Коммит**
 
@@ -1955,7 +1989,7 @@ Expected: PASS, 14 тестов.
 - [ ] **Step 7: Полный прогон**
 
 Run: `python -m pytest -q`
-Expected: 938 passed. Тесты загрузки документа в чат зелёные без правок.
+Expected: 941 passed. Тесты загрузки документа в чат зелёные без правок.
 
 - [ ] **Step 8: Коммит**
 
@@ -2197,7 +2231,7 @@ Expected: FAIL как минимум в `test_a_second_request_while_the_first_r
 - [ ] **Step 8: Полный прогон**
 
 Run: `python -m pytest -q`
-Expected: 945 passed. Тесты троттлинга бота остаются зелёными без правок — поведение чата не изменилось.
+Expected: 948 passed. Тесты троттлинга бота остаются зелёными без правок — поведение чата не изменилось.
 
 - [ ] **Step 9: Коммит**
 
@@ -2436,7 +2470,7 @@ Expected: строка `http: 127.0.0.1:8099` в логе. Polling с фальш
 - [ ] **Step 8: Полный прогон**
 
 Run: `python -m pytest -q`
-Expected: 950 passed.
+Expected: 953 passed.
 
 - [ ] **Step 9: Коммит**
 
@@ -2707,7 +2741,7 @@ Expected: `Valid configuration`. Ошибка синтаксиса, найден
 - [ ] **Step 11: Полный прогон**
 
 Run: `python -m pytest -q`
-Expected: 954 passed.
+Expected: 957 passed.
 
 - [ ] **Step 12: Коммит**
 
