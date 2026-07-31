@@ -885,6 +885,16 @@ async def test_a_site_name_that_breaks_buttons_is_400(client):
     assert store.load_sites() and len(store.load_sites()) == len(DEFAULT_SITES)
 
 
+async def test_a_pipe_in_the_name_is_400(client):
+    """`|` — разделитель полей в callback_data. Старт с таким именем не падает
+    и не ругается: _split_cb получает лишнее поле, возвращает (None, None), и
+    кнопки под этим стартом молча перестают работать навсегда."""
+    r = await client.post("/api/sites", json={**NEW, "name": "Каз|беги"},
+                          headers=header())
+    assert r.status_code == 400
+    assert store.find_site("Каз|беги") is None
+
+
 async def test_elevation_by_coordinates(client, elevation):
     r = await client.post("/api/elevation", json={"lat": 42.5, "lon": 44.5},
                           headers=header())
@@ -901,30 +911,51 @@ async def test_elevation_needs_authorization(client, elevation):
 Run: `python -m pytest tests/test_api_sites.py -q`
 Expected: FAIL, 404 на каждом эндпоинте (маршрутов ещё нет).
 
-- [ ] **Step 3: Перенести потолок длины имени в `store.py`**
+- [ ] **Step 3: Перенести проверку имени старта в `store.py`**
 
-`bot.py:142-143` держит:
+`bot.py:142-148` держит **два** правила, а не одно:
 
 ```python
-# worst-case callback_data around a name: "deep|" + name + "|2weeks|YYYY-MM-DD" must fit 64 bytes
-_NAME_MAX_BYTES = 40
+def name_error(name: str) -> str | None:
+    """Why a site name can't live inside inline-button callback_data, or None if it can."""
+    if "|" in name:
+        return "Имя не должно содержать символ «|»."
+    if len(name.encode("utf-8")) > _NAME_MAX_BYTES:
+        return "Слишком длинное имя — не влезет в кнопки Telegram. До ~20 символов, короче?"
+    return None
 ```
 
-Ограничение живёт в чате, но относится к **данным**: библиотека стартов общая, и имя, добавленное из приложения, обязано влезать в кнопку бота. Вторая, независимая проверка в `api.py` разъехалась бы с первой при первой же правке.
+Оба ограничения живут в чате, но относятся к **данным**: библиотека стартов общая, и имя, добавленное из приложения, обязано влезать в кнопку бота и не ломать её разбор. Переносить надо **всю функцию целиком**, а не одну константу: `_split_cb` (`bot.py:166`) режет `callback_data` по `|` и рассчитывает на фиксированное число полей. Имя с `|` даёт неверное число полей, `_split_cb` возвращает `(None, None)`, и кнопка навсегда молча перестаёт работать — без ошибки, без падения, просто ничего не происходит.
 
-Перенести константу в `store.py`, рядом с `add_site`:
+Перенести в `store.py`, рядом с `add_site`:
 
 ```python
 # Имя уезжает в callback_data бота: "deep|" + name + "|2weeks|YYYY-MM-DD"
-# должно уместиться в 64 байта. Ограничение чата, но проверять его обязаны
-# обе поверхности — библиотека стартов общая.
+# должно уместиться в 64 байта, а поля режутся по «|». Ограничения чата, но
+# проверять их обязаны обе поверхности — библиотека стартов общая, и старт,
+# заведённый из приложения, ломал бы кнопки бота.
 NAME_MAX_BYTES = 40
+
+
+def name_error(name: str) -> str | None:
+    """Почему имя не годится для callback_data, или None если годится.
+
+    Одна функция на оба адаптера. Разнесённые проверки разъехались бы при
+    первой правке, и приложение завело бы старт, невидимый для кнопок чата.
+    """
+    if "|" in name:
+        return "Имя не должно содержать символ «|»."
+    if len(name.encode("utf-8")) > NAME_MAX_BYTES:
+        return "Слишком длинное имя — не влезет в кнопки Telegram. До ~20 символов, короче?"
+    return None
 ```
 
-В `bot.py` заменить определение на импорт и все обращения `_NAME_MAX_BYTES` → `store.NAME_MAX_BYTES` (проверить `bot.py:150`).
+В `bot.py` удалить определение `name_error` и `_NAME_MAX_BYTES`, а все обращения перевести на `store.name_error`.
 
-Run: `grep -n "_NAME_MAX_BYTES" bot.py tests/*.py`
+Run: `grep -n "_NAME_MAX_BYTES\|def name_error" bot.py tests/*.py`
 Expected после правки: пусто.
+
+Тексты сообщений не меняются: обе поверхности обязаны объяснять отказ одинаково.
 
 - [ ] **Step 4: Дописать эндпоинты в `api.py`**
 
@@ -968,16 +999,20 @@ async def read_site(name: str, _user: webauth.TelegramUser = Depends(current_use
 @router.post("/sites", status_code=201)
 async def create_site(body: SiteIn, user: webauth.TelegramUser = Depends(current_user)):
     site = body.model_dump()
-    if len(site["name"].encode()) > store.NAME_MAX_BYTES:
-        raise HTTPException(400, "Слишком длинное имя: не больше "
-                                 f"{store.NAME_MAX_BYTES} байт.")
+    # Правило одно на оба адаптера: см. store.name_error
+    bad = store.name_error(site["name"])
+    if bad:
+        raise HTTPException(400, bad)
     if store.find_site(site["name"]) is not None:
         raise HTTPException(409, f"Старт «{site['name']}» уже есть.")
     try:
         store.add_site(site, added_by=user.id)
-    except sqlite3.IntegrityError as e:
-        # гонка двух добавлений одного имени: проверка выше не атомарна
-        raise HTTPException(409, str(e)) from None
+    except sqlite3.IntegrityError:
+        # Гонка двух добавлений одного имени: проверка выше не атомарна.
+        # Сообщение своё, а не str(e): текст SQLite («UNIQUE constraint failed:
+        # sites.name») написан для разработчика и наружу не идёт — ровно по той
+        # же причине, по которой обработчик httpx не отдаёт текст ошибки.
+        raise HTTPException(409, f"Старт «{site['name']}» уже есть.") from None
     return store.find_site(site["name"])
 
 
@@ -1004,12 +1039,12 @@ async def elevation(body: Coords, _user: webauth.TelegramUser = Depends(current_
 - [ ] **Step 5: Тесты проходят**
 
 Run: `python -m pytest tests/test_api_sites.py -q`
-Expected: PASS, 12 тестов.
+Expected: PASS, 13 тестов.
 
 - [ ] **Step 6: Полный прогон**
 
 Run: `python -m pytest -q`
-Expected: 895 passed, ни один тест бота не сломан переносом константы.
+Expected: 896 passed, ни один тест бота не сломан переносом константы.
 
 - [ ] **Step 7: Коммит**
 
@@ -1311,7 +1346,7 @@ Expected: PASS, 14 тестов.
 - [ ] **Step 8: Полный прогон**
 
 Run: `python -m pytest -q`
-Expected: 911 passed.
+Expected: 912 passed.
 
 - [ ] **Step 9: Коммит**
 
@@ -1577,7 +1612,7 @@ Expected: PASS, 11 тестов.
 - [ ] **Step 5: Полный прогон**
 
 Run: `python -m pytest -q`
-Expected: 922 passed.
+Expected: 923 passed.
 
 - [ ] **Step 6: Коммит**
 
@@ -1854,7 +1889,7 @@ Expected: PASS, 14 тестов.
 - [ ] **Step 7: Полный прогон**
 
 Run: `python -m pytest -q`
-Expected: 936 passed. Тесты загрузки документа в чат зелёные без правок.
+Expected: 937 passed. Тесты загрузки документа в чат зелёные без правок.
 
 - [ ] **Step 8: Коммит**
 
@@ -2096,7 +2131,7 @@ Expected: FAIL как минимум в `test_a_second_request_while_the_first_r
 - [ ] **Step 8: Полный прогон**
 
 Run: `python -m pytest -q`
-Expected: 943 passed. Тесты троттлинга бота остаются зелёными без правок — поведение чата не изменилось.
+Expected: 944 passed. Тесты троттлинга бота остаются зелёными без правок — поведение чата не изменилось.
 
 - [ ] **Step 9: Коммит**
 
@@ -2335,7 +2370,7 @@ Expected: строка `http: 127.0.0.1:8099` в логе. Polling с фальш
 - [ ] **Step 8: Полный прогон**
 
 Run: `python -m pytest -q`
-Expected: 948 passed.
+Expected: 949 passed.
 
 - [ ] **Step 9: Коммит**
 
@@ -2606,7 +2641,7 @@ Expected: `Valid configuration`. Ошибка синтаксиса, найден
 - [ ] **Step 11: Полный прогон**
 
 Run: `python -m pytest -q`
-Expected: 952 passed.
+Expected: 953 passed.
 
 - [ ] **Step 12: Коммит**
 
