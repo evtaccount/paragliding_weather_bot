@@ -281,13 +281,14 @@ def _cfg_for(uid: int, override: str | None) -> store.Prefs:
 
     Возвращается Prefs целиком: get_route берёт из него и скорость, и учёт
     ветра, и модель — собирать их по одному значит однажды забыть одно.
+
+    Ключ проверяет `_model_for`, и только он: вторая такая же проверка здесь
+    разъехалась бы с первой при первой правке списка моделей.
     """
     p = store.prefs(uid)
     if override is None:
         return p
-    if override not in engine.MODELS:
-        raise HTTPException(400, f"неизвестная модель: {override}")
-    return dataclasses.replace(p, model_key=override)
+    return dataclasses.replace(p, model_key=_model_for(uid, override))
 
 
 def _points_or_400(rows: list[list]) -> list:

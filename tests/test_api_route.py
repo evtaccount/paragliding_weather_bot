@@ -126,3 +126,36 @@ async def test_route_analysis_returns_text(client, monkeypatch):
 
 async def test_route_needs_authorization(client):
     assert (await client.post("/api/route", json=BODY)).status_code == 401
+
+
+@pytest.fixture()
+def route_cfg(monkeypatch):
+    """Записывает cfg, с которым позвали расчёт маршрута."""
+    seen = []
+
+    async def fake(points, name, date, departure_h=None, *, cfg):
+        seen.append(cfg)
+        return {"route": {}, "points": [], "verdict": {}, "terrain": None, "notes": []}
+
+    monkeypatch.setattr(forecast, "get_route", fake)
+    return seen
+
+
+async def test_route_model_overrides_the_permanent_one(client, route_cfg):
+    store.set_model(1, "ecmwf")
+    await client.post("/api/route", json={**BODY, "model": "gfs"}, headers=header(uid=1))
+    assert route_cfg[0].model_key == "gfs"
+
+
+async def test_route_model_does_not_persist(client, route_cfg):
+    """Разовый выбор модели не должен менять постоянную настройку пилота."""
+    store.set_model(1, "ecmwf")
+    await client.post("/api/route", json={**BODY, "model": "gfs"}, headers=header(uid=1))
+    assert store.prefs(1).model_key == "ecmwf"
+
+
+async def test_an_unknown_route_model_is_400(client, route_cfg):
+    r = await client.post("/api/route", json={**BODY, "model": "нет-такой"},
+                          headers=header(uid=1))
+    assert r.status_code == 400
+    assert not route_cfg, "неизвестная модель не должна доехать до домена"
