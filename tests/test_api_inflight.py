@@ -36,8 +36,12 @@ async def test_a_second_request_while_the_first_runs_is_429(client, slow):
     first = asyncio.create_task(
         client.get("/api/forecast?site=Гудаури&range=1d", headers=header(uid=1)))
     await asyncio.wait_for(slow.entered.wait(), timeout=5)
-    second = await client.get("/api/forecast?site=Гудаури&range=1d",
-                              headers=header(uid=1))
+    # wait_for, а не голый await: без троттлинга второй запрос уходит в тот же
+    # висящий расчёт, и тест не падает, а зависает навсегда. Зависший тест хуже
+    # упавшего — он не говорит, что сломалось, и не даёт красной фазы.
+    second = await asyncio.wait_for(
+        client.get("/api/forecast?site=Гудаури&range=1d", headers=header(uid=1)),
+        timeout=5)
     assert second.status_code == 429
     slow.release.set()
     assert (await first).status_code == 200
