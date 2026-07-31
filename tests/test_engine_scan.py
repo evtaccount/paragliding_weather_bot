@@ -24,7 +24,7 @@ import forecast
 
 def test_scan_week_filters_flyable_and_reports_empty(monkeypatch):
     # Two saved sites; site A has one flyable day, site B has none.
-    monkeypatch.setattr(forecast.engine, "load_sites", lambda: [
+    monkeypatch.setattr(forecast.store, "load_sites", lambda: [
         {"name": "A", "aspect_deg": 180.0}, {"name": "B", "aspect_deg": 180.0},
     ])
     rows_by_site = {
@@ -43,11 +43,11 @@ def test_scan_week_filters_flyable_and_reports_empty(monkeypatch):
         ],
     }
 
-    async def fake_ensure(site, rng, date, key):
-        return "card", [], {}, "fb", rows_by_site[site["name"]], None
+    async def fake_ensure(site, rng, date, key, model=None):
+        return {}, None, {"rows": rows_by_site[site["name"]]}
 
     monkeypatch.setattr(forecast, "_ensure", fake_ensure)
-    result = asyncio.run(forecast.scan_week())
+    result = asyncio.run(forecast.scan_week(model=engine.DEFAULT_MODEL_KEY))
     assert [s["name"] for s in result["sites"]] == ["A"]
     # маргинальный день отсеян — в /scan попадают категории от «удовлетворительной»
     assert [d["date"] for d in result["sites"][0]["days"]] == ["2026-07-25"]
@@ -56,13 +56,13 @@ def test_scan_week_filters_flyable_and_reports_empty(monkeypatch):
 
 
 def test_scan_week_records_failed_fetch(monkeypatch):
-    monkeypatch.setattr(forecast.engine, "load_sites", lambda: [{"name": "X", "aspect_deg": None}])
+    monkeypatch.setattr(forecast.store, "load_sites", lambda: [{"name": "X", "aspect_deg": None}])
 
-    async def boom(site, rng, date, key):
+    async def boom(site, rng, date, key, model=None):
         raise RuntimeError("open-meteo down")
 
     monkeypatch.setattr(forecast, "_ensure", boom)
-    result = asyncio.run(forecast.scan_week())
+    result = asyncio.run(forecast.scan_week(model=engine.DEFAULT_MODEL_KEY))
     assert result["sites"] == [] and result["empty"] == [] and result["failed"] == ["X"]
 
 

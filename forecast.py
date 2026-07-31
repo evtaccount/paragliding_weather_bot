@@ -12,11 +12,11 @@ Gemini only reasons over real data; it never invents numbers.
 import asyncio
 import copy
 import datetime as dt
+import json
 import logging
 import math
 import os
 import pathlib
-import re
 import shutil
 import tempfile
 import time
@@ -25,23 +25,23 @@ import httpx
 
 import analysis
 import criteria
-import engine  # find_site, build_url, report_*, facts_*, RANGE_DAYS
+import engine  # build_url, report_*, facts_*, RANGE_DAYS
 import route
-import settings
+import store
 
 log = logging.getLogger("pgbot.forecast")
 
 _TTL = float(os.environ.get("CACHE_TTL_MIN", "15")) * 60
-# facts cache:    key -> (expires, card, png_bytes, facts, fallback_text)
+# forecast cache: key -> (expires, data, assessment, derived)
+#   data       — сырой ответ open-meteo (плюс _model_key/_ceiling_model)
+#   assessment — engine.assess_day(...), посчитан один раз на 1d-запись, иначе None
+#   derived    — производные ("text"/"facts"/"rows"/"grid"), считаются лениво и
+#                запоминаются здесь же при первом запросе — карточка с PNG,
+#                факты для мини-аппа и Gemini больше не платят друг за друга
 # analysis cache: key -> (expires, text)   — so a repeat button press is free
 _fcache: dict[tuple, tuple] = {}
 _acache: dict[tuple, tuple[float, str]] = {}
-# ad-hoc points from "по координатам" — resolved by name like saved sites, but not
-# persisted; aspect is unknown (None), so the direction verdict is skipped.
-_adhoc: dict[str, dict] = {}
-# route caches: рельеф не меняется и живёт без срока, погода — по общему TTL
-_terrain_cache: dict[tuple, list] = {}
-_TERRAIN_CACHE_MAX = 64
+# route cache: рельеф лежит в хранилище и переживает рестарт, погода — по общему TTL
 _rcache: dict[tuple, tuple] = {}
 ELEVATION_CHUNK = 100          # документированный потолок Elevation API
 DEPARTURE_STEP_H = 0.5         # шаг скана времени вылета
@@ -53,7 +53,7 @@ class ForecastError(Exception):
 
 
 def known_sites():
-    return [s["name"] for s in engine.load_sites()]
+    return [s["name"] for s in store.load_sites()]
 
 
 # День попадает в /scan, если его категория ≥ «удовлетворительная». Раньше фильтр
@@ -61,19 +61,23 @@ def known_sites():
 # вердикта; теперь у каждой категории свой ключ, и сравнивать строки не нужно.
 
 
-async def scan_week() -> dict:
+async def scan_week(*, model) -> dict:
     """Week overview across ALL saved sites, keeping only flyable days.
 
     Returns {"sites": [{"name", "aspect", "days": [row, ...]}], "empty": [name...],
     "failed": [name...]}. Each row is an engine.overview_rows() dict. Fetches run
     concurrently and reuse (warm) the same week cache /week uses.
+
+    `model` — модель пилота; вызывающий обязан разрешить её сам (store.prefs(uid))
+    и передать явно. Ключ кэша тот же, что у /week, поэтому обзор и скан по одной
+    модели греют друг друга.
     """
-    sites = engine.load_sites()
+    sites = store.load_sites()
 
     async def fetch(site):
-        key = (site["name"], "week", None, engine.get_model_key())
-        _c, _p, _f, _fb, rows, _grid = await _ensure(site, "week", None, key)
-        return rows
+        key = (site["name"], "week", None, model)
+        data, assessment, derived = await _ensure(site, "week", None, key, model)
+        return _derive(site, "week", data, assessment, derived, "rows")
 
     gathered = await asyncio.gather(*(fetch(s) for s in sites), return_exceptions=True)
     out: dict = {"sites": [], "empty": [], "failed": []}
@@ -156,45 +160,52 @@ async def _detail_context(site: dict, date: str, model: str | None = None) -> di
     return ctx
 
 
-_ADHOC_NAME_RE = re.compile(r"^-?\d+\.\d{4}, -?\d+\.\d{4}$")  # register_adhoc's name format
-
-
 def register_adhoc(lat: float, lon: float, elev: int) -> str:
-    """Register an ad-hoc point (unknown aspect) and return its lookup name."""
-    name = f"{lat:.4f}, {lon:.4f}"
-    _adhoc[name] = {"name": name, "aliases": [], "lat": lat, "lon": lon,
-                    "elevation_m": elev, "aspect": None, "aspect_deg": None, "notes": ""}
-    return name
+    """Зарегистрировать точку по координатам и вернуть её имя для поиска."""
+    return store.adhoc_put(lat, lon, elev)
 
 
-def _resolve(site_name: str, rng: str, date: str | None, model: str | None = None):
+def _resolve(site_name: str, rng: str, date: str | None, model):
+    """`model` обязателен: вызывающий (одна из пяти публичных функций forecast)
+    уже разрешил его сам, и угадывать здесь нечего."""
     if rng not in engine.RANGE_DAYS:
         raise ForecastError(f"Неизвестный диапазон: {rng}")
-    try:
-        site = engine.find_site(site_name)
-    except SystemExit:
-        site = _adhoc.get(site_name)
-        if site is None:
-            if _ADHOC_NAME_RE.match(site_name):  # ad-hoc points don't survive a restart
-                raise ForecastError("Эта точка по координатам больше не в памяти (бот перезапускался). "
-                                    "Запроси её заново через «📍 По координатам».")
-            raise ForecastError(f"Старт не найден: {site_name}. /sites — список.")
+    site = store.find_site(site_name) or store.adhoc_get(site_name)
+    if site is None:
+        raise ForecastError(f"Старт не найден: {site_name}. /sites — список.")
     if rng == "1d" and not date:
         date = dt.date.today().isoformat()
-    return site, date, (site["name"], rng, date, model or engine.get_model_key())
+    return site, date, (site["name"], rng, date, model)
 
 
-def cached_dates(site_name: str, rng: str, date: str | None = None,
-                 model: str | None = None) -> list[str] | None:
-    """Dates (site-local) of a cached overview — for the day-picker. None on a cold cache."""
+def cached_dates(site_name: str, rng: str, date: str | None = None, *,
+                 model) -> list[str] | None:
+    """Dates (site-local) of a cached overview — for the day-picker. None on a cold
+    cache, and also None if computing facts from a warm entry blows up.
+
+    Единственный вызывающий (`bot._day_picker_kb`) строит клавиатуру ПОСЛЕ того, как
+    карточка с прогнозом уже отправлена, и делает это вне try/except, который ловит
+    ошибки forecast — клавиатура дней это необязательное украшение уже готового
+    ответа, и её нельзя ронять. Раньше facts лежали в кэше уже готовыми и этот вызов
+    не мог кинуть исключение; с ленивыми производными `_derive` может дойти до
+    настоящего `engine.facts_1day`/`facts_overview`, а он может упасть — тогда
+    здесь та же деградация, что и на холодном кэше: пикер откатится на серверные
+    даты вместо того, чтобы уронить весь оставшийся ответ.
+    """
     try:
-        _site, _date, key = _resolve(site_name, rng, date, model)
+        site, _date, key = _resolve(site_name, rng, date, model)
     except ForecastError:
         return None
     entry = _fcache.get(key)
     if entry is None:
         return None
-    days = entry[3].get("days_daytime") or []  # entry: (expires, card, pngs, facts, fallback)
+    _exp, data, assessment, derived = entry
+    try:
+        facts = _derive(site, rng, data, assessment, derived, "facts")
+    except Exception as e:  # noqa: BLE001 — day-picker best-effort, карточка уже отправлена
+        log.warning("cached_dates: facts derivation failed: %s", e)
+        return None
+    days = facts.get("days_daytime") or []
     return [d["date"] for d in days] or None
 
 
@@ -277,77 +288,104 @@ async def _fetch_main(url):
     return data
 
 
-async def _fetch_build(site: dict, rng: str, date: str | None, model: str | None = None):
-    """Fetch open-meteo once and build (card, png_bytes, facts, fallback_text, rows, grid).
+async def _fetch_raw(site: dict, rng: str, date: str | None, model: str):
+    """Сходить за данными и посчитать оценку. Ничего не рендерит.
 
     Потолок всегда берётся из GFS отдельным узким запросом — конкурентно с
     основным, поэтому задержка не растёт. Когда выбрана сама GFS, запроса нет.
+
+    `model` обязателен — вызывающий (через `_ensure`) уже разрешил его.
     """
-    key = model or engine.get_model_key()
-    main = _fetch_main(engine.build_url(site, rng, date, model=key))
-    if key == engine.CEILING_MODEL_KEY:
+    main = _fetch_main(engine.build_url(site, rng, date, model=model))
+    if model == engine.CEILING_MODEL_KEY:
         data, gfs = await main, None
     else:
-        data, gfs = await asyncio.gather(main, _fetch_ceiling(engine.ceiling_url(site, rng, date)))
-    data["_model_key"] = key
+        data, gfs = await asyncio.gather(
+            main, _fetch_ceiling(engine.ceiling_url(site, rng, date)))
+    data["_model_key"] = model
     if _splice_ceiling(data, gfs):
         data["_ceiling_model"] = engine.CEILING_MODEL_KEY
-
-    out = tempfile.mkdtemp(prefix="pgfc_")
-    try:
-        if rng == "1d":
-            # один расчёт лётности на карточку, графики и данные для LLM —
-            # иначе три места считали бы его независимо и могли разойтись
-            assessment = engine.assess_day(data, site)
-            fallback, png_paths, card = engine.report_1day(data, site, out, assessment)
-            facts = engine.facts_1day(data, site, assessment)
-            rows = []
-            grid = engine.wind_grid(data, site)
-        else:
-            fallback, png_paths, card = engine.report_overview(data, site, rng, out)
-            facts = engine.facts_overview(data, site, rng)
-            rows = engine.overview_rows(data, site)
-            grid = None
-        pngs = [pathlib.Path(p).read_bytes() for p in png_paths]
-    finally:
-        shutil.rmtree(out, ignore_errors=True)
-    return card, pngs, facts, fallback, rows, grid
+    # один расчёт лётности на карточку, графики и данные для LLM — иначе три
+    # места считали бы его независимо и могли разойтись
+    assessment = engine.assess_day(data, site) if rng == "1d" else None
+    return data, assessment
 
 
-async def _ensure(site: dict, rng: str, date: str | None, key: tuple, model: str | None = None):
-    """Return (card, pngs, facts, fallback, rows, grid), fetching only on a cold cache."""
+def _derive(site: dict, rng: str, data: dict, assessment, derived: dict, what: str):
+    """Посчитать производную и запомнить её в записи кэша.
+
+    what: "text" (card, pngs, fallback) | "facts" | "rows" | "grid"
+    """
+    if what in derived:
+        return derived[what]
+    if what == "text":
+        out = tempfile.mkdtemp(prefix="pgfc_")
+        try:
+            if rng == "1d":
+                fallback, png_paths, card = engine.report_1day(data, site, out, assessment)
+            else:
+                fallback, png_paths, card = engine.report_overview(data, site, rng, out)
+            derived["text"] = (card, [pathlib.Path(p).read_bytes() for p in png_paths],
+                               fallback)
+        finally:
+            shutil.rmtree(out, ignore_errors=True)
+    elif what == "facts":
+        derived["facts"] = (engine.facts_1day(data, site, assessment) if rng == "1d"
+                            else engine.facts_overview(data, site, rng))
+    elif what == "rows":
+        derived["rows"] = [] if rng == "1d" else engine.overview_rows(data, site)
+    elif what == "grid":
+        derived["grid"] = engine.wind_grid(data, site) if rng == "1d" else None
+    else:
+        raise ValueError(f"_derive: неизвестная производная {what!r}")
+    return derived[what]
+
+
+async def _ensure(site: dict, rng: str, date: str | None, key: tuple, model: str):
+    """Вернуть (data, assessment, derived), сходив в сеть только на холодном кэше."""
     now = time.monotonic()
     _purge(now)
     if key in _fcache:
-        return _fcache[key][1:]
-    card, pngs, facts, fallback, rows, grid = await _fetch_build(site, rng, date, model)
-    _fcache[key] = (now + _TTL, card, pngs, facts, fallback, rows, grid)
-    return card, pngs, facts, fallback, rows, grid
+        _exp, data, assessment, derived = _fcache[key]
+        return data, assessment, derived
+    data, assessment = await _fetch_raw(site, rng, date, model)
+    derived: dict = {}
+    _fcache[key] = (now + _TTL, data, assessment, derived)
+    return data, assessment, derived
 
 
-async def get_forecast(site_name: str, rng: str, date: str | None = None,
-                       model: str | None = None):
+async def get_forecast(site_name: str, rng: str, date: str | None = None, *, model):
     """Factual card + charts. No LLM. rng: 1d | 3d | week | 2weeks.
 
-    `model` — разовый выбор кнопкой под прогнозом; глобальную настройку не трогает.
+    `model` — эффективная модель (разовый выбор кнопкой, иначе постоянная модель
+    пилота): вызывающий обязан разрешить её сам и передать явно.
     """
     site, date, key = _resolve(site_name, rng, date, model)
-    card, pngs, _facts, _fallback, _rows, _grid = await _ensure(site, rng, date, key, model)
+    data, assessment, derived = await _ensure(site, rng, date, key, model)
+    card, pngs, _fallback = _derive(site, rng, data, assessment, derived, "text")
     return card, pngs
 
 
-async def get_wind_grid(site_name: str, date: str, model: str | None = None) -> bytes:
+async def get_facts(site_name: str, rng: str, date: str | None = None, *, model) -> dict:
+    """Структурированные факты — то же, что уходит в Gemini, и то же, что
+    отдаётся приложению. PNG при этом не рисуются."""
+    site, date, key = _resolve(site_name, rng, date, model)
+    data, assessment, derived = await _ensure(site, rng, date, key, model)
+    return _derive(site, rng, data, assessment, derived, "facts")
+
+
+async def get_wind_grid(site_name: str, date: str, *, model) -> bytes:
     """PNG of the altitude × hour wind grid for a single day. Reuses the warm 1d cache
     (no re-fetch) and builds the image on demand — /today never pays for it unused."""
     site, date, key = _resolve(site_name, "1d", date, model)
-    _card, _pngs, _facts, _fallback, _rows, grid = await _ensure(site, "1d", date, key, model)
+    data, assessment, derived = await _ensure(site, "1d", date, key, model)
+    grid = _derive(site, "1d", data, assessment, derived, "grid")
     if not grid:
         raise ForecastError("Данные по высотам недоступны для этого дня.")
     out = tempfile.mkdtemp(prefix="pgwg_")
     try:
         import charts
-        path = charts.wind_grid_png(grid, site, out)
-        return pathlib.Path(path).read_bytes()
+        return pathlib.Path(charts.wind_grid_png(grid, site, out)).read_bytes()
     finally:
         shutil.rmtree(out, ignore_errors=True)
 
@@ -390,36 +428,39 @@ async def _fetch_route_weather(url):
 
 
 async def _ensure_terrain(grid):
+    """Высоты сетки: из хранилища, иначе запрос к Elevation API.
+
+    Рельеф не меняется, поэтому срока годности у записи нет.
+    """
     coords = [(lat, lon) for _km, lat, lon in grid]
-    key = _route_key(coords)
-    if key in _terrain_cache:
-        return _terrain_cache[key]
+    key = json.dumps(_route_key(coords), separators=(",", ":"))
+    cached = store.terrain_get(key)
+    if cached is not None:
+        return cached
     elev = await fetch_terrain(coords)
     if elev is not None:
-        if len(_terrain_cache) >= _TERRAIN_CACHE_MAX:
-            _terrain_cache.pop(next(iter(_terrain_cache)))
-        _terrain_cache[key] = elev
+        store.terrain_put(key, elev)
     return elev
 
 
-async def _ensure_route_weather(samples, date, model=None):
+async def _ensure_route_weather(samples, date, model):
     """Погода по всем сэмплам одним запросом. Скорость и тумблер ветра в ключ не
     входят: они меняют только пересчёт времени, который дешёв и идёт поверх кэша.
 
     Потолок, как и на старте, всегда из GFS — вторым узким запросом конкурентно
-    с основным.
+    с основным. `model` обязателен — единственный вызывающий (`get_route`)
+    передаёт `cfg.model_key`, который никогда не бывает None.
     """
     coords = [(s.lat, s.lon) for s in samples]
-    mkey = model or engine.get_model_key()
-    key = (_route_key(coords), date, mkey)
+    key = (_route_key(coords), date, model)
     now = time.monotonic()
     _purge(now)
     if key in _rcache:
         return _rcache[key][1]
     tz = os.environ.get("TZ") or "Asia/Tbilisi"
-    url = engine.route_weather_url(coords, date, tz, model=mkey)
+    url = engine.route_weather_url(coords, date, tz, model=model)
     try:
-        if mkey == engine.CEILING_MODEL_KEY:
+        if model == engine.CEILING_MODEL_KEY:
             bodies, gfs = await _fetch_route_weather(url), None
         else:
             bodies, gfs = await asyncio.gather(
@@ -603,7 +644,7 @@ def _evaluate(samples, bodies, date, departure_h, cfg):
     """
     work = copy.deepcopy(samples)
     notes = []
-    speed = cfg["avg_route_speed_kmh"]
+    speed = cfg.avg_route_speed_kmh
 
     def wind_for_segment(i, hour):
         pairs = []
@@ -618,7 +659,7 @@ def _evaluate(samples, bodies, date, departure_h, cfg):
                 sum(p[1] for p in pairs) / len(pairs))
 
     route.fixed_eta(work, speed, departure_h)
-    if cfg["wind_correction_enabled"]:
+    if cfg.wind_correction_enabled:
         route.march(work, speed, wind_for_segment, departure_h)
     else:
         for s in work:
@@ -664,10 +705,14 @@ def _departure_options(samples):
     return [w["start_hour"] + k * DEPARTURE_STEP_H for k in range(max(0, n))]
 
 
-async def get_route(points, name, date, departure_h=None):
-    """Профиль маршрута: два запроса, кэш, маршрутные величины, скоринг и вердикт."""
+async def get_route(points, name, date, departure_h=None, *, cfg):
+    """Профиль маршрута: два запроса, кэш, маршрутные величины, скоринг и вердикт.
+
+    `cfg` — личные настройки пилота (store.Prefs), включая модель (cfg.model_key):
+    расчёту маршрута недоступен user_id, поэтому вызывающий обязан разрешить
+    настройки сам (store.prefs(uid)) и передать явно — домен не должен угадывать.
+    """
     _check_date(date)
-    cfg = settings.get()
     samples, step = route.resample(points)
     total_km = samples[-1].km
     notes = []
@@ -680,8 +725,8 @@ async def get_route(points, name, date, departure_h=None):
         notes.append("Рельеф недоступен — рабочий диапазон не посчитан")
     route.attach_terrain(samples, grid, elev, step_km=step)
 
-    bodies = await _ensure_route_weather(samples, date)
-    sites = {s["name"]: s for s in engine.load_sites()}
+    bodies = await _ensure_route_weather(samples, date, cfg.model_key)
+    sites = {s["name"]: s for s in store.load_sites()}
 
     # Окно термической активности и совпадение с сохранённым стартом не зависят
     # от времени вылета — считаются один раз, до перебора вариантов.
@@ -725,10 +770,10 @@ async def get_route(points, name, date, departure_h=None):
             "name": name, "date": date, "departure": _hhmm(departure_h),
             "timezone": os.environ.get("TZ") or "Asia/Tbilisi",
             "total_km": round(total_km, 1),
-            "avg_route_speed_kmh": cfg["avg_route_speed_kmh"],
-            "wind_correction_enabled": cfg["wind_correction_enabled"],
+            "avg_route_speed_kmh": cfg.avg_route_speed_kmh,
+            "wind_correction_enabled": cfg.wind_correction_enabled,
             "sample_step_km": round(step, 1), "sample_count": len(work),
-            "model": engine.model_label(engine.get_model_key()),
+            "model": engine.model_label(cfg.model_key),
         },
         "points": [_point_dict(s) for s in work],
         # Мелкая сетка рельефа отдаётся ЦЕЛИКОМ и со своим километражом.
@@ -756,10 +801,14 @@ async def get_route(points, name, date, departure_h=None):
     }
 
 
-async def get_route_section(points, name, date, departure_h=None) -> bytes:
+async def get_route_section(points, name, date, departure_h=None, *, cfg) -> bytes:
     """PNG-разрез вдоль маршрута. Профиль пересчитывается поверх тёплого кэша,
-    поэтому кнопка не стоит ни одного нового запроса к open-meteo."""
-    profile = await get_route(points, name, date, departure_h)
+    поэтому кнопка не стоит ни одного нового запроса к open-meteo.
+
+    `cfg` обязателен, как и у get_route: с `cfg=None` пропуск всплывал бы
+    AttributeError'ом в глубине _evaluate, а не TypeError'ом на границе.
+    """
+    profile = await get_route(points, name, date, departure_h, cfg=cfg)
     out = tempfile.mkdtemp(prefix="pgrs_")
     try:
         import charts
@@ -811,15 +860,17 @@ def route_facts(profile):
     }
 
 
-async def get_route_analysis(points, name, date, departure_h=None) -> str:
+async def get_route_analysis(points, name, date, departure_h=None, *, cfg) -> str:
     """ИИ-разбор маршрута. ForecastError, если разбора не будет.
 
     Карточка маршрута к этому моменту уже показана и остаётся в силе — поэтому
     отказ здесь это сообщение, а не откат на другой текст, как у разбора старта.
+
+    `cfg` обязателен по той же причине, что и у get_route.
     """
     if not analysis.available():
         raise ForecastError("ИИ-разбор недоступен: не задан GEMINI_API_KEY.")
-    profile = await get_route(points, name, date, departure_h)
+    profile = await get_route(points, name, date, departure_h, cfg=cfg)
     facts = route_facts(profile)
     t0 = time.monotonic()
     try:
@@ -836,13 +887,15 @@ async def get_route_analysis(points, name, date, departure_h=None) -> str:
 
 
 async def get_analysis(site_name: str, rng: str, date: str | None = None, deep: bool = False,
-                       model: str | None = None) -> str:
+                       *, model) -> str:
     """LLM analysis over the cached facts.
 
     deep=False — reuse the data get_forecast already fetched; NO open-meteo re-request
                  when the cache is warm.
     deep=True  — additionally fetch surrounding points + the previous day (new data, by
                  design) and feed them as context. 1-day only.
+
+    `model` — эффективная модель: вызывающий обязан разрешить её сам и передать явно.
 
     Falls back to the deterministic rule text when Gemini is unavailable.
     """
@@ -855,7 +908,9 @@ async def get_analysis(site_name: str, rng: str, date: str | None = None, deep: 
         log.info("analysis cache hit: %s", acache_key)
         return _acache[acache_key][1]
 
-    card, _pngs, facts, fallback, _rows, _grid = await _ensure(site, rng, date, base_key, model)
+    data, assessment, derived = await _ensure(site, rng, date, base_key, model)
+    facts = _derive(site, rng, data, assessment, derived, "facts")
+    card, _pngs, fallback = _derive(site, rng, data, assessment, derived, "text")
     rules_tail = fallback[len(card):].strip() or fallback  # deterministic verdict tail
 
     if not analysis.available():

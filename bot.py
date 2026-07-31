@@ -42,8 +42,7 @@ import engine  # noqa: E402
 import forecast  # noqa: E402
 import guards  # noqa: E402
 import route  # noqa: E402
-import routes  # noqa: E402
-import settings  # noqa: E402
+import store  # noqa: E402
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("pgbot")
@@ -212,14 +211,20 @@ async def cb_message(cb: CallbackQuery) -> Message | None:
 _WD = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
 
 
-def _day_picker_kb(site: str, rng: str, model: str | None = None) -> InlineKeyboardMarkup | None:
+def _day_picker_kb(site: str, rng: str, model: str | None = None, *,
+                   effective) -> InlineKeyboardMarkup | None:
     """Buttons for each day of an overview period → detailed 1-day forecast.
 
     Dates come from the cached overview facts (site-local, straight from the
     open-meteo response) — the server's own "today" can differ from the site's
     around midnight. Cold cache → fall back to server-local dates.
+
+    `effective` — модель, которой посчитан показанный обзор: по ней ищется запись
+    в кэше, и она же уходит в cached_dates. `model` — разовый выбор пользователя,
+    он едет только в callback_data кнопок, а не в поиск по кэшу: единственный
+    вызывающий (`send_forecast`) всегда передаёт настоящий `eff` в `effective`.
     """
-    dates = forecast.cached_dates(site, rng, model=model)
+    dates = forecast.cached_dates(site, rng, model=effective)
     if dates is None:
         today = dt.date.today()
         dates = [(today + dt.timedelta(days=i)).isoformat() for i in range(engine.RANGE_DAYS[rng])]
@@ -291,25 +296,34 @@ def _model_switch_keyboard(site: str, rng: str, date: str | None,
     return InlineKeyboardMarkup(inline_keyboard=[row]) if row else None
 
 
-def _model_switch_caption(model: str | None) -> str:
+def _model_switch_caption(model: str | None, permanent: str) -> str:
     """Подпись ряда моделей. При разовом выборе называет и постоянную модель —
     иначе непонятно, куда вернётся бот на следующем запросе."""
     if model is None:
         return "🌐 Другая модель (разово):"
     return (f"🌐 Модель: {engine.model_label(model)} — разово. "
-            f"Постоянная: {engine.model_label(engine.get_model_key())} (/model)")
+            f"Постоянная: {engine.model_label(permanent)} (/model)")
 
 
 async def send_forecast(message: Message, site: str, rng: str, date: str | None = None,
-                        model: str | None = None):
+                        model: str | None = None, prefs: "store.Prefs | None" = None):
     """`model` — разовый выбор кнопкой; едет во все кнопки этого же сообщения,
-    чтобы разбор и ветер по высотам считались по показанной модели."""
+    чтобы разбор и ветер по высотам считались по показанной модели.
+
+    `prefs` приходит параметром, а не читается из `message`: у сообщения под
+    кнопкой автор — сам бот, и `message.from_user.id` там не тот, кто нажал.
+    """
+    prefs = prefs or store.DEFAULT_PREFS
+    # Считаем по разовому выбору, если он есть, иначе по постоянной модели пилота.
+    # В кнопки (`sfx`, подпись ряда моделей) едет по-прежнему сырой `model`:
+    # там «разово» значит «пользователь нажал», а не «чем посчитано».
+    eff = model or prefs.model_key
     if rng == "1d" and not date:
         date = dt.date.today().isoformat()
     try:
         # keeps the "typing…" status alive while forecast/analysis runs (>5 s)
         async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
-            card, pngs = await forecast.get_forecast(site, rng, date, model=model)
+            card, pngs = await forecast.get_forecast(site, rng, date, model=eff)
     except forecast.ForecastError as e:
         await message.answer(f"⚠️ {e}\n\nСписок стартов: /sites")
         return
@@ -339,13 +353,12 @@ async def send_forecast(message: Message, site: str, rng: str, date: str | None 
     if kb_rows:
         await message.answer("Ещё:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows))
     if rng != "1d":  # overview → let the user drill into a single day
-        kb = _day_picker_kb(site, rng, model)
+        kb = _day_picker_kb(site, rng, model, effective=eff)
         if kb is not None:
             await message.answer("📅 Подробно по дню:", reply_markup=kb)
-    eff = model or engine.get_model_key()
     mkb = _model_switch_keyboard(site, rng, date, eff)  # let the user re-run in another model
     if mkb is not None:
-        await message.answer(_model_switch_caption(model), reply_markup=mkb)
+        await message.answer(_model_switch_caption(model, prefs.model_key), reply_markup=mkb)
 
 
 async def ask_location(message: Message, rng: str, date: str | None):
@@ -358,7 +371,8 @@ async def ask_location(message: Message, rng: str, date: str | None):
 
 async def _shortcut(message: Message, command: CommandObject, rng: str, date: str | None):
     if command.args and command.args.strip():
-        await send_forecast(message, command.args.strip(), rng, date)
+        await send_forecast(message, command.args.strip(), rng, date,
+                            prefs=store.prefs(message.from_user.id))
     else:
         await ask_location(message, rng, date)
 
@@ -396,21 +410,21 @@ def _model_keyboard(current: str) -> InlineKeyboardMarkup:
 async def cmd_model(message: Message, command: CommandObject):
     """No argument → a button picker; /model <ключ> sets directly.
     Not a forecast request → no cooldown flag."""
+    uid = message.from_user.id
     key = (command.args or "").strip().lower()
     if not key:
-        cur = engine.get_model_key()
+        cur = store.prefs(uid).model_key
         await message.answer(f"Текущая модель: {engine.model_label(cur)}. Выбери модель:",
                              reply_markup=_model_keyboard(cur))
         return
-    try:
-        engine.set_model_key(key)
-    except ValueError:
+    if key not in engine.MODELS:  # список моделей — знание домена, а не хранилища
         await message.answer(f"⚠️ Неизвестная модель «{key}».\nДоступно: {_model_options()}")
         return
-    except OSError as e:  # read-only model.json in the container — don't fail silently
-        log.exception("set_model_key: write failed")
-        await message.answer("⚠️ Не удалось сохранить выбор модели — нет доступа к файлу на запись.\n"
-                             f"({e.strerror or e})")
+    try:
+        store.set_model(uid, key)
+    except Exception as e:  # noqa: BLE001 — отказ записи не должен молчать
+        log.exception("set_model: write failed")
+        await message.answer(f"⚠️ Не удалось сохранить выбор модели.\n({e})")
         return
     await message.answer(f"✅ Модель: {engine.model_label(key)} ({key}). "
                          f"Кэш обновится при следующем запросе.")
@@ -427,16 +441,15 @@ async def cb_pick_model(cb: CallbackQuery):
     except ValueError:
         await cb.answer()
         return
-    try:
-        engine.set_model_key(key)
-    except ValueError:
+    if key not in engine.MODELS:
         await cb.answer("Неизвестная модель.", show_alert=True)
         return
-    except OSError as e:  # read-only model.json — surface it, don't fail silently
-        log.exception("set_model_key: write failed")
+    try:
+        store.set_model(cb.from_user.id, key)
+    except Exception as e:  # noqa: BLE001 — отказ записи не должен молчать
+        log.exception("set_model: write failed")
         await cb.answer()
-        await msg.answer("⚠️ Не удалось сохранить выбор модели — нет доступа к файлу на запись.\n"
-                         f"({e.strerror or e})")
+        await msg.answer(f"⚠️ Не удалось сохранить выбор модели.\n({e})")
         return
     await cb.answer(f"Модель: {engine.model_label(key)}")
     try:  # confirm + move the ✓ to the chosen model
@@ -451,7 +464,7 @@ async def cb_pick_model(cb: CallbackQuery):
 async def cb_switch_model(cb: CallbackQuery):
     """A model button under a forecast → re-render that forecast in that model.
 
-    Выбор РАЗОВЫЙ: model.json не пишется. Постоянную модель меняет только /model —
+    Выбор РАЗОВЫЙ: постоянная модель пилота не пишется. Её меняет только /model —
     иначе взгляд на альтернативную модель молча переопределял бы все дальнейшие
     прогнозы, включая те, что пользователь запросит завтра.
     """
@@ -467,30 +480,34 @@ async def cb_switch_model(cb: CallbackQuery):
         await cb.answer("Неизвестная модель.", show_alert=True)
         return
     await cb.answer(f"{engine.model_label(key)} — разово, пересчитываю…")
-    await send_forecast(msg, site, rng, date or None, model=key)
+    await send_forecast(msg, site, rng, date or None, model=key,
+                        prefs=store.prefs(cb.from_user.id))
 
 
-def _settings_text() -> str:
-    cfg = settings.get()
-    wind = "включён" if cfg["wind_correction_enabled"] else "выключен"
+def _settings_text(cfg: "store.Prefs") -> str:
+    wind = "включён" if cfg.wind_correction_enabled else "выключен"
     return ("⚙️ Настройки\n\n"
-            f"Средняя маршрутная скорость: {cfg['avg_route_speed_kmh']:.0f} км/ч\n"
+            f"Средняя маршрутная скорость: {cfg.avg_route_speed_kmh:.0f} км/ч\n"
             f"Учёт ветра во времени прилёта: {wind}")
 
 
-def _settings_keyboard() -> InlineKeyboardMarkup:
-    cfg = settings.get()
+def _settings_keyboard(cfg: "store.Prefs") -> InlineKeyboardMarkup:
     speeds = [InlineKeyboardButton(text=f"{v}", callback_data=f"sp|{v}") for v in (20, 25, 30)]
     speeds.append(InlineKeyboardButton(text="Ввести свою", callback_data="sp|custom"))
     toggle = InlineKeyboardButton(
-        text="Выключить учёт ветра" if cfg["wind_correction_enabled"] else "Включить учёт ветра",
-        callback_data=f"sw|{0 if cfg['wind_correction_enabled'] else 1}")
+        text="Выключить учёт ветра" if cfg.wind_correction_enabled else "Включить учёт ветра",
+        callback_data=f"sw|{0 if cfg.wind_correction_enabled else 1}")
     return InlineKeyboardMarkup(inline_keyboard=[speeds, [toggle]])
+
+
+async def _show_settings(message: Message, uid: int):
+    cfg = store.prefs(uid)
+    await message.answer(_settings_text(cfg), reply_markup=_settings_keyboard(cfg))
 
 
 @dp.message(Command("settings"))
 async def cmd_settings(message: Message):
-    await message.answer(_settings_text(), reply_markup=_settings_keyboard())
+    await _show_settings(message, message.from_user.id)
 
 
 @dp.callback_query(F.data.startswith("sp|"))
@@ -501,34 +518,35 @@ async def cb_set_speed(cb: CallbackQuery, state: FSMContext):
         await state.set_state(SettingsSpeed.value)
         if msg:
             await msg.answer("Введи среднюю маршрутную скорость в км/ч "
-                             f"({settings.SPEED_MIN:.0f}–{settings.SPEED_MAX:.0f}):")
+                             f"({store.SPEED_MIN:.0f}–{store.SPEED_MAX:.0f}):")
         return await cb.answer()
-    settings.set_speed(float(value))
+    store.set_speed(cb.from_user.id, float(value))
     if msg:
-        await msg.answer(_settings_text(), reply_markup=_settings_keyboard())
+        await _show_settings(msg, cb.from_user.id)
     await cb.answer()
 
 
 @dp.callback_query(F.data.startswith("sw|"))
 async def cb_toggle_wind(cb: CallbackQuery):
-    settings.set_wind_correction(cb.data.split("|", 1)[1] == "1")
+    store.set_wind_correction(cb.from_user.id, cb.data.split("|", 1)[1] == "1")
     msg = await cb_message(cb)
     if msg:
-        await msg.answer(_settings_text(), reply_markup=_settings_keyboard())
+        await _show_settings(msg, cb.from_user.id)
     await cb.answer()
 
 
 @dp.message(SettingsSpeed.value)
 async def settings_speed_value(message: Message, state: FSMContext):
+    uid = message.from_user.id
     try:
-        settings.set_speed(float((message.text or "").replace(",", ".").strip()))
+        store.set_speed(uid, float((message.text or "").replace(",", ".").strip()))
     except ValueError as e:
         detail = str(e) if str(e).startswith("средняя") else (
             "Нужно число, например 25. Это средняя по маршруту с учётом наборов "
             "в термиках, а не скорость крыла.")
         return await message.answer(detail)
     await state.clear()
-    await message.answer(_settings_text(), reply_markup=_settings_keyboard())
+    await _show_settings(message, uid)
 
 
 async def _finish_add(message: Message, name: str, lat: float, lon: float,
@@ -539,18 +557,18 @@ async def _finish_add(message: Message, name: str, lat: float, lon: float,
             "elevation_m": elev, "aspect": engine.card(aspect_deg),
             "aspect_deg": aspect_deg, "notes": notes}
     try:
-        engine.add_site(site)
+        store.add_site(site, added_by=message.from_user.id)
     except ValueError as e:
         await message.answer(f"⚠️ {e}")
         return
-    except OSError as e:  # e.g. read-only sites.json in the container — don't fail silently
+    except Exception as e:  # noqa: BLE001 — отказ записи не должен молчать
+        # БД только на чтение бросает sqlite3.OperationalError, а он НЕ наследник
+        # OSError — ловить его отдельно тут смысла не было (issubclass(...) is
+        # False), поэтому берём широкий except, как уже сделано в cmd_model/
+        # cb_pick_model.
         log.exception("add_site: write failed")
-        await message.answer("⚠️ Не удалось сохранить старт — нет доступа к файлу на запись.\n"
-                             f"({e.strerror or e})\nПроверь, что каталог данных примонтирован с правами на запись.")
-        return
-    except Exception as e:  # noqa: BLE001 — any other failure must reach the user, not just the log
-        log.exception("add_site: unexpected failure")
-        await message.answer(f"⚠️ Не удалось сохранить старт: {e}")
+        await message.answer("⚠️ Не удалось сохранить старт — нет доступа к базе на запись.\n"
+                             f"({e})")
         return
     await message.answer(
         f"✅ Старт добавлен: {name}\n"
@@ -660,7 +678,7 @@ async def cmd_removesite(message: Message, command: CommandObject):
         await message.answer("Формат: /removesite <Имя>. Список: /sites")
         return
     try:
-        engine.remove_site(name)
+        store.remove_site(name)
     except ValueError as e:
         await message.answer(f"⚠️ {e}")
         return
@@ -704,7 +722,7 @@ async def cmd_forecast(message: Message, command: CommandObject):
     if not site:
         await ask_location(message, rng, None)
         return
-    await send_forecast(message, site, rng)
+    await send_forecast(message, site, rng, prefs=store.prefs(message.from_user.id))
 
 
 @dp.message(Command("scan"), flags={"forecast": True})
@@ -714,7 +732,7 @@ async def cmd_scan(message: Message):
         return
     try:
         async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
-            result = await forecast.scan_week()
+            result = await forecast.scan_week(model=store.prefs(message.from_user.id).model_key)
     except Exception as e:  # noqa: BLE001 — surface any unexpected failure to the user
         log.exception("scan failed")
         await message.answer(f"⚠️ Ошибка: {e}")
@@ -736,10 +754,11 @@ async def cb_analysis(cb: CallbackQuery):
         return
     kind, site, rng, date = parts
     deep = kind == "deep"
+    eff = model or store.prefs(cb.from_user.id).model_key
     await cb.answer("Считаю глубокий разбор…" if deep else "Считаю разбор…")
     try:
         async with ChatActionSender.typing(bot=msg.bot, chat_id=msg.chat.id):
-            text = await forecast.get_analysis(site, rng, date or None, deep=deep, model=model)
+            text = await forecast.get_analysis(site, rng, date or None, deep=deep, model=eff)
     except forecast.ForecastError as e:
         await msg.answer(f"⚠️ {e}")
         return
@@ -777,7 +796,8 @@ async def cb_pick_day(cb: CallbackQuery, state: FSMContext):
         await state.clear()  # передумал вводить координаты — выбрал день
     await cb.answer(f"Прогноз на {date}…")
     # keep the picker in place — the user may want another day too
-    await send_forecast(msg, site, "1d", date, model=model)
+    await send_forecast(msg, site, "1d", date, model=model,
+                        prefs=store.prefs(cb.from_user.id))
 
 
 @dp.callback_query(F.data.startswith("wg|"), flags={"forecast": True})
@@ -799,10 +819,11 @@ async def cb_wind_grid(cb: CallbackQuery):
     if day < dt.date.today() - dt.timedelta(days=1):
         await cb.answer("Эта дата уже прошла — запроси свежий прогноз.", show_alert=True)
         return
+    eff = model or store.prefs(cb.from_user.id).model_key
     await cb.answer("Считаю ветер по высотам…")
     try:
         async with ChatActionSender.typing(bot=msg.bot, chat_id=msg.chat.id):
-            png = await forecast.get_wind_grid(site, date, model=model)
+            png = await forecast.get_wind_grid(site, date, model=eff)
     except forecast.ForecastError as e:
         await msg.answer(f"⚠️ {e}")
         return
@@ -830,7 +851,8 @@ async def cb_pick_site(cb: CallbackQuery, state: FSMContext):
         await msg.edit_reply_markup(reply_markup=None)  # collapse the picker
     except Exception:  # noqa: BLE001
         pass
-    await send_forecast(msg, name, rng, date or None)
+    await send_forecast(msg, name, rng, date or None,
+                        prefs=store.prefs(cb.from_user.id))
 
 
 @dp.callback_query(F.data.startswith("pc|"))
@@ -861,7 +883,8 @@ async def _adhoc_got_coords(message: Message, state: FSMContext, lat: float, lon
     await message.bot.send_chat_action(chat_id=message.chat.id, action="typing")
     elev = await forecast.fetch_elevation(lat, lon)
     name = forecast.register_adhoc(lat, lon, elev)
-    await send_forecast(message, name, rng, date)
+    await send_forecast(message, name, rng, date,
+                        prefs=store.prefs(message.from_user.id))
 
 
 @dp.message(AdHoc.coords, F.location)
@@ -904,12 +927,12 @@ def _parse_when(args: str):
     return date, departure
 
 
-_ROUTE_CACHE_MAX = 8
+_ROUTE_CACHE_PER_USER = 8
 _route_cache: "OrderedDict[str, dict]" = OrderedDict()
 _route_token = itertools.count(1)
 
 
-def _remember_route(points, name, date, departure):
+def _remember_route(uid, points, name, date, departure):
     """Положить ЗАПРОС в кэш и вернуть короткий токен для callback_data.
 
     Хранится запрос, а не готовый профиль. Погода уже лежит в forecast._rcache,
@@ -917,13 +940,29 @@ def _remember_route(points, name, date, departure):
     обращений к API. Взамен «другое время вылета» становится тем же вызовом
     get_route с другим departure, а не отдельной веткой кода, и расхождений
     между показанной карточкой и данными кнопки быть не может.
+
+    `uid` — чей это маршрут. Кэш общий на процесс, но принадлежность записи
+    хранится явно: без неё /saveroute брал последнюю запись вообще и в командном
+    боте сохранял маршрут соседа, если тот посчитал свой между твоими /route и
+    /saveroute.
     """
     token = format(next(_route_token), "x")
-    _route_cache[token] = {"points": points, "name": name,
+    _route_cache[token] = {"user_id": uid, "points": points, "name": name,
                            "date": date, "departure": departure}
-    while len(_route_cache) > _ROUTE_CACHE_MAX:
-        _route_cache.popitem(last=False)
+    # Квота на пилота, а не на процесс: при общем потолке активный сосед вытеснял
+    # чужие записи, и кнопки под ещё живой карточкой отвечали «маршрут устарел».
+    mine = [t for t, e in _route_cache.items() if e["user_id"] == uid]
+    for stale in mine[:-_ROUTE_CACHE_PER_USER]:
+        del _route_cache[stale]
     return token
+
+
+def _last_route_of(uid):
+    """Последний маршрут, посчитанный ЭТИМ пилотом. None, если он ещё не считал."""
+    for entry in reversed(_route_cache.values()):
+        if entry["user_id"] == uid:
+            return entry
+    return None
 
 
 def _route_keyboard(token, profile):
@@ -945,19 +984,25 @@ def _route_keyboard(token, profile):
     return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
 
 
-async def _send_route(message: Message, points, name, date, departure):
+async def _send_route(message: Message, points, name, date, departure, *, cfg, uid):
+    """`cfg` — настройки пилота; как и у send_forecast, приходят параметром, потому
+    что у сообщения под кнопкой автор — бот, а не тот, кто нажал.
+
+    Обязателен и keyword-only: пропуск должен падать TypeError'ом здесь, а не
+    AttributeError'ом в глубине скоринга.
+    """
     try:
-        profile = await forecast.get_route(points, name, date, departure)
+        profile = await forecast.get_route(points, name, date, departure, cfg=cfg)
     except forecast.ForecastError as e:
         return await message.answer(str(e))
-    token = _remember_route(points, name, date, departure)
+    token = _remember_route(uid, points, name, date, departure)
     chunks = list(_chunks(route.render_card(profile)))
     for chunk in chunks[:-1]:
         await message.answer(chunk)
     await message.answer(chunks[-1], reply_markup=_route_keyboard(token, profile))
 
 
-def _saved_route_from_args(args):
+def _saved_route_from_args(uid: int, args):
     """«Гудаури Пасанаури завтра 11:30» → (точки, имя, остаток строки).
 
     Имя примеряется целиком, потом без последнего слова, и так далее: иначе
@@ -967,7 +1012,7 @@ def _saved_route_from_args(args):
     words = (args or "").split()
     for cut in range(len(words), 0, -1):
         name = " ".join(words[:cut])
-        pts = routes.get(name)
+        pts = route.points_from_rows(store.route_rows(uid, name))
         if pts:
             return pts, name, " ".join(words[cut:])
     return None, None, args or ""
@@ -975,19 +1020,21 @@ def _saved_route_from_args(args):
 
 @dp.message(Command("route"), flags={"forecast": True})
 async def cmd_route(message: Message, command: CommandObject):
+    uid = message.from_user.id
+    cfg = store.prefs(uid)
     body = "\n".join((message.text or "").splitlines()[1:])
     if not body.strip():
-        pts, name, rest = _saved_route_from_args(command.args)
+        pts, name, rest = _saved_route_from_args(uid, command.args)
         if pts is None:
             return await message.answer(ROUTE_HELP)
         date, departure = _parse_when(rest)
-        return await _send_route(message, pts, name, date, departure)
+        return await _send_route(message, pts, name, date, departure, cfg=cfg, uid=uid)
     date, departure = _parse_when(command.args or "")
     try:
         points = route.parse_text(body, first_line_no=2)  # первая строка — сама команда
     except route.RouteError as e:
         return await message.answer(f"❌ {e}")
-    await _send_route(message, points, None, date, departure)
+    await _send_route(message, points, None, date, departure, cfg=cfg, uid=uid)
 
 
 @dp.message(Command("saveroute"), flags={"forecast": True})
@@ -998,15 +1045,24 @@ async def cmd_saveroute(message: Message, command: CommandObject):
     err = name_error(name)
     if err:
         return await message.answer(f"❌ {err}")
-    if not _route_cache:
+    uid = message.from_user.id
+    entry = _last_route_of(uid)
+    if entry is None:
         return await message.answer("Сначала посчитай маршрут через /route.")
-    entry = next(reversed(_route_cache.values()))
-    existed = name in routes.list_all()
+    pts = entry["points"]
+    if len(pts) > route.MAX_POINTS:
+        await message.answer(f"⚠️ слишком много точек: {len(pts)}, "
+                             f"максимум {route.MAX_POINTS}")
+        return
+    # routes_list() пропускает битые записи (порченый JSON в points), поэтому
+    # "name in routes_list(uid)" сказал бы "нет" про уже занятое имя с битой
+    # записью и бот отчитался бы "Сохранил" вместо "Перезаписал".
+    existed = store.route_exists(uid, name)
     try:
-        routes.save(name, entry["points"])
+        store.route_save(uid, name, [[p.lat, p.lon, p.name] for p in pts])
     except ValueError as e:
         return await message.answer(f"❌ {e}")
-    n = len(entry["points"])
+    n = len(pts)
     await message.answer(("Перезаписал" if existed else "Сохранил") +
                          f" маршрут «{name}»: {n} "
                          f"{route.plural(n, 'точка', 'точки', 'точек')}.")
@@ -1014,18 +1070,23 @@ async def cmd_saveroute(message: Message, command: CommandObject):
 
 @dp.message(Command("routes"), flags={"forecast": True})
 async def cmd_routes(message: Message):
-    saved = routes.list_all()
+    uid = message.from_user.id
+    saved = store.routes_list(uid)
     if not saved:
         return await message.answer(
             "Сохранённых маршрутов нет. Посчитай маршрут через /route "
             "и сохрани: /saveroute <имя>")
     lines, rows = [], []
     for name in sorted(saved):
-        pts = routes.get(name) or []
+        pts = route.points_from_rows(store.route_rows(uid, name)) or []
         n = len(pts)
+        # saved_at — полный ISO-таймстамп (store._now()); удалённый routes.py
+        # хранил дату сохранения (dt.date.today().isoformat()) — показываем
+        # только дату и здесь, без времени, которое пилоту не нужно.
+        saved_at = saved[name].get("saved", "—").split("T", 1)[0]
         lines.append(f"• {name} — {route.total_km(pts):.0f} км, {n} "
                      f"{route.plural(n, 'точка', 'точки', 'точек')}, "
-                     f"{saved[name].get('saved', '—')}")
+                     f"{saved_at}")
         btn = _btn(name, f"rr|{name}")
         if btn:
             rows.append([btn])
@@ -1036,10 +1097,11 @@ async def cmd_routes(message: Message):
 
 @dp.message(Command("delroute"), flags={"forecast": True})
 async def cmd_delroute(message: Message, command: CommandObject):
+    uid = message.from_user.id
     name = (command.args or "").strip()
-    if routes.delete(name):
+    if store.route_delete(uid, name):
         return await message.answer(f"Удалил маршрут «{name}».")
-    known = ", ".join(sorted(routes.list_all())) or "пусто"
+    known = ", ".join(sorted(store.routes_list(uid))) or "пусто"
     await message.answer(f"Нет такого маршрута. Сохранённые: {known}")
 
 
@@ -1050,7 +1112,8 @@ async def _profile_from_token(cb: CallbackQuery, token: str, departure=None):
         await cb.answer("Маршрут устарел, посчитай заново: /route", show_alert=True)
         return None
     dep = entry["departure"] if departure is None else departure
-    return await forecast.get_route(entry["points"], entry["name"], entry["date"], dep)
+    return await forecast.get_route(entry["points"], entry["name"], entry["date"], dep,
+                                    cfg=store.prefs(cb.from_user.id))
 
 
 @dp.callback_query(F.data.regexp(r"^rt\|[^|]+\|pt\|"))
@@ -1079,7 +1142,8 @@ async def cb_route_section(cb: CallbackQuery):
         return await msg.answer("Маршрут устарел, посчитай заново: /route")
     try:
         png = await forecast.get_route_section(
-            entry["points"], entry["name"], entry["date"], entry["departure"])
+            entry["points"], entry["name"], entry["date"], entry["departure"],
+            cfg=store.prefs(cb.from_user.id))
     except forecast.ForecastError as e:
         return await msg.answer(str(e))
     await msg.answer_photo(BufferedInputFile(png, filename="route_section.png"))
@@ -1098,7 +1162,8 @@ async def cb_route_analysis(cb: CallbackQuery):
     async with ChatActionSender.typing(bot=msg.bot, chat_id=msg.chat.id):
         try:
             text = await forecast.get_route_analysis(
-                entry["points"], entry["name"], entry["date"], entry["departure"])
+                entry["points"], entry["name"], entry["date"], entry["departure"],
+                cfg=store.prefs(cb.from_user.id))
         except forecast.ForecastError as e:
             return await msg.answer(str(e))
     for chunk in _chunks(text):
@@ -1157,7 +1222,8 @@ async def cb_route_departure_pick(cb: CallbackQuery):
         return
     h, m = hhmm.split(":")
     await _send_route(msg, entry["points"], entry["name"], entry["date"],
-                      int(h) + int(m) / 60.0)
+                      int(h) + int(m) / 60.0, cfg=store.prefs(cb.from_user.id),
+                      uid=cb.from_user.id)
 
 
 @dp.callback_query(F.data.startswith("rr|"))
@@ -1167,10 +1233,12 @@ async def cb_saved_route(cb: CallbackQuery):
     msg = await cb_message(cb)
     if msg is None:
         return
-    pts = routes.get(name)
+    uid = cb.from_user.id
+    pts = route.points_from_rows(store.route_rows(uid, name))
     if not pts:
         return await msg.answer("Маршрут не читается — сохрани его заново.")
-    await _send_route(msg, pts, name, dt.date.today().isoformat(), None)
+    await _send_route(msg, pts, name, dt.date.today().isoformat(), None,
+                      cfg=store.prefs(uid), uid=uid)
 
 
 _DOC_PARSERS = ((".gpx", route.parse_gpx), (".kml", route.parse_kml))
@@ -1195,7 +1263,9 @@ async def route_document(message: Message):
     except route.RouteError as e:
         return await message.answer(f"❌ {e}")
     date, departure = _parse_when(message.caption or "")
-    await _send_route(message, points, name, date, departure)
+    await _send_route(message, points, name, date, departure,
+                      cfg=store.prefs(message.from_user.id),
+                      uid=message.from_user.id)
 
 
 @dp.message()
@@ -1206,14 +1276,41 @@ async def unhandled(message: Message):
     await message.answer("Не понял. Список команд: /help")
 
 
+def _bootstrap_store() -> dict:
+    """Схема, миграция, засев — плюс громкий отчёт о том, что не перенеслось.
+
+    Старые JSON ищем и в каталоге БД, и в корне репозитория: под Docker они
+    лежали в примонтированном томе (DB_PATH указывает туда же), а на
+    systemd-пути бот запускается из корня репозитория, и старые дефолты
+    ROUTES_FILE / SETTINGS_FILE / MODEL_FILE клали файлы рядом с кодом —
+    при поиске только по каталогу БД маршруты и настройки такой установки
+    не нашлись бы никогда.
+    """
+    repo_root = os.path.dirname(os.path.abspath(engine.__file__))
+    data_dir = os.path.dirname(store.DB_PATH) or "."
+    report = store.bootstrap(data_dir, guards._allowed_ids(),
+                             os.path.join(repo_root, "sites.json"),
+                             extra_dirs=(repo_root,),
+                             valid_model_keys=set(engine.MODELS))
+    log.info("store: %s", report)
+    dropped = report.get("dropped") or []
+    if dropped:
+        # файлы к этому моменту уже переименованы в *.migrated: без этой строки
+        # оператор никогда не узнает, что запись пропала и где её искать
+        log.warning("МИГРАЦИЯ ПРОПУСТИЛА %d ЗАПИСЕЙ, в БД они не попали. "
+                    "Исходные данные остались в файлах *.migrated. Причины: %s",
+                    len(dropped), "; ".join(dropped))
+    return report
+
+
 async def main():
     token = os.environ.get("BOT_TOKEN")
     if not token:
         raise SystemExit("BOT_TOKEN не задан (см. .env.example)")
-    engine.ensure_sites_file()  # seed a fresh data volume from the packaged default
+    _bootstrap_store()
     bot = Bot(token=token)
     await bot.set_my_commands(BOT_COMMANDS)
-    log.info("bot started, sites file: %s, sites: %s", engine.SITES, forecast.known_sites())
+    log.info("bot started, db: %s, sites: %s", store.DB_PATH, forecast.known_sites())
     await dp.start_polling(bot)
 
 

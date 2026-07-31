@@ -266,3 +266,17 @@ def test_adhoc_point_without_aspect_drops_the_direction_group():
     assert "no_data:dir_offset" in noon.warnings
     assert "direction" not in noon.groups
     assert "lee_side" in noon.unchecked_vetoes
+
+
+def test_slope_deg_treats_a_none_value_the_same_as_a_missing_key():
+    """Сохранённый старт из store.load_sites() и старт из старого JSON-формата
+    описывают «уклон не задан» по-разному: у первого ключ slope_deg
+    ПРИСУТСТВУЕТ со значением None (это колонка БД, она есть у каждой строки),
+    у второго ключа нет вовсе. `dict.get(key, default)` подставляет default
+    только когда ключ ОТСУТСТВУЕТ — на явный None он возвращает None. Без
+    этого теста регрессия здесь выглядит как необъяснимый TypeError где-то
+    глубоко в тригонометрии engine, а не как «форма старта из БД не
+    обработана»."""
+    assert engine._slope_deg({"slope_deg": None}) == engine.SLOPE_DEG
+    assert engine._slope_deg({}) == engine.SLOPE_DEG
+    assert engine._slope_deg({"slope_deg": 30.0}) == 30.0

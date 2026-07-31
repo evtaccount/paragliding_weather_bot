@@ -8,19 +8,19 @@ COORDS = [(42.4776, 44.4787), (42.3891, 44.5512), (42.2104, 44.6890)]
 
 
 def test_url_lists_all_coordinates():
-    url = engine.route_weather_url(COORDS, "2026-07-28", "Asia/Tbilisi")
+    url = engine.route_weather_url(COORDS, "2026-07-28", "Asia/Tbilisi", model="auto")
     assert "latitude=42.4776,42.3891,42.2104" in url
     assert "longitude=44.4787,44.5512,44.6890" in url
 
 
 def test_url_pins_timezone_explicitly():
-    url = engine.route_weather_url(COORDS, "2026-07-28", "Asia/Tbilisi")
+    url = engine.route_weather_url(COORDS, "2026-07-28", "Asia/Tbilisi", model="auto")
     assert "timezone=Asia%2FTbilisi" in url or "timezone=Asia/Tbilisi" in url
     assert "timezone=auto" not in url
 
 
 def test_url_asks_one_day_with_the_full_variable_set():
-    url = engine.route_weather_url(COORDS, "2026-07-28", "Asia/Tbilisi")
+    url = engine.route_weather_url(COORDS, "2026-07-28", "Asia/Tbilisi", model="auto")
     assert "start_date=2026-07-28&end_date=2026-07-28" in url
     assert engine.H_1D in url
 

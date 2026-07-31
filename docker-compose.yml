@@ -6,9 +6,9 @@ services:
     environment:
       # site-local timezone so /today and /tomorrow resolve the right date
       - TZ=${TZ:-Asia/Tbilisi}
-      # persist sites into the data volume (writable by the non-root app user);
-      # seeded from the packaged sites.json on first run
-      - SITES_FILE=/app/data/sites.json
+      # БД в том же именованном томе, что раньше держал sites.json —
+      # старые файлы там же, миграция подхватит их на первом старте
+      - DB_PATH=/app/data/pgbot.db
     volumes:
       # named volume — owned by uid 10001 (app), so /add and /removesite can write.
       # A single-file bind mount kept host ownership and broke writes for non-root.

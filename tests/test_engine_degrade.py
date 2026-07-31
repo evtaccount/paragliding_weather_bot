@@ -64,8 +64,7 @@ def test_model_note_plain_without_splice():
     assert engine._model_note({"_model_key": "ecmwf"}) == "ECMWF"
 
 
-def test_model_note_falls_back_to_global(monkeypatch):
+def test_model_note_falls_back_to_the_default_model():
     """Прямой вызов из CLI и старых тестов: данных без штампа быть не должно,
     но падать на них нельзя."""
-    monkeypatch.setattr(engine, "get_model_key", lambda: "icon")
-    assert engine._model_note({}) == "ICON"
+    assert engine._model_note({}) == engine.model_label(engine.DEFAULT_MODEL_KEY)

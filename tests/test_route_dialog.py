@@ -12,7 +12,7 @@ from tg import document_update, text_update, texts
 def route_calls(monkeypatch):
     calls = []
 
-    async def fake(points, name, date, departure_h=None):
+    async def fake(points, name, date, departure_h=None, cfg=None):
         calls.append((len(points), name, date, departure_h))
         return {"route": {"name": name or "Маршрут", "date": date, "departure": "11:00",
                           "total_km": 40.0, "sample_step_km": 10.0, "sample_count": 5,
@@ -55,7 +55,7 @@ async def test_route_without_points_explains_the_format(feed, session, route_cal
 
 
 async def test_forecast_error_is_shown_to_the_user(feed, session, monkeypatch):
-    async def failing(points, name, date, departure_h=None):
+    async def failing(points, name, date, departure_h=None, cfg=None):
         raise forecast.ForecastError("Прогноз доступен с ... по ...")
 
     monkeypatch.setattr(forecast, "get_route", failing)

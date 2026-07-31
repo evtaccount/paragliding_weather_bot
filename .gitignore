@@ -15,3 +15,6 @@ deploy/pgbot.service
 
 # pytest
 .pytest_cache/
+
+# superpowers scratch (SDD workspace)
+.superpowers/

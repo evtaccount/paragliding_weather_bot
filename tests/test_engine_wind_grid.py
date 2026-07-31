@@ -63,15 +63,15 @@ import forecast
 
 
 def test_get_wind_grid_uses_cache_and_returns_png(monkeypatch):
-    # warm cache: a 7-tuple whose grid is a real engine.wind_grid dict
+    # warm cache: a real engine.wind_grid dict already sitting in `derived`
     g = engine.wind_grid(_day_data(), _high_site())
-    _site, _date, key = forecast._resolve("Гудаури", "1d", "2026-07-25")
+    _site, _date, key = forecast._resolve("Гудаури", "1d", "2026-07-25", model=engine.DEFAULT_MODEL_KEY)
     import time
-    forecast._fcache[key] = (time.monotonic() + 999, "card", [], {}, "fb", [], g)
+    forecast._fcache[key] = (time.monotonic() + 999, {}, None, {"grid": g})
 
     async def boom(*a, **k):  # must NOT re-fetch when the cache is warm
         raise AssertionError("re-fetched despite warm cache")
 
-    monkeypatch.setattr(forecast, "_fetch_build", boom)
-    png = asyncio.run(forecast.get_wind_grid("Гудаури", "2026-07-25"))
+    monkeypatch.setattr(forecast, "_fetch_raw", boom)
+    png = asyncio.run(forecast.get_wind_grid("Гудаури", "2026-07-25", model=engine.DEFAULT_MODEL_KEY))
     assert isinstance(png, (bytes, bytearray)) and len(png) > 1000

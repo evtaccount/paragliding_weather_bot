@@ -72,7 +72,6 @@ def test_route_splice_applies_to_every_point():
 async def test_route_weather_splices_ceiling_from_gfs(monkeypatch):
     """На маршруте потолок должен быть из той же модели, что и на старте —
     иначе «потолок» значит разное в двух частях одного ответа."""
-    import engine
     from route import Sample
 
     times = om_1day()["hourly"]["time"]
@@ -88,18 +87,16 @@ async def test_route_weather_splices_ceiling_from_gfs(monkeypatch):
 
     monkeypatch.setattr(forecast, "_fetch_route_weather", fake_weather)
     monkeypatch.setattr(forecast, "_fetch_ceiling", fake_ceiling)
-    monkeypatch.setattr(engine, "get_model_key", lambda: "ecmwf")
     forecast._rcache.clear()
 
     samples = [Sample(km=0.0, lat=42.0, lon=44.0)]
-    bodies = await forecast._ensure_route_weather(samples, "2026-07-29")
+    bodies = await forecast._ensure_route_weather(samples, "2026-07-29", "ecmwf")
 
     assert bodies[0]["hourly"]["boundary_layer_height"][0] == 1400.0
     assert any("models=gfs_seamless" in u for u in calls)
 
 
 async def test_route_weather_skips_side_request_when_gfs_selected(monkeypatch):
-    import engine
     from route import Sample
 
     async def fake_weather(url):
@@ -110,49 +107,55 @@ async def test_route_weather_skips_side_request_when_gfs_selected(monkeypatch):
 
     monkeypatch.setattr(forecast, "_fetch_route_weather", fake_weather)
     monkeypatch.setattr(forecast, "_fetch_ceiling", fail_ceiling)
-    monkeypatch.setattr(engine, "get_model_key", lambda: "gfs")
     forecast._rcache.clear()
 
-    await forecast._ensure_route_weather([Sample(km=0.0, lat=42.0, lon=44.0)], "2026-07-29")
+    await forecast._ensure_route_weather([Sample(km=0.0, lat=42.0, lon=44.0)],
+                                         "2026-07-29", "gfs")
 
 
 # ---------------------------------------------------------------- разовая модель
 
 
 def test_cache_key_separates_models():
-    """Разовый рендер не должен вытеснять запись глобальной модели и наоборот."""
-    import engine
-    engine.set_model_key("auto")
-    _s, _d, glob = forecast._resolve("Гудаури", "1d", "2026-07-29")
+    """Разовый рендер не должен вытеснять запись постоянной модели и наоборот."""
+    import store
+    from conftest import TEST_USER_ID
+    _s, _d, base = forecast._resolve("Гудаури", "1d", "2026-07-29", model="auto")
     _s, _d, once = forecast._resolve("Гудаури", "1d", "2026-07-29", model="ecmwf")
-    assert glob != once
-    assert glob[3] == "auto" and once[3] == "ecmwf"
-    assert engine.get_model_key() == "auto"  # _resolve ничего не пишет
+    assert base != once
+    assert base[3] == "auto" and once[3] == "ecmwf"
+    assert store.prefs(TEST_USER_ID).model_key == "auto"  # _resolve ничего не пишет
 
 
 async def test_get_forecast_passes_model_down(monkeypatch):
+    """Модель должна дойти до URL запроса, а не потеряться где-то в цепочке
+    _resolve → _ensure → _fetch_raw. Патчим _fetch_main (сетевой край), а не
+    _fetch_build/_fetch_raw — тот больше не возвращает готовую карточку, а
+    прогоняет реальные данные через engine, и настоящую подмену на этом уровне
+    подделать нечем."""
     seen = {}
 
-    async def fake_build(site, rng, date, model=None):
-        seen["model"] = model
-        return "CARD", [], {}, "FB", [], None
+    async def fake_main(url):
+        seen["url"] = url
+        return om_1day()
 
-    monkeypatch.setattr(forecast, "_fetch_build", fake_build)
+    monkeypatch.setattr(forecast, "_fetch_main", fake_main)
     await forecast.get_forecast("Гудаури", "1d", "2026-07-29", model="icon")
-    assert seen["model"] == "icon"
+    assert "models=icon_seamless" in seen["url"]
 
 
 async def test_analysis_uses_the_same_model_as_the_card(monkeypatch):
-    """Разбор должен описывать ту карточку, которую видит пользователь."""
+    """Разбор должен описывать ту карточку, которую видит пользователь: ОДИН
+    запрос к open-meteo под моделью карточки, а не свой собственный."""
     seen = []
 
-    async def fake_build(site, rng, date, model=None):
-        seen.append(model)
-        return "CARD", [], {"a": 1}, "CARD tail", [], {"grid": True}
+    async def fake_main(url):
+        seen.append(url)
+        return om_1day()
 
-    monkeypatch.setattr(forecast, "_fetch_build", fake_build)
+    monkeypatch.setattr(forecast, "_fetch_main", fake_main)
     await forecast.get_analysis("Гудаури", "1d", "2026-07-29", model="ecmwf")
-    assert seen == ["ecmwf"]
+    assert len(seen) == 1 and "models=ecmwf_ifs025" in seen[0]
 
 
 async def test_wind_grid_uses_the_same_model_as_the_card(monkeypatch):
@@ -162,16 +165,16 @@ async def test_wind_grid_uses_the_same_model_as_the_card(monkeypatch):
 
     seen = []
 
-    async def fake_build(site, rng, date, model=None):
-        seen.append(model)
-        return "CARD", [], {}, "FB", [], {"levels": [], "hours": []}
+    async def fake_main(url):
+        seen.append(url)
+        return om_1day()
 
     def fake_png(grid, site, out):
         path = pathlib.Path(out) / "grid.png"
         path.write_bytes(b"PNG")
         return str(path)
 
-    monkeypatch.setattr(forecast, "_fetch_build", fake_build)
+    monkeypatch.setattr(forecast, "_fetch_main", fake_main)
     monkeypatch.setattr(charts, "wind_grid_png", fake_png)
     assert await forecast.get_wind_grid("Гудаури", "2026-07-29", model="icon") == b"PNG"
-    assert seen == ["icon"]
+    assert len(seen) == 1 and "models=icon_seamless" in seen[0]

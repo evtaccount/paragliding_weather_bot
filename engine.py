@@ -17,23 +17,16 @@ Usage:
   python3 engine.py report --site Laliskuri --range 1d --date 2026-07-29 \
                            --json forecast.json --out /tmp/pgfc
 """
-import argparse, json, os, shutil, sys, math, datetime as dt
+import argparse, json, os, sys, math, datetime as dt
 from urllib.parse import quote
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)  # so `import criteria` / `from charts import ...` work from any cwd
 
 import criteria
-# The packaged default (baked into the image). SITES may be redirected via
-# SITES_FILE to a writable location (a mounted data volume) so /add and
-# /removesite can persist as a non-root container user.
-DEFAULT_SITES = os.path.join(HERE, "sites.json")
-SITES = os.environ.get("SITES_FILE") or DEFAULT_SITES
-
-# Meteo model — a global setting persisted next to sites.json (writable volume in
-# the container). Requesting a variable a model lacks is not an error: open-meteo
-# returns it as a null series (handled by the degradation in report_1day).
-MODEL_FILE = os.environ.get("MODEL_FILE") or os.path.join(os.path.dirname(SITES) or ".", "model.json")
+# Старты, маршруты и настройки живут в store.py — engine остался расчётами и
+# рендерингом и в хранилище не ходит. Запрос переменной, которой у модели нет,
+# ошибкой не считается: open-meteo отдаёт её пустой серией (деградация в report_1day).
 MODELS = {  # key → (UI label, open-meteo id)
     "auto":  ("Auto (best_match)", "best_match"),
     "ecmwf": ("ECMWF",             "ecmwf_ifs025"),
@@ -77,32 +70,6 @@ def model_label(key):
     return MODELS[key][0]
 
 
-def get_model_key():
-    """Current global model key; DEFAULT_MODEL_KEY when unset/invalid/corrupt."""
-    try:
-        with open(MODEL_FILE, encoding="utf-8") as f:
-            key = json.load(f).get("model")
-        return key if key in MODELS else DEFAULT_MODEL_KEY
-    except (OSError, ValueError):
-        return DEFAULT_MODEL_KEY
-
-
-def set_model_key(key):
-    """Persist the chosen model. Raises ValueError on an unknown key."""
-    if key not in MODELS:
-        raise ValueError(f"неизвестная модель: {key}. Доступно: {', '.join(MODELS)}")
-    with open(MODEL_FILE, "w", encoding="utf-8") as f:
-        json.dump({"model": key}, f, ensure_ascii=False)
-
-
-def ensure_sites_file():
-    """Seed SITES from the packaged default on first run (e.g. an empty volume)."""
-    if os.path.abspath(SITES) == os.path.abspath(DEFAULT_SITES):
-        return
-    if not os.path.exists(SITES):
-        os.makedirs(os.path.dirname(SITES) or ".", exist_ok=True)
-        shutil.copy(DEFAULT_SITES, SITES)
-
 # Пороги живут в criteria.py — здесь только псевдонимы для читаемости.
 # Собственных чисел у engine больше нет: раньше девять констант отсюда
 # дублировались литералами в charts и пересказывались текстом в промпте.
@@ -132,18 +99,7 @@ def wind_from_avg(dirs, speeds):
         return dirs[len(dirs) // 2]
     return math.degrees(math.atan2(su, sv)) % 360
 
-# ---------------------------------------------------------------- sites
-def load_sites():
-    with open(SITES, encoding="utf-8") as f:
-        return json.load(f)["sites"]
-
-def find_site(name):
-    key = name.strip().lower()
-    for s in load_sites():
-        if s["name"].lower() == key or key in [a.lower() for a in s.get("aliases", [])]:
-            return s
-    raise SystemExit(f"Сайт не найден: {name}. Есть: " + ", ".join(s["name"] for s in load_sites()))
-
+# ------------------------------------------------------------ разбор ввода
 _COMPASS = {"С": 0, "N": 0, "СВ": 45, "NE": 45, "В": 90, "E": 90, "ЮВ": 135, "SE": 135,
             "Ю": 180, "S": 180, "ЮЗ": 225, "SW": 225, "З": 270, "W": 270, "СЗ": 315, "NW": 315}
 
@@ -159,34 +115,6 @@ def parse_aspect(s: str) -> float:
     if 0 <= d < 360:
         return d
     raise ValueError("градусы экспозиции: 0–359")
-
-def _load_raw():
-    with open(SITES, encoding="utf-8") as f:
-        return json.load(f)
-
-def add_site(site: dict):
-    """Append a site to sites.json (raises if the name collides with a name OR an
-    alias — find_site matches aliases too, an alias-shadowed site would be unreachable)."""
-    data = _load_raw()
-    key = site["name"].lower()
-    for s in data["sites"]:
-        if key == s["name"].lower():
-            raise ValueError(f"старт «{site['name']}» уже есть")
-        if key in [a.lower() for a in s.get("aliases", [])]:
-            raise ValueError(f"имя «{site['name']}» уже занято как псевдоним старта «{s['name']}»")
-    data["sites"].append(site)
-    with open(SITES, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-
-def remove_site(name: str):
-    """Delete a site by name (raises if not found)."""
-    data = _load_raw()
-    kept = [s for s in data["sites"] if s["name"].lower() != name.strip().lower()]
-    if len(kept) == len(data["sites"]):
-        raise ValueError(f"старт «{name}» не найден")
-    data["sites"] = kept
-    with open(SITES, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
 
 # ---------------------------------------------------------------- URL
 H_1D = ("temperature_2m,wind_speed_10m,wind_gusts_10m,wind_direction_10m,cloud_cover_low,"
@@ -215,10 +143,10 @@ D_OV = ("sunrise,sunset,weather_code,temperature_2m_max,temperature_2m_min,wind_
         "wind_gusts_10m_max,wind_direction_10m_dominant,precipitation_sum,precipitation_probability_max,"
         "sunshine_duration,shortwave_radiation_sum")
 
-def build_url(site, rng, date=None, model=None):
-    """`model` — разовый выбор для одного запроса; None означает глобальную настройку."""
+def build_url(site, rng, date=None, *, model):
+    """`model` — модель для этого запроса (обязательный параметр)."""
     base = (f"https://api.open-meteo.com/v1/forecast?latitude={site['lat']}&longitude={site['lon']}"
-            f"&wind_speed_unit=ms&timezone=auto&models={model_id(model or get_model_key())}")
+            f"&wind_speed_unit=ms&timezone=auto&models={model_id(model)}")
     if rng == "1d":
         if not date:
             raise SystemExit("для --range 1d нужен --date YYYY-MM-DD")
@@ -226,7 +154,7 @@ def build_url(site, rng, date=None, model=None):
     n = RANGE_DAYS[rng]
     return f"{base}&hourly={H_OV}&daily={D_OV}&forecast_days={n}"
 
-def route_weather_url(coords, date, tz, model=None):
+def route_weather_url(coords, date, tz, *, model):
     """Мульти-точечный запрос погоды на один день. `coords` — список пар (lat, lon).
 
     Часовой пояс задаётся ЯВНО, а не timezone=auto: при auto каждая локация
@@ -237,7 +165,7 @@ def route_weather_url(coords, date, tz, model=None):
     lons = ",".join(f"{lon:.4f}" for _, lon in coords)
     return (f"https://api.open-meteo.com/v1/forecast?latitude={lats}&longitude={lons}"
             f"&wind_speed_unit=ms&timezone={quote(tz)}"
-            f"&models={model_id(model or get_model_key())}"
+            f"&models={model_id(model)}"
             f"&hourly={H_1D}&daily={D_1D}&start_date={date}&end_date={date}")
 
 def ceiling_url(site, rng, date=None):
@@ -312,6 +240,20 @@ def sun_position(lat, dec, hour_angle):
     return math.degrees(el), math.degrees(math.atan2(sin_az, cos_az)) % 360
 
 
+def _slope_deg(site):
+    """Уклон старта: SLOPE_DEG, если он не задан.
+
+    `site.get("slope_deg", SLOPE_DEG)` не работает для старта из БД: там ключ
+    slope_deg всегда присутствует (колонка есть у каждой строки), просто со
+    значением None, пока пилот не указал уклон явно, — .get с дефолтом
+    срабатывает только на ОТСУТСТВУЮЩИЙ ключ, а не на None, и slope_deg=None
+    доезжал бы до math.radians() и падал бы TypeError на каждом 1-дневном
+    прогнозе реального старта.
+    """
+    slope = site.get("slope_deg")
+    return SLOPE_DEG if slope is None else slope
+
+
 def slope_sun_index(sun_elev, sun_az, aspect_deg, slope_deg=SLOPE_DEG):
     """How directly the sun hits the launch slope: cos of the incidence angle, 0–1.
     1 = perpendicular to the face (maximum heating), 0 = the face gets no direct sun.
@@ -356,7 +298,7 @@ def sun_summary(date_iso, site, sunrise, sunset):
     (the multi-day overview). Same geometry, evaluated over whole daylight hours."""
     hours = list(range(int(_clock_h(sunrise)), int(_clock_h(sunset)) + 1))
     _, window = sun_hours(date_iso, site["lat"], sunrise, sunset, hours,
-                          site.get("aspect_deg"), site.get("slope_deg", SLOPE_DEG))
+                          site.get("aspect_deg"), _slope_deg(site))
     return window
 
 
@@ -402,8 +344,10 @@ def _model_note(data):
     Потолок берётся из отдельной модели, и об этом надо сказать прямо: без
     оговорки читатель (и LLM) припишет число выбранной модели, у которой его нет.
     Штампы кладёт слой forecast; их отсутствие означает прямой вызов мимо него.
+    `_fetch_raw` всегда проставляет `_model_key`; DEFAULT_MODEL_KEY остаётся
+    только для ответов, собранных в тестах вручную.
     """
-    key = data.get("_model_key") or get_model_key()
+    key = data.get("_model_key") or DEFAULT_MODEL_KEY
     label = model_label(key)
     ceiling = data.get("_ceiling_model")
     if ceiling and ceiling != key:
@@ -698,7 +642,7 @@ def day_context(data, site, day_index=0):
     date = D["time"][day_index]
     idx = [i for i, tt in enumerate(t) if ymd(tt) == date and hour_of(sr) <= hour_of(tt) <= hour_of(ss)]
     _rows, window = sun_hours(date, site["lat"], sr, ss, [hour_of(t[i]) for i in idx],
-                              site.get("aspect_deg"), site.get("slope_deg", SLOPE_DEG))
+                              site.get("aspect_deg"), _slope_deg(site))
     return {"date": date, "sunrise": sr, "sunset": ss, "daylight_idx": idx,
             "thermal_window": window}
 
@@ -764,6 +708,89 @@ def hourly_strip(day_assessment, window):
 
 
 # ---------------------------------------------------------------- report: 1 day
+def _day_frame(data, site, assessment=None):
+    """Величины, нужные и карточке, и фактам, посчитанные ровно один раз.
+
+    До этого час пика считался в двух местах по разным правилам: карточка брала
+    максимум по рабочему окну с тай-брейком по солнцу на склоне, факты — простой
+    максимум температуры за световой день. Профиль ветра, уходивший в Gemini, мог
+    относиться не к тому часу, что видел пилот.
+    """
+    H, D = data["hourly"], data["daily"]
+    t = H["time"]
+    sr, ss = D["sunrise"][0], D["sunset"][0]
+    day = daylight_idx(t, sr, ss)
+    temp = H["temperature_2m"]
+    assess, ctx = assessment or assess_day(data, site)
+    tw = ctx["thermal_window"]
+    workable = [i for i in day
+                if tw and tw["start_hour"] <= hour_of(t[i]) <= tw["end_hour"]]
+    ref = tw["peak_hour"] if tw else hour_of(t[max(day, key=lambda i: temp[i])])
+    tmax_i = max(workable or day,
+                 key=lambda i: (round(temp[i], 1), -abs(hour_of(t[i]) - ref)))
+    # направление в рабочее окно (11–16, взвешенное по скорости) — НЕ суточное
+    # доминирующее: слабый ночной сток утягивает его от термического ветра
+    core = [i for i in day if 11 <= hour_of(t[i]) <= 16] or [tmax_i]
+    fly_dir = wind_from_avg([H["wind_direction_10m"][i] for i in core],
+                            [max(H["wind_speed_10m"][i], 0.3) for i in core])
+    dv, dc = dir_verdict(fly_dir, site["aspect_deg"])
+    return {"day": day, "assess": assess, "ctx": ctx, "thermal_window": tw,
+            "tmax_i": tmax_i, "peak_hour": hour_of(t[tmax_i]),
+            "fly_dir": fly_dir, "dir_verdict": dv, "dir_class": dc}
+
+
+def lcl_agl_at(H, i):
+    """Высота конденсации над стартом в час i, м. Формула Хеннига (122·спред)."""
+    return 122 * (H["temperature_2m"][i] - H["dew_point_2m"][i])
+
+
+def blue_thermals(H, tmax_i, has_blh):
+    """«Голубая» термичка в час пика: потоки есть, облаков-маркеров нет.
+
+    Оба члена берутся на ОДИН час — тот же, что показывает карточка. Раньше
+    facts_1day сравнивал LCL часа пика с максимумом пограничного слоя за сутки,
+    то есть с другим часом: в день с пиком температуры в 10:00 (blh 300 м) и
+    развитым слоем к 14:00 (blh 2500 м) факты отдавали blue_thermals=False,
+    а карточка и оговорки в том же ответе — «голубой». Один и тот же payload
+    противоречил сам себе.
+    """
+    if not has_blh:
+        return False
+    return (H["cloud_cover_low"][tmax_i] < 15
+            and lcl_agl_at(H, tmax_i) > H["boundary_layer_height"][tmax_i])
+
+
+def day_caveats(data, site, frame):
+    """Оговорки под карточкой. Возвращает список строк — их же кладут в факты."""
+    H = data["hourly"]
+    blh = H["boundary_layer_height"]
+    has_blh = _series_available(H, "boundary_layer_height")
+    day = frame["day"]; tmax_i = frame["tmax_i"]; dc = frame["dir_class"]
+    assess = frame["assess"]
+    blue = blue_thermals(H, tmax_i, has_blh)
+    # без пограничного слоя (ECMWF) потолка нет — оговорка о нём пропускается
+    top_agl = round(max(blh[i] for i in day)) if has_blh else None
+    elev = site["elevation_m"]
+    no_route_top = site.get("route_top_m") is None
+
+    cav = []
+    if assess.vetoes_in_window:
+        cav.append("вето внутри окна: " + ", ".join(
+            criteria.veto_labels(assess.vetoes_in_window)))
+    if any(h.raw.get("foehn_suspect") for h in assess.hours):
+        cav.append("признаки фёна (эвристика по косвенным приметам, не расчёт) — "
+                   "роторы с подветра могут быть жёсткими")
+    if blue: cav.append("голубая термичка (без облаков-маркеров)")
+    if has_blh and top_agl < 900: cav.append("низкий потолок — XC слабый")
+    if dc == "tail": cav.append("ветер в спину в рабочее окно — опасно, сверь экспозицию")
+    elif dc == "cross": cav.append("боковой ветер к склону — сверь экспозицию")
+    if no_route_top:
+        cav.append("вершины маршрута у старта не заданы (route_top_m) — вето «база ниже вершин» "
+                   "не проверяется, запас считается только над стартом")
+    cav.append(f"высота старта по гриду ({elev} м); прогноз далеко вперёд — пересними за 1–2 суток")
+    return cav
+
+
 def report_1day(data, site, out, assessment=None):
     H, D = data["hourly"], data["daily"]
     t = H["time"]
@@ -771,8 +798,8 @@ def report_1day(data, site, out, assessment=None):
     day = daylight_idx(t, sr, ss)
     elev = site["elevation_m"]; aspect = site["aspect_deg"]
     temp = H["temperature_2m"]; wind = H["wind_speed_10m"]; gust = H["wind_gusts_10m"]
-    wdir = H["wind_direction_10m"]; precip = H["precipitation"]; cape = H["cape"]
-    clow = H["cloud_cover_low"]; dew = H["dew_point_2m"]; blh = H["boundary_layer_height"]
+    precip = H["precipitation"]; cape = H["cape"]
+    blh = H["boundary_layer_height"]
     has_blh = _series_available(H, "boundary_layer_height")
 
     dt_temp = [temp[i] for i in day]
@@ -780,38 +807,30 @@ def report_1day(data, site, out, assessment=None):
     dt_gust = [gust[i] for i in day]
     # Лётность считает criteria — один расчёт на карточку, графики и данные для LLM.
     # Раньше карточка и метеограмма проверяли пороги независимо и могли разойтись.
-    assess, ctx = assessment or assess_day(data, site)
-    tw = ctx["thermal_window"]
-    workable = [i for i in day if tw and tw["start_hour"] <= hour_of(t[i]) <= tw["end_hour"]]
+    # Час пика и направление в рабочее окно теперь тоже общий расчёт с фактами —
+    # раньше facts_1day брал простой максимум температуры за световой день, и
+    # профиль ветра для Gemini мог относиться не к тому часу, что видит пилот.
+    frame = _day_frame(data, site, assessment)
+    assess, tw = frame["assess"], frame["thermal_window"]
     # лётные часы — только внутри термического окна: вне его склон не греет,
     # и «лётный» штиль в 06:00 не окно, а ночной сток
     fly_hours = assess.fly_window
     window = f"{fly_hours[0]:02d}:00–{fly_hours[1]:02d}:00" if fly_hours else "нет"
-    # thermal peak = the hottest hour of the window; near-ties (a flat temperature
-    # profile) go to the hour the sun hits the slope most directly
-    ref = tw["peak_hour"] if tw else hour_of(t[max(day, key=lambda i: temp[i])])
-    tmax_i = max(workable or day, key=lambda i: (round(temp[i], 1), -abs(hour_of(t[i]) - ref)))
-    peak_h = hour_of(t[tmax_i])
+    tmax_i = frame["tmax_i"]
+    peak_h = frame["peak_hour"]
     if tw:
         peak_lo = max(tw["start_hour"], peak_h - 1)
         peak_hi = min(tw["end_hour"], peak_h + 1)
     else:
         peak_lo, peak_hi = max(hour_of(sr), peak_h - 1), peak_h + 1
     # ceiling
-    midday = min(day, key=lambda i: abs(hour_of(t[i]) - hour_of(t[tmax_i])))
-    lcl_agl = 122 * (temp[midday] - dew[midday])
+    blue = blue_thermals(H, tmax_i, has_blh)
     if has_blh:
         top_agl = round(max(blh[i] for i in day))
         top_msl = elev + top_agl
-        blue = (clow[midday] < 15 and lcl_agl > blh[midday])
     else:  # model without a boundary-layer series (e.g. ECMWF) — no ceiling
         top_agl = top_msl = None
-        blue = False
-    # flying-window direction (11–16, speed-weighted) — NOT the 24h dominant,
-    # which light morning/evening drainage skews away from the thermal wind.
-    core = [i for i in day if 11 <= hour_of(t[i]) <= 16] or [tmax_i]
-    fly_dir = wind_from_avg([wdir[i] for i in core], [max(wind[i], 0.3) for i in core])
-    dv, dc = dir_verdict(fly_dir, aspect)
+    fly_dir, dv, dc = frame["fly_dir"], frame["dir_verdict"], frame["dir_class"]
     precip_sum = D["precipitation_sum"][0]
 
     # ---- text: factual card (always shown) + tail (window/caveats) ----
@@ -847,20 +866,7 @@ def report_1day(data, site, out, assessment=None):
     card_text = "\n".join(card_lines)
 
     tail = [f"⏱️ Лётное окно: {window}" + (f" (пик {peak_lo:02d}–{peak_hi:02d})" if fly_hours else "")]
-    cav = []
-    if assess.vetoes_in_window:
-        cav.append("вето внутри окна: " + ", ".join(criteria.veto_labels(assess.vetoes_in_window)))
-    if any(h.raw.get("foehn_suspect") for h in assess.hours):
-        cav.append("признаки фёна (эвристика по косвенным приметам, не расчёт) — "
-                   "роторы с подветра могут быть жёсткими")
-    if blue: cav.append("голубая термичка (без облаков-маркеров)")
-    if has_blh and top_agl < 900: cav.append("низкий потолок — XC слабый")
-    if dc == "tail": cav.append("ветер в спину в рабочее окно — опасно, сверь экспозицию")
-    elif dc == "cross": cav.append("боковой ветер к склону — сверь экспозицию")
-    if no_route_top:
-        cav.append("вершины маршрута у старта не заданы (route_top_m) — вето «база ниже вершин» "
-                   "не проверяется, запас считается только над стартом")
-    cav.append(f"высота старта по гриду ({elev} м); прогноз далеко вперёд — пересними за 1–2 суток")
+    cav = day_caveats(data, site, frame)
     if cav:
         tail.append("")
         tail.append("⚠️ " + "; ".join(cav) + ".")
@@ -995,17 +1001,21 @@ def facts_1day(data, site, assessment=None):
     elev = site["elevation_m"]; aspect = site["aspect_deg"]
     temp = H["temperature_2m"]; wind = H["wind_speed_10m"]; gust = H["wind_gusts_10m"]
     wdir = H["wind_direction_10m"]; precip = H["precipitation"]; cape = H["cape"]
-    clow = H["cloud_cover_low"]; dew = H["dew_point_2m"]; blh = H["boundary_layer_height"]
+    clow = H["cloud_cover_low"]; blh = H["boundary_layer_height"]
     has_blh = _series_available(H, "boundary_layer_height")
     has_frz = _series_available(H, "freezing_level_height")
-    tmax_i = max(day, key=lambda i: temp[i])  # peak-heating hour
-    lcl_agl = round(122 * (temp[tmax_i] - dew[tmax_i]))
-    if has_blh:
-        top_agl = round(max(blh[i] for i in day))
-        blue = clow[tmax_i] < 15 and (elev + lcl_agl) > (elev + top_agl)
-    else:  # model without a boundary-layer series (e.g. ECMWF)
-        top_agl = None
-        blue = False
+    # час пика — общий расчёт с report_1day (см. _day_frame), а не отдельный
+    # максимум температуры за световой день: иначе профиль ветра для Gemini
+    # мог относиться не к тому часу, что видит пилот на карточке.
+    frame = _day_frame(data, site, assessment)
+    tmax_i = frame["tmax_i"]
+    lcl_agl = round(lcl_agl_at(H, tmax_i))
+    # «голубой» день считается ОДНОЙ формулой на весь модуль (см. blue_thermals):
+    # раньше здесь стояло своё сравнение с максимумом пограничного слоя за сутки,
+    # и один и тот же ответ мог отдать blue_thermals=False рядом с оговоркой
+    # «голубая термичка» и строкой «· голубой» в карточке.
+    blue = blue_thermals(H, tmax_i, has_blh)
+    top_agl = round(max(blh[i] for i in day)) if has_blh else None
 
     levels = [("10m", elev + 10, "wind_speed_10m", "wind_direction_10m"),
               ("925hPa", "geopotential_height_925hPa", "wind_speed_925hPa", "wind_direction_925hPa"),
@@ -1022,7 +1032,7 @@ def facts_1day(data, site, assessment=None):
         profile.append(row)
 
     sun_rows, thermal_window = sun_hours(t[0], site["lat"], sr, ss, [hour_of(t[i]) for i in day],
-                                         aspect, site.get("slope_deg", SLOPE_DEG))
+                                         aspect, _slope_deg(site))
     sun_by_hour = {r["hour"]: r for r in sun_rows}
     assess, _ctx = assessment or assess_day(data, site)
     by_hour = {h.hour: h for h in assess.hours}
@@ -1042,6 +1052,11 @@ def facts_1day(data, site, assessment=None):
         "thermal_ceiling_m_msl": (elev + top_agl) if top_agl is not None else None,
         "lcl_m_agl": lcl_agl,
         "blue_thermals": bool(blue),
+        "peak_hour": frame["peak_hour"],
+        "fly_dir_deg": round(frame["fly_dir"], 1),
+        "dir_verdict": frame["dir_verdict"],
+        "dir_class": frame["dir_class"],
+        "caveats": day_caveats(data, site, frame),
         "hourly_daytime": [
             {"time": t[i][11:16], "temp_c": round(temp[i], 1), "wind_ms": round(wind[i], 1),
              "gust_ms": round(gust[i], 1), "dir_deg": round(wdir[i]),
@@ -1128,9 +1143,13 @@ def main():
             p.add_argument("--json", required=True)
             p.add_argument("--out", required=True)
     a = ap.parse_args()
-    site = find_site(a.site)
+    import store
+    site = store.find_site(a.site)
+    if site is None:
+        raise SystemExit(f"Старт не найден: {a.site}. Есть: "
+                         + ", ".join(s["name"] for s in store.load_sites()))
     if a.cmd == "url":
-        print(build_url(site, a.range, a.date)); return
+        print(build_url(site, a.range, a.date, model=DEFAULT_MODEL_KEY)); return
     with open(a.json, encoding="utf-8") as f:
         data = json.load(f)
     os.makedirs(a.out, exist_ok=True)
