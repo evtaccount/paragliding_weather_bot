@@ -2503,7 +2503,7 @@ Expected: строка `http: 127.0.0.1:8099` в логе. Polling с фальш
 - [ ] **Step 8: Полный прогон**
 
 Run: `python -m pytest -q`
-Expected: 953 passed.
+Expected: 955 passed.
 
 - [ ] **Step 9: Коммит**
 
@@ -2774,7 +2774,7 @@ Expected: `Valid configuration`. Ошибка синтаксиса, найден
 - [ ] **Step 11: Полный прогон**
 
 Run: `python -m pytest -q`
-Expected: 957 passed.
+Expected: 959 passed.
 
 - [ ] **Step 12: Коммит**
 
