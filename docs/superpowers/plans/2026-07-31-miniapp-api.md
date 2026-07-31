@@ -2377,9 +2377,12 @@ async def test_storage_is_migrated_before_either_surface_starts(monkeypatch):
     assert order[0] == "bootstrap"
 
 
-def test_api_binds_loopback_only():
-    """Наружу смотрит Caddy. uvicorn на 0.0.0.0 отдал бы API без TLS всем,
-    кто дотянется до порта."""
+def test_api_binds_loopback_by_default():
+    """Умолчание — loopback: на bare metal перед процессом никого нет.
+
+    В compose оно перекрывается на 0.0.0.0, иначе Caddy из соседнего
+    контейнера не достучится; границу там держит expose без ports.
+    """
     import app
     assert app.API_HOST == "127.0.0.1"
 ```
@@ -2438,9 +2441,16 @@ import bot
 
 log = logging.getLogger("pgbot.app")
 
-# Наружу смотрит Caddy: TLS, статика, прокси на этот порт. Слушать 0.0.0.0
-# значило бы отдавать API без TLS всем, кто дотянется до порта.
-API_HOST = "127.0.0.1"
+# Границу «наружу не выходим» держит НЕ этот бинд, а раскладка портов:
+# в compose у pgbot стоит expose без ports, поэтому порт не попадает на хост
+# вовсе. На bare metal перед процессом никого нет, и там loopback — верное
+# умолчание.
+#
+# Жёсткий 127.0.0.1 ломает именно Docker: pgbot и caddy — разные контейнеры с
+# разными сетевыми пространствами, и сокет на контейнерном loopback виден
+# только изнутри pgbot. `reverse_proxy pgbot:8080` упёрся бы в ECONNREFUSED,
+# и КАЖДЫЙ запрос к /api/* вернул бы 502.
+API_HOST = os.environ.get("API_HOST", "127.0.0.1")
 API_PORT = int(os.environ.get("API_PORT", "8080"))
 
 
