@@ -210,7 +210,13 @@ def _model_for(uid: int, override: str | None) -> str:
 
 
 def _site_or_404(name: str) -> dict:
-    site = store.find_site(name)
+    """Старт существует, или 404 до похода в сеть.
+
+    Резолвит ТОЙ ЖЕ функцией, что и домен: `store.find_site` в одиночку
+    отдал бы 404 на законную разовую точку по координатам, потому что она
+    живёт в adhoc, а не в библиотеке стартов.
+    """
+    site = forecast.site_by_name(name)
     if site is None:
         raise HTTPException(404, f"старт не найден: {name}")
     return site

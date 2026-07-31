@@ -132,3 +132,14 @@ async def test_scan_uses_the_pilots_model(client, monkeypatch):
 
 async def test_forecast_needs_authorization(client, facts):
     assert (await client.get("/api/forecast?site=Гудаури&range=1d")).status_code == 401
+
+
+async def test_an_adhoc_point_is_a_site_for_the_endpoint_too(client, facts):
+    """Разовая точка по координатам живёт в adhoc, а не в библиотеке стартов.
+    Проверка существования только через find_site отдала бы 404 на законную
+    точку ещё до вызова домена — тест на уровне forecast этого не поймал бы,
+    он ходит мимо api.py."""
+    name = forecast.register_adhoc(42.5, 44.5, 2000)
+    r = await client.get(f"/api/forecast?site={name}&range=1d", headers=header())
+    assert r.status_code == 200
+    assert facts, "запрос должен был дойти до домена"
