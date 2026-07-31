@@ -545,6 +545,30 @@ async def test_unknown_model_is_400(client):
     assert store.prefs(1).model_key == store.DEFAULT_PREFS.model_key
 
 
+async def test_a_rejected_patch_saves_nothing_at_all(client):
+    """400 означает «не сохранилось ничего». Запись по мере разбора успевала
+    сохранить скорость и падала на модели: ответ говорил «не принято», а
+    половина настроек уже поменялась."""
+    r = await client.patch("/api/prefs",
+                           json={"avg_route_speed_kmh": 33.0,
+                                 "wind_correction_enabled": False,
+                                 "model_key": "нет-такой"},
+                           headers=header(uid=1))
+    assert r.status_code == 400
+    p = store.prefs(1)
+    assert p.avg_route_speed_kmh == store.DEFAULT_PREFS.avg_route_speed_kmh
+    assert p.wind_correction_enabled is store.DEFAULT_PREFS.wind_correction_enabled
+
+
+async def test_a_rejected_speed_leaves_the_other_fields_alone(client):
+    """Вторая половина того же: падает не модель, а скорость."""
+    r = await client.patch("/api/prefs",
+                           json={"avg_route_speed_kmh": 500.0, "model_key": "gfs"},
+                           headers=header(uid=1))
+    assert r.status_code == 400
+    assert store.prefs(1).model_key == store.DEFAULT_PREFS.model_key
+
+
 async def test_prefs_are_personal(client):
     await client.patch("/api/prefs", json={"model_key": "icon"}, headers=header(uid=1))
     body = (await client.get("/api/prefs", headers=header(uid=2))).json()
@@ -723,6 +747,19 @@ async def read_prefs(user: webauth.TelegramUser = Depends(current_user)):
 @router.patch("/prefs")
 async def update_prefs(body: PrefsPatch,
                        user: webauth.TelegramUser = Depends(current_user)):
+    """Порядок операций держит запрос неделимым: 400 означает, что не
+    сохранилось НИЧЕГО.
+
+    Проверка ключа модели идёт первой и ничего не пишет. `set_speed` —
+    единственная запись, способная бросить исключение, поэтому она вторая:
+    к моменту, когда пишутся остальные поля, упасть уже нечему. Порядок
+    «пишем по мере разбора» сохранял бы скорость и уходил с 400 из-за
+    модели — ответ говорил бы «не принято», а половина настроек уже
+    поменялась.
+    """
+    # Список моделей — знание домена: store ключ не проверяет намеренно.
+    if body.model_key is not None and body.model_key not in engine.MODELS:
+        raise HTTPException(400, f"неизвестная модель: {body.model_key}")
     if body.avg_route_speed_kmh is not None:
         try:
             store.set_speed(user.id, body.avg_route_speed_kmh)
@@ -731,9 +768,6 @@ async def update_prefs(body: PrefsPatch,
     if body.wind_correction_enabled is not None:
         store.set_wind_correction(user.id, body.wind_correction_enabled)
     if body.model_key is not None:
-        # Список моделей — знание домена: store ключ не проверяет намеренно.
-        if body.model_key not in engine.MODELS:
-            raise HTTPException(400, f"неизвестная модель: {body.model_key}")
         store.set_model(user.id, body.model_key)
     return _prefs_payload(user.id)
 
@@ -744,12 +778,12 @@ app.include_router(router)
 - [ ] **Step 7: Тесты проходят**
 
 Run: `python -m pytest tests/test_api_auth.py tests/test_api_prefs.py -q`
-Expected: PASS, 20 тестов.
+Expected: PASS, 22 теста.
 
 - [ ] **Step 8: Полный прогон**
 
 Run: `python -m pytest -q`
-Expected: 881 passed.
+Expected: 883 passed.
 
 - [ ] **Step 9: Коммит**
 
@@ -975,7 +1009,7 @@ Expected: PASS, 12 тестов.
 - [ ] **Step 6: Полный прогон**
 
 Run: `python -m pytest -q`
-Expected: 893 passed, ни один тест бота не сломан переносом константы.
+Expected: 895 passed, ни один тест бота не сломан переносом константы.
 
 - [ ] **Step 7: Коммит**
 
@@ -1277,7 +1311,7 @@ Expected: PASS, 14 тестов.
 - [ ] **Step 8: Полный прогон**
 
 Run: `python -m pytest -q`
-Expected: 909 passed.
+Expected: 911 passed.
 
 - [ ] **Step 9: Коммит**
 
@@ -1543,7 +1577,7 @@ Expected: PASS, 11 тестов.
 - [ ] **Step 5: Полный прогон**
 
 Run: `python -m pytest -q`
-Expected: 920 passed.
+Expected: 922 passed.
 
 - [ ] **Step 6: Коммит**
 
@@ -1820,7 +1854,7 @@ Expected: PASS, 14 тестов.
 - [ ] **Step 7: Полный прогон**
 
 Run: `python -m pytest -q`
-Expected: 934 passed. Тесты загрузки документа в чат зелёные без правок.
+Expected: 936 passed. Тесты загрузки документа в чат зелёные без правок.
 
 - [ ] **Step 8: Коммит**
 
@@ -2062,7 +2096,7 @@ Expected: FAIL как минимум в `test_a_second_request_while_the_first_r
 - [ ] **Step 8: Полный прогон**
 
 Run: `python -m pytest -q`
-Expected: 941 passed. Тесты троттлинга бота остаются зелёными без правок — поведение чата не изменилось.
+Expected: 943 passed. Тесты троттлинга бота остаются зелёными без правок — поведение чата не изменилось.
 
 - [ ] **Step 9: Коммит**
 
@@ -2301,7 +2335,7 @@ Expected: строка `http: 127.0.0.1:8099` в логе. Polling с фальш
 - [ ] **Step 8: Полный прогон**
 
 Run: `python -m pytest -q`
-Expected: 946 passed.
+Expected: 948 passed.
 
 - [ ] **Step 9: Коммит**
 
@@ -2572,7 +2606,7 @@ Expected: `Valid configuration`. Ошибка синтаксиса, найден
 - [ ] **Step 11: Полный прогон**
 
 Run: `python -m pytest -q`
-Expected: 950 passed.
+Expected: 952 passed.
 
 - [ ] **Step 12: Коммит**
 
