@@ -146,6 +146,12 @@ def find_site(name: str) -> dict | None:
     return _site_row_to_dict(row, sorted(aliases))
 
 
+# Имя уезжает в callback_data бота: "deep|" + name + "|2weeks|YYYY-MM-DD"
+# должно уместиться в 64 байта. Ограничение чата, но проверять его обязаны
+# обе поверхности — библиотека стартов общая.
+NAME_MAX_BYTES = 40
+
+
 def add_site(site: dict, added_by: int | None = None) -> None:
     """Добавить старт. ValueError, если имя занято именем ИЛИ псевдонимом другого:
     find_site матчит и то и другое, и затенённый старт стал бы недостижим."""

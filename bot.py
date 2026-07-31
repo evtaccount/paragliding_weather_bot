@@ -139,15 +139,11 @@ def _analysis_html(text: str) -> str:
     return re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", esc, flags=re.S)
 
 
-# worst-case callback_data around a name: "deep|" + name + "|2weeks|YYYY-MM-DD" must fit 64 bytes
-_NAME_MAX_BYTES = 40
-
-
 def name_error(name: str) -> str | None:
     """Why a site name can't live inside inline-button callback_data, or None if it can."""
     if "|" in name:
         return "Имя не должно содержать символ «|»."
-    if len(name.encode("utf-8")) > _NAME_MAX_BYTES:
+    if len(name.encode("utf-8")) > store.NAME_MAX_BYTES:
         return "Слишком длинное имя — не влезет в кнопки Telegram. До ~20 символов, короче?"
     return None
 

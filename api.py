@@ -6,6 +6,7 @@
 """
 import logging
 import os
+import sqlite3
 
 import httpx
 from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException
@@ -120,6 +121,74 @@ async def update_prefs(body: PrefsPatch,
     if body.model_key is not None:
         store.set_model(user.id, body.model_key)
     return _prefs_payload(user.id)
+
+
+# ------------------------------------------------------------------ старты
+class SiteIn(BaseModel):
+    """Поля повторяют колонки store._SITE_COLUMNS, кроме added_by — его
+    подставляет сервер из подписи, а не клиент из тела запроса."""
+    name: str
+    lat: float
+    lon: float
+    elevation_m: int
+    aspect: str | None = None
+    aspect_deg: float | None = None
+    slope_deg: float | None = None
+    route_top_m: float | None = None
+    aliases: list[str] = []
+    notes: str = ""
+
+
+class Coords(BaseModel):
+    lat: float
+    lon: float
+
+
+@router.get("/sites")
+async def list_sites(_user: webauth.TelegramUser = Depends(current_user)):
+    """Библиотека общая, поэтому ответ не зависит от пилота. Зависимость
+    оставлена: неавторизованный запрос не должен получать список стартов."""
+    return store.load_sites()
+
+
+@router.get("/sites/{name}")
+async def read_site(name: str, _user: webauth.TelegramUser = Depends(current_user)):
+    site = store.find_site(name)
+    if site is None:
+        raise HTTPException(404, f"старт не найден: {name}")
+    return site
+
+
+@router.post("/sites", status_code=201)
+async def create_site(body: SiteIn, user: webauth.TelegramUser = Depends(current_user)):
+    site = body.model_dump()
+    if len(site["name"].encode()) > store.NAME_MAX_BYTES:
+        raise HTTPException(400, "Слишком длинное имя: не больше "
+                                 f"{store.NAME_MAX_BYTES} байт.")
+    if store.find_site(site["name"]) is not None:
+        raise HTTPException(409, f"Старт «{site['name']}» уже есть.")
+    try:
+        store.add_site(site, added_by=user.id)
+    except sqlite3.IntegrityError as e:
+        # гонка двух добавлений одного имени: проверка выше не атомарна
+        raise HTTPException(409, str(e)) from None
+    return store.find_site(site["name"])
+
+
+@router.delete("/sites/{name}", status_code=204)
+async def delete_site(name: str, _user: webauth.TelegramUser = Depends(current_user)):
+    site = store.find_site(name)
+    if site is None:
+        # 204 на опечатку соврал бы: пилот решил бы, что удалил старт
+        raise HTTPException(404, f"старт не найден: {name}")
+    store.remove_site(site["name"])
+    return None
+
+
+@router.post("/elevation")
+async def elevation(body: Coords, _user: webauth.TelegramUser = Depends(current_user)):
+    """Высота точки — для формы добавления старта."""
+    return {"elevation_m": await forecast.fetch_elevation(body.lat, body.lon)}
 
 
 app.include_router(router)
