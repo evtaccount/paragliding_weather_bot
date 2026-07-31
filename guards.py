@@ -90,6 +90,16 @@ class InFlight:
         self._busy.add(uid)
         return True
 
+    def busy(self, uid: int) -> bool:
+        """Ждёт ли пилот чего-то прямо сейчас. Ничего не занимает.
+
+        Отдельно от `acquire` намеренно: в чате проверка занятости стоит
+        раньше проверки паузы, а захват — позже неё. Слитые в один вызов,
+        они держали бы слот на время ответа «не так часто», то есть на всё
+        сетевое обращение к Telegram.
+        """
+        return uid in self._busy
+
     def release(self, uid: int) -> None:
         self._busy.discard(uid)
 
@@ -110,16 +120,20 @@ class ThrottleMiddleware(BaseMiddleware):
         if not get_flag(data, "forecast") or not event.from_user:
             return await handler(event, data)
         uid = event.from_user.id
-        if not INFLIGHT.acquire(uid):
+        if INFLIGHT.busy(uid):
             return await event.answer("⏳ Уже готовлю — дождись ответа.")
+        # follow-up button presses aren't spam — only typed commands get the cooldown.
+        # Проверка стоит ДО acquire: отказ по паузе — это await event.answer(...),
+        # настоящее сетевое обращение, и держать слот на это время значило бы
+        # отвечать 429 в приложении пилоту, который в этот момент ничего не считает.
+        if not isinstance(event, CallbackQuery):
+            now = time.monotonic()
+            wait = self._last.get(uid, -math.inf) + self.cooldown - now
+            if wait > 0:
+                return await event.answer(f"⏳ Не так часто: подожди {math.ceil(wait)} сек.")
+            self._last[uid] = now
+        INFLIGHT.acquire(uid)
         try:
-            # follow-up button presses aren't spam — only typed commands get the cooldown
-            if not isinstance(event, CallbackQuery):
-                now = time.monotonic()
-                wait = self._last.get(uid, -math.inf) + self.cooldown - now
-                if wait > 0:
-                    return await event.answer(f"⏳ Не так часто: подожди {math.ceil(wait)} сек.")
-                self._last[uid] = now
             return await handler(event, data)
         finally:
             INFLIGHT.release(uid)
