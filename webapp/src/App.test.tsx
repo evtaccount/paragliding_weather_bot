@@ -296,3 +296,54 @@ test("выбор старта в шапке переключает прогно�
     expect(requested).toContain("Казбеги")
   })
 })
+
+// Ревью задачи 13 (N5): удаление старта инвалидирует список, но выбор пилота
+// оставался строкой удалённого старта — шапка показывала призрак, а вкладка
+// «Прогноз» отдавала его прогноз из кэша (staleTime 5 минут); на холодном
+// кэше — 404 от api._site_or_404. Удаляется НЕ первый старт и НЕ тот, что
+// выбран по умолчанию: подмена «сбрасывать всегда» и «сбрасывать первый»
+// на таком наборе видна.
+test("удалённый старт перестаёт быть текущим", async () => {
+  let sitesNow = [
+    sites[0]!,
+    { ...sites[0]!, name: "Лалискури", lat: 42.51, lon: 42.32 },
+    { ...sites[0]!, name: "Казбеги", lat: 42.66, lon: 44.64 },
+  ]
+  vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
+    const path = String(url).split("?")[0]!
+    if (init?.method === "DELETE") {
+      const removed = decodeURIComponent(path.slice("/api/sites/".length))
+      sitesNow = sitesNow.filter((s) => s.name !== removed)
+      return Promise.resolve(new Response(null, { status: 204 }))
+    }
+    const body =
+      path === "/api/sites" ? sitesNow
+      : path === "/api/prefs" ? prefs
+      : path === "/api/forecast" && url.includes("range=1d") ? facts
+      : path === "/api/forecast" ? overview
+      : {}
+    return Promise.resolve(new Response(JSON.stringify(body), {
+      status: 200, headers: { "content-type": "application/json" } }))
+  })
+
+  render(<App />)
+  const header = screen.getByRole("banner")
+
+  // Пилот выбрал «Казбеги» в шапке...
+  await userEvent.click(await within(header).findByRole("button", { name: "Гудаури" }))
+  await userEvent.click(await screen.findByRole("button", { name: /Казбеги/ }))
+  expect(within(header).getByText("Казбеги")).toBeInTheDocument()
+
+  // ...и удалил его же на вкладке «Настройки».
+  await userEvent.click(screen.getByRole("tab", { name: "Настройки" }))
+  await userEvent.click(await screen.findByRole("button", { name: /Казбеги 42,660/ }))
+  const sheet = screen.getByRole("dialog")
+  await userEvent.click(within(sheet).getByRole("button", { name: /Удалить старт/ }))
+  await userEvent.click(within(sheet).getByRole("button", { name: /Да, удалить/ }))
+
+  // Шапка возвращается к запасному старту, а не показывает удалённый.
+  await waitFor(() => {
+    expect(within(header).queryByText("Казбеги")).toBeNull()
+  })
+  expect(within(header).getByText("Гудаури")).toBeInTheDocument()
+})

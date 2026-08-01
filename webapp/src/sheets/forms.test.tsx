@@ -42,7 +42,9 @@ type Call = { url: string; method: string; body: BodyInit | null | undefined }
 
 const calls: Call[] = []
 
-function stubFetch(reply: (url: string, init?: RequestInit) => Response): void {
+// Ответ может быть и промисом: тесту про «шторку открыли до ответа сервера»
+// нужен запрос, который разрешается по команде, а не сразу.
+function stubFetch(reply: (url: string, init?: RequestInit) => Response | Promise<Response>): void {
   vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
     calls.push({ url: String(url), method: init?.method ?? "GET", body: init?.body })
     return Promise.resolve(reply(String(url), init))
@@ -240,6 +242,25 @@ test("точку нового маршрута можно передвинуть
   expect(after[1]).not.toEqual(before[1])
 })
 
+// Ревью задачи 13 (N10): кнопка «Показать маршрут» была активна и при нуле
+// точек, а её нажатие ЗАМЕНЯЕТ маршрут вкладки — пустой набор стирал уже
+// посчитанный. Сценарий: разбор не удался, и пилот жмёт единственную заметную
+// кнопку внизу, чтобы выйти.
+test("пустой набор точек не применяется и не стирает прежний маршрут", async () => {
+  const onApply = vi.fn()
+  const { container } = render(<NewRouteSheet onApply={onApply} />, { wrapper })
+
+  const apply = screen.getByRole("button", { name: /Показать маршрут/ })
+  expect(apply).toBeDisabled()
+  await userEvent.click(apply)
+  expect(onApply).not.toHaveBeenCalled()
+
+  // Появилась точка — кнопка ожила, и подпись склоняется по-русски
+  // («1 точка», а не «1 точек»).
+  tapMap(container, 10, 10)
+  expect(screen.getByRole("button", { name: /Показать маршрут · 1 точка$/ })).toBeEnabled()
+})
+
 // ------------------------------------------------------- Сохранённые маршруты
 
 test("сохранённый маршрут открывается тот, который выбрали", async () => {
@@ -274,22 +295,47 @@ test("маршрут без имён точек не теряет точки", a
 
 test("выбирается тот старт, по которому нажали", async () => {
   const onPick = vi.fn()
-  render(<SitePickerSheet sites={THREE_SITES} current="Гудаури" onPick={onPick} />, { wrapper })
+  render(<SitePickerSheet selected="Гудаури" onPick={onPick} />, { wrapper })
 
-  await userEvent.click(screen.getByRole("button", { name: /Казбеги/ }))
+  await userEvent.click(await screen.findByRole("button", { name: /Казбеги/ }))
 
   expect(onPick).toHaveBeenCalledTimes(1)
   expect(onPick).toHaveBeenCalledWith("Казбеги")
 })
 
-test("в выбиралке старта отмечен текущий старт", () => {
-  render(<SitePickerSheet sites={THREE_SITES} current="Лалискури" onPick={vi.fn()} />, { wrapper })
+test("в выбиралке старта отмечен текущий старт", async () => {
+  render(<SitePickerSheet selected="Лалискури" onPick={vi.fn()} />, { wrapper })
 
-  const active = screen.getByRole("button", { name: /Лалискури/ })
+  const active = await screen.findByRole("button", { name: /Лалискури/ })
   expect(active).toHaveAttribute("aria-pressed", "true")
   for (const name of ["Гудаури", "Казбеги"]) {
     expect(screen.getByRole("button", { name: new RegExp(name) })).toHaveAttribute("aria-pressed", "false")
   }
   // Подпись несёт то, чем старты различаются в поле: экспозицию и высоту.
   expect(within(active).getByText(/ЮВ/)).toBeInTheDocument()
+})
+
+// Ревью задачи 13 (N2): шторка кладётся в стек ГОТОВЫМ элементом, поэтому
+// список, переданный ей пропом, застывал на момент нажатия. Пилот на холодном
+// старте жал имя старта в шапке, читал «Нет стартов» — и продолжал читать это
+// после того, как старты пришли, хотя в шапке уже было имя. Тест повторяет
+// именно этот порядок: шторка открыта, СПИСКА ЕЩЁ НЕТ, ответ приходит потом.
+test("выбиралка старта, открытая до ответа сервера, показывает пришедший список", async () => {
+  let deliverSites = (): void => { throw new Error("fetch не был вызван") }
+  const pending = new Promise<Response>((resolve) => {
+    deliverSites = () => { resolve(json(THREE_SITES)) }
+  })
+  stubFetch(() => pending)
+
+  render(<SitePickerSheet selected={null} onPick={vi.fn()} />, { wrapper })
+  expect(screen.getByRole("status", { name: "Загрузка" })).toBeInTheDocument()
+  expect(screen.queryByText("Нет стартов")).toBeNull()
+
+  deliverSites()
+
+  expect(await screen.findByRole("button", { name: /Казбеги/ })).toBeInTheDocument()
+  // Отметка «текущий» тоже считается по пришедшему списку: явного выбора не
+  // было (selected=null), значит отмечен первый старт — тот же, что показывает
+  // оболочка (App.tsx:siteName).
+  expect(screen.getByRole("button", { name: /Гудаури/ })).toHaveAttribute("aria-pressed", "true")
 })

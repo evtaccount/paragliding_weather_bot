@@ -19,7 +19,7 @@
 // координаты должны быть числами — иначе запрос уходит с null в теле, и
 // pydantic отвечает 422 текстом не для пилота.
 import { useState } from "react"
-import { useCreateSite, useElevation } from "../api/queries"
+import { useCreateSite, useElevation, useSites } from "../api/queries"
 import type { ApiError } from "../api/client"
 import type { LatLon } from "../map/MapView"
 import type { Site } from "../api/types"
@@ -29,11 +29,12 @@ import { ErrorBox } from "../ui/ErrorBox"
 import { Spinner } from "../ui/Spinner"
 
 type Props = {
-  // Уже заведённые старты — справочными пинами на карте: новый старт почти
-  // всегда ставят рядом с известным.
-  sites: Site[]
   onCreated: () => void
 }
+
+// Пустой список стартов — константа модуля: MapView пересобирает маркеры при
+// смене ССЫЛКИ на массив (см. комментарий в screens/Route.tsx).
+const NO_SITES: Site[] = []
 
 // Восемь румбов и их градусы — та же таблица, что engine._COMPASS (её же
 // разбирает /add в чате: engine.parse_aspect → engine.card). Подписи не
@@ -49,7 +50,12 @@ function parseCoord(text: string): number | null {
   return text.trim() !== "" && Number.isFinite(value) ? value : null
 }
 
-export function AddSiteSheet({ sites, onCreated }: Props) {
+export function AddSiteSheet({ onCreated }: Props) {
+  // Уже заведённые старты — справочными пинами на карте: новый старт почти
+  // всегда ставят рядом с известным. Читаются здесь, а не приходят пропом:
+  // шторка кладётся в стек готовым элементом, и список, пришедший после её
+  // открытия, в застывший проп уже не попал бы (ревью задачи 13, N2).
+  const sites = useSites()
   const [name, setName] = useState("")
   const [latText, setLatText] = useState("")
   const [lonText, setLonText] = useState("")
@@ -141,7 +147,7 @@ export function AddSiteSheet({ sites, onCreated }: Props) {
       <div className="map" style={{ marginTop: 12 }}>
         <MapView
           points={mapPoints}
-          sites={sites}
+          sites={sites.data ?? NO_SITES}
           onTap={pickOnMap}
           onDragPoint={(_i, p) => pickOnMap(p)}
         />

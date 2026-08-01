@@ -121,7 +121,16 @@ function RouteMap({ points, onOpenPoint }: { points: RoutePoint[]; onOpenPoint: 
 // они стоят в одном блоке .acts с «Разбором от ИИ» (prototype.html:
 // 1182-1186), а в состояниях без посчитанного маршрута разбирать нечего, и
 // тот же фрагмент оборачивается в собственный .acts.
-function RouteSourceButtons({ onPickRoute }: { onPickRoute: RouteProps["onPickRoute"] }) {
+//
+// newRouteWide — широкая ли «Новый маршрут» (act--wide, grid-column: 1 / -1).
+// В макете широкая именно она (mk(..., true), строка 1185), и рядом с
+// «Разбором от ИИ» получается ряд из двух кнопок плюс широкая под ними —
+// так и рисуется полное состояние экрана. В состояниях без посчитанного
+// маршрута кнопок ровно две, и обе занимают по половине ряда: широкая там
+// оставила бы «Сохранённые» одинокой половинкой с дырой справа.
+function RouteSourceButtons(
+  { onPickRoute, newRouteWide = false }: { onPickRoute: RouteProps["onPickRoute"]; newRouteWide?: boolean },
+) {
   const sheets = useSheetsContext()
   return (
     <>
@@ -138,7 +147,7 @@ function RouteSourceButtons({ onPickRoute }: { onPickRoute: RouteProps["onPickRo
       </button>
       <button
         type="button"
-        className="act"
+        className={newRouteWide ? "act act--wide" : "act"}
         onClick={() => sheets.push(<NewRouteSheet onApply={onPickRoute} />, "Новый маршрут")}
       >
         <b>Новый маршрут</b>
@@ -150,10 +159,25 @@ function RouteSourceButtons({ onPickRoute }: { onPickRoute: RouteProps["onPickRo
 
 export function Route({ points, name, date, model, onPickRoute }: RouteProps) {
   const sheets = useSheetsContext()
+  // Выбранное чипом время вылета хранится ВМЕСТЕ с маршрутом, для которого его
+  // выбрали, и действует только пока показывают этот самый маршрут.
+  //
+  // Экран никогда не размонтируется (вкладки скрыты через hidden, а не сняты
+  // с дерева, см. App.tsx), поэтому обычное состояние `departure` пережило бы
+  // смену маршрута: пилот подобрал 18:00 маршруту А, открыл сохранённый
+  // маршрут Б — и Б посчитался бы не по своему термическому окну (его сервер
+  // выбирает сам, route.py:get_route), а по времени, подобранному для А.
+  // Вернуть «пусть выбирает сервер» пилоту при этом нечем: чипы задают только
+  // конкретное время. Найдено ревью задачи 13 (N1), воспроизведено на смене
+  // маршрута.
+  //
+  // Сравнение по ССЫЛКЕ на массив точек, а не по его содержимому: тот же
+  // маршрут, пришедший заново (перевыбор того же имени в «Сохранённых»), —
+  // это новый расчёт, и время вылета для него сервер снова подбирает сам.
+  const [pickedDeparture, setPickedDeparture] = useState<{ points: RoutePointRow[]; time: string } | null>(null)
   // null — сервер сам выбирает время вылета (начало термического окна первой
-  // точки, route.py:get_route). Пилот переопределяет его чипом времени вылета
-  // ниже — тогда сюда попадает конкретное «ЧЧ:ММ» из departure_scan.
-  const [departure, setDeparture] = useState<string | null>(null)
+  // точки, route.py:get_route).
+  const departure = pickedDeparture !== null && pickedDeparture.points === points ? pickedDeparture.time : null
   const route = useRoute()
   const { mutate } = route
 
@@ -355,7 +379,7 @@ export function Route({ points, name, date, model, onPickRoute }: RouteProps) {
                 aria-label={`${entry.departure} → ${score} · ${feasibility}`}
                 style={isActive ? { borderColor: "var(--ink)", color: "var(--ink)" } : undefined}
                 title={isBest ? `Лучший вылет · ${feasibility}` : feasibility}
-                onClick={() => setDeparture(entry.departure)}
+                onClick={() => setPickedDeparture({ points, time: entry.departure })}
               >
                 {entry.departure} → {score}{isBest ? " ★" : ""}{warning}
               </button>
@@ -378,7 +402,7 @@ export function Route({ points, name, date, model, onPickRoute }: RouteProps) {
       <div className="acts">
         <button
           type="button"
-          className="act act--wide"
+          className="act"
           onClick={() => sheets.push(
             <RouteAnalysisSheet points={points} name={name} date={date} departure={departure} model={model} />,
             "Разбор маршрута",
@@ -387,7 +411,7 @@ export function Route({ points, name, date, model, onPickRoute }: RouteProps) {
           <b>Разбор от ИИ</b>
           <span>тактика по узкому месту</span>
         </button>
-        <RouteSourceButtons onPickRoute={onPickRoute} />
+        <RouteSourceButtons onPickRoute={onPickRoute} newRouteWide />
       </div>
 
       {result.notes.map((n, i) => <div key={`${i}-${n}`} className="attrib">{n}</div>)}

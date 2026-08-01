@@ -82,6 +82,20 @@ function jsonResponse(body: unknown, status = 200): Promise<Response> {
   return Promise.resolve(new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } }))
 }
 
+// Тело ПОСЛЕДНЕГО запроса расчёта маршрута (POST /api/route). Экран шлёт их
+// несколько за сеанс (монтирование, смена времени вылета, смена маршрута), и
+// проверять надо именно последний: «есть хоть один запрос без departure»
+// верно всегда — первый запрос уходит без времени по определению.
+type RouteRequestBody = { name?: string | null; departure?: string | null }
+
+function lastRouteBody(fetchMock: { mock: { calls: [string, (RequestInit | undefined)?][] } }): RouteRequestBody {
+  const posts = fetchMock.mock.calls
+    .filter(([url, init]) => String(url).split("?")[0] === "/api/route" && init?.method === "POST")
+  const last = posts[posts.length - 1]
+  if (!last) throw new Error("расчёт маршрута ни разу не запрашивался")
+  return JSON.parse(String(last[1]!.body)) as RouteRequestBody
+}
+
 beforeEach(() => {
   // @ts-expect-error — подделка глобального объекта
   window.Telegram = { WebApp: { initData: "auth_date=1&hash=abc" } }
@@ -172,6 +186,62 @@ test("перебор времени вылета шлёт новый запро�
       .map((init) => JSON.parse(String(init.body)) as { departure?: string | null })
     expect(bodies.some((b) => b.departure === target.departure)).toBe(true)
   })
+})
+
+// Ревью задачи 13 (N1): экран «Маршрут» не размонтируется никогда (вкладки
+// скрыты через hidden, App.tsx), поэтому выбранное чипом время вылета
+// переживало смену маршрута — и следующий маршрут считался по времени,
+// подобранному для предыдущего. До задачи 13 дефект был недостижим: маршрут
+// нельзя было сменить. Проверяется на ПОСЛЕДНЕМ теле запроса, а не на «есть
+// хоть один запрос без departure»: первый запрос (при монтировании) и так
+// уходит без времени, и проверка «какой-нибудь» зеленела бы при живом дефекте.
+test("новый маршрут считается по своему окну, а не по времени прежнего", async () => {
+  const fetchMock = vi.fn((_url: string, _init?: RequestInit) => jsonResponse(ROUTE))
+  vi.stubGlobal("fetch", fetchMock)
+  const { rerender } = render(
+    <Route points={POINTS} name="Маршрут А" date={ROUTE.route.date} model="ecmwf" onPickRoute={() => {}} />,
+    { wrapper },
+  )
+  await screen.findByText(ROUTE.verdict.label)
+
+  // Пилот подобрал время вылета маршруту А.
+  const target = ROUTE.departure_scan.find((e) => e.departure !== ROUTE.route.departure)!
+  await userEvent.click(screen.getByRole("button", { name: new RegExp(`^${target.departure} →`) }))
+  await waitFor(() => {
+    expect(lastRouteBody(fetchMock).departure).toBe(target.departure)
+  })
+
+  // И открыл другой маршрут — другая ССЫЛКА на точки, как из шторки
+  // «Сохранённые».
+  const otherPoints: RoutePointRow[] = POINTS.slice(0, 3).map(([lat, lon, n]): RoutePointRow => [lat + 0.1, lon, n])
+  rerender(
+    <Route points={otherPoints} name="Маршрут Б" date={ROUTE.route.date} model="ecmwf" onPickRoute={() => {}} />,
+  )
+
+  await waitFor(() => {
+    const body = lastRouteBody(fetchMock)
+    expect(body.name).toBe("Маршрут Б")
+    // Время вылета маршрута Б выбирает сервер (route.py:get_route — начало
+    // термического окна первой точки), а не чип, нажатый у маршрута А.
+    expect(body.departure).toBeNull()
+  })
+})
+
+// Ревью задачи 13 (N4): в макете (prototype.html:1182-1186) широкой сделана
+// «Новый маршрут» (mk(..., true)), а «Разбор от ИИ» и «Сохранённые» делят
+// первый ряд. Раскладка .acts — grid 1fr 1fr плюс act--wide (grid-column:
+// 1 / -1), то есть перестановка широкой кнопки зеркалит весь блок. Сверять
+// это глазами станет задача 15 (Playwright), но класс проверить можно уже
+// сейчас — иначе расхождение с единственным источником вёрстки живёт молча.
+test("широкой в блоке действий стоит «Новый маршрут», как в макете", async () => {
+  vi.stubGlobal("fetch", () => jsonResponse(ROUTE))
+  render(<Route points={POINTS} name={ROUTE.route.name} date={ROUTE.route.date} model="ecmwf" onPickRoute={() => {}} />, { wrapper })
+  await screen.findByText(ROUTE.verdict.label)
+
+  expect(screen.getByRole("button", { name: /Новый маршрут/ })).toHaveClass("act--wide")
+  for (const name of [/Разбор от ИИ/, /Сохранённые/]) {
+    expect(screen.getByRole("button", { name })).not.toHaveClass("act--wide")
+  }
 })
 
 test("разбор маршрута показывает текст", async () => {

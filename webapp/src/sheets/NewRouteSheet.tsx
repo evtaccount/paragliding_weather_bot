@@ -25,7 +25,7 @@ import { useMemo, useState } from "react"
 import { useParseRoute, useSaveRoute, useSites } from "../api/queries"
 import type { ParseRouteInput, RoutePointRow } from "../api/queries"
 import type { Site } from "../api/types"
-import { fmtNum } from "../format"
+import { fmtNum, fmtPoints } from "../format"
 import { MapView } from "../map/MapView"
 import { ErrorBox } from "../ui/ErrorBox"
 import { Spinner } from "../ui/Spinner"
@@ -156,12 +156,20 @@ export function NewRouteSheet({ onApply }: Props) {
         </div>
       )}
 
+      {/* Пустой набор не применяется: нажатие ЗАМЕНЯЕТ маршрут, показанный на
+          вкладке, — и пустым набором стёрло бы уже посчитанный. Сценарий из
+          ревью задачи 13 (N10): разбор не удался, и пилот жмёт единственную
+          заметную кнопку внизу, чтобы просто выйти. Порог здесь «есть хоть
+          одна точка», а не route.MIN_POINTS: сколько точек нужно расчёту,
+          знает сервер (api.py:_points_or_400), и это его отказ, а не запрет
+          приложения. */}
       <button
         type="button"
         className="btn btn--primary"
+        disabled={points.length === 0}
         onClick={() => onApply(points, name.trim() === "" ? null : name.trim())}
       >
-        Показать маршрут · {points.length} точек
+        Показать маршрут · {fmtPoints(points.length)}
       </button>
     </>
   )

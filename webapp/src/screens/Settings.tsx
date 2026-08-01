@@ -10,9 +10,11 @@
 // подмножество (api.py:PrefsPatch — все поля необязательные), поэтому
 // переключение тумблера не перезаписывает скорость и наоборот.
 //
-// Пределы (скорость 10–45 км/ч — store.SPEED_MIN/MAX, набор ключей моделей —
-// engine.MODELS) на клиенте не продублированы: шаг «плюс» отправляет
-// значение, и если сервер его не принял, показывается его же объяснение.
+// Пределы (маршрутная скорость — store.SPEED_MIN/SPEED_MAX, набор ключей
+// моделей — engine.MODELS) на клиенте не продублированы: шаг «плюс»
+// отправляет значение, и если сервер его не принял, показывается его же
+// объяснение. Сами числа не названы даже в этом комментарии — иначе он
+// разошёлся бы с домом при первой правке констант (ревью задачи 13, N8).
 import { useState } from "react"
 import { usePrefs, useSites, useUpdatePrefs } from "../api/queries"
 import type { Site } from "../api/types"
@@ -45,11 +47,12 @@ export function Settings({
   const prefs = usePrefs()
   const sites = useSites()
   const update = useUpdatePrefs()
-  // Черновики скорости и тумблера — на время, пока PATCH в пути: до ответа
-  // сервера в кэше лежит прежнее значение, и без черновика второе нажатие
-  // «плюс» отправило бы то же самое число, а тумблер визуально не сдвинулся
-  // бы вовсе. Отказ сервера сбрасывает черновик — на экране снова правда из
-  // store, а не то, что пилот хотел.
+  // Черновики скорости и тумблера — ТОЛЬКО на время, пока PATCH в пути: до
+  // ответа сервера в кэше лежит прежнее значение, и без черновика нажатие не
+  // отражалось бы на экране вовсе. Снимаются в onSettled, то есть и при
+  // успехе, и при отказе: пережив ответ, черновик перекрывал бы и заново
+  // запрошенные настройки — на экране навсегда осталось бы то, что пилот
+  // хотел, а не то, что лежит в store (ревью задачи 13, N9).
   const [speedDraft, setSpeedDraft] = useState<number | null>(null)
   const [windDraft, setWindDraft] = useState<boolean | null>(null)
 
@@ -60,27 +63,28 @@ export function Settings({
   const windOn = windDraft ?? prefs.data.wind_correction_enabled
   const modelLabel = prefs.data.models.find((m) => m.key === prefs.data.model_key)?.label ?? prefs.data.model_key
 
+  // Пока PATCH в пути, обе правки настроек заперты. Иначе два нажатия дают два
+  // одновременных запроса на один и тот же ключ, порядок ответов не
+  // гарантирован, и «+ потом −» может оставить в store 26, когда пилот
+  // остановился на 25 (ревью задачи 13, N9). Запрос лёгкий, ждать его — доли
+  // секунды.
+  const saving = update.isPending
+
   function stepSpeed(delta: number): void {
     const next = speed + delta
     setSpeedDraft(next)
-    update.mutate({ avg_route_speed_kmh: next }, { onError: () => setSpeedDraft(null) })
+    update.mutate({ avg_route_speed_kmh: next }, { onSettled: () => setSpeedDraft(null) })
   }
 
   function toggleWind(): void {
     const next = !windOn
     setWindDraft(next)
-    update.mutate({ wind_correction_enabled: next }, { onError: () => setWindDraft(null) })
+    update.mutate({ wind_correction_enabled: next }, { onSettled: () => setWindDraft(null) })
   }
 
   function openModelSheet(): void {
     sheets.push(
-      <ModelPickerSheet
-        models={prefs.data?.models ?? []}
-        permanent={prefs.data?.model_key ?? null}
-        once={onceModel}
-        onPickOnce={onPickOnce}
-        onPickPermanent={onPickPermanent}
-      />,
+      <ModelPickerSheet once={onceModel} onPickOnce={onPickOnce} onPickPermanent={onPickPermanent} />,
       "Метеомодель",
     )
   }
@@ -93,7 +97,7 @@ export function Settings({
   }
 
   function openAddSite(): void {
-    sheets.push(<AddSiteSheet sites={sites.data ?? []} onCreated={() => sheets.pop()} />, "Добавить старт")
+    sheets.push(<AddSiteSheet onCreated={() => sheets.pop()} />, "Добавить старт")
   }
 
   return (
@@ -120,9 +124,9 @@ export function Settings({
           subtitle="С учётом наборов в термиках, не скорость крыла"
           value={
             <div className="stepper">
-              <button type="button" aria-label="Уменьшить маршрутную скорость" onClick={() => stepSpeed(-1)}>−</button>
+              <button type="button" aria-label="Уменьшить маршрутную скорость" disabled={saving} onClick={() => stepSpeed(-1)}>−</button>
               <b>{fmtNum(speed)} км/ч</b>
-              <button type="button" aria-label="Увеличить маршрутную скорость" onClick={() => stepSpeed(1)}>+</button>
+              <button type="button" aria-label="Увеличить маршрутную скорость" disabled={saving} onClick={() => stepSpeed(1)}>+</button>
             </div>
           }
         />
@@ -131,7 +135,7 @@ export function Settings({
             role="switch" висит на декоративном кружке внутри кнопки — так
             скринридер объявляет строку обычной кнопкой, а состояние
             «включено/выключено» остаётся на элементе, который не нажимают. */}
-        <button type="button" className="row" role="switch" aria-checked={windOn} onClick={toggleWind}>
+        <button type="button" className="row" role="switch" aria-checked={windOn} disabled={saving} onClick={toggleWind}>
           <div className="row__m">
             <div className="row__t">Учитывать ветер во времени прилёта</div>
             <div className="row__s">Марш вперёд: GS = V·cos(WCA) + попутная составляющая</div>

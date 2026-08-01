@@ -146,7 +146,11 @@ const NO_ROUTE_POINTS: RoutePointRow[] = []
 // Возвращает null и когда список стартов ещё грузится, и когда он пуст —
 // оба случая различает разметка ниже (sites.isPending), а не эта функция:
 // ей самой достаточно знать только "есть ли имя старта".
-function siteName(sites: Site[] | undefined): string | null {
+// Экспортируется ради выбиралки старта (sheets/SitePickerSheet.tsx): отметку
+// «текущий» она ставит по тому же правилу, по которому оболочка выбирает
+// старт, — иначе при пустом selectedSite шторка не отметила бы ни одного
+// старта, хотя приложение показывает первый.
+export function siteName(sites: Site[] | undefined): string | null {
   return sites?.[0]?.name ?? null
 }
 
@@ -274,7 +278,20 @@ function ShellContent() {
     if (bodyRef.current) bodyRef.current.scrollTop = 0
   }, [tab])
 
-  const site = selectedSite ?? siteName(sites.data)
+  // Выбранный старт действует, только пока он есть в библиотеке. Удалили его
+  // (здесь на вкладке «Настройки», в чате командой /delsite или с другого
+  // устройства) — приложение возвращается к запасному варианту, а не показывает
+  // призрак: запрос по исчезнувшему старту получает 404 (api.py:_site_or_404),
+  // а пока в кэше TanStack лежит его прогноз (staleTime 5 минут) — пилот
+  // смотрел бы прогноз старта, которого нет. Найдено ревью задачи 13 (N5).
+  //
+  // Проверка ТОЛЬКО по загруженному списку: пока sites.data не пришёл,
+  // «старта нет в списке» ничего не значит, и сбрасывать выбор нельзя —
+  // иначе холодный старт приложения терял бы выбор пилота на каждый
+  // ре-рендер до ответа сервера.
+  const selectionAlive =
+    selectedSite !== null && (sites.data === undefined || sites.data.some((s) => s.name === selectedSite))
+  const site = selectionAlive ? selectedSite : siteName(sites.data)
   const model = onceModel ?? prefs.data?.model_key ?? null
 
   // Тап по дню в «Обзоре» — настоящее переключение (старт и дата ИМЕННО
@@ -299,11 +316,20 @@ function ShellContent() {
     sheets.pop()
   }
 
+  // Данные шторкам НЕ передаются: sheets.push кладёт в стек готовый элемент,
+  // и его пропы застывают на момент нажатия (SheetsProvider отдаёт тот же
+  // объект элемента на каждом рендере). Шторка, открытая до ответа сервера,
+  // так навсегда оставалась с пустым списком: пилот жал имя старта на холодном
+  // старте и читал «Нет стартов», когда старты уже пришли (ревью задачи 13,
+  // N2). Поэтому список стартов и настройки шторки читают сами — подпиской
+  // на тот же кэш TanStack, что и оболочка.
+  //
+  // Через проп идёт только `selected` — сырой выбор пилота, а не вычисленный
+  // `site`: измениться, пока шторка открыта, он не может (все три места, где
+  // он меняется, эту шторку закрывают или живут на другом экране), а запасной
+  // старт шторка выберет по тому же siteName() из живого списка.
   function openSitePicker(): void {
-    sheets.push(
-      <SitePickerSheet sites={sites.data ?? []} current={site} onPick={pickSite} />,
-      "Старт",
-    )
+    sheets.push(<SitePickerSheet selected={selectedSite} onPick={pickSite} />, "Старт")
   }
 
   // Разовая модель применяется сразу и никуда не сохраняется; постоянную
@@ -312,8 +338,6 @@ function ShellContent() {
   function openModelPicker(): void {
     sheets.push(
       <ModelPickerSheet
-        models={prefs.data?.models ?? []}
-        permanent={prefs.data?.model_key ?? null}
         once={onceModel}
         onPickOnce={(key) => { setOnceModel(key); sheets.pop() }}
         onPickPermanent={() => { setOnceModel(null); sheets.pop() }}

@@ -8,17 +8,22 @@
 // Удаления маршрута тут нет намеренно: макет его не предлагает, а в чате
 // оно есть (/delroute, bot.py:1100) — тупика для пилота не возникает.
 import { useSavedRoutes } from "../api/queries"
+import { fmtPoints } from "../format"
 import type { RoutePointRow } from "../api/queries"
 import type { SavedRoute } from "../api/types"
 import { ErrorBox } from "../ui/ErrorBox"
 import { Spinner } from "../ui/Spinner"
 
-// SavedRoute.points описан по фикстуре как (number | string)[][] (api/
-// types.ts) — форма «строка точки» там не сужена, а расчёту маршрута нужен
-// именно RoutePointRow. Приведение живёт здесь, а не в типах: store пишет
-// точки как [[p.lat, p.lon, p.name]] (api.py:save_route), где p.name —
-// `str | None` (route.py:330), то есть третий элемент бывает и строкой, и
-// null, и его нельзя просто привести к string.
+// SavedRoute.points — «сырая» форма хранения: список списков, у которого
+// третий элемент бывает и строкой, и null (api/types.ts:SavedRoute;
+// api.py:save_route пишет [[p.lat, p.lon, p.name]], а route.py:330 типизирует
+// p.name как `str | None`). Расчёту маршрута нужна строгая тройка
+// RoutePointRow, поэтому приведение живёт здесь, а не в типах.
+//
+// Проверка `typeof p[2] === "string"` не избыточна: без неё безымянная точка
+// уехала бы в POST /api/route строкой "null" — а трек из GPX без подписей
+// точек как раз такой (ревью задачи 13, N3: прежний комментарий называл тип
+// неверно и звал эту проверку снять).
 function toRows(points: SavedRoute["points"]): RoutePointRow[] {
   return points.map((p) => [Number(p[0]), Number(p[1]), typeof p[2] === "string" ? p[2] : null])
 }
@@ -52,7 +57,7 @@ export function SavedRoutesSheet({ onPick }: Props) {
             onClick={() => onPick(route.name, toRows(route.points))}
           >
             <b>{route.name}</b>
-            <s>{route.points.length} точек · {route.saved_at}</s>
+            <s>{fmtPoints(route.points.length)} · {route.saved_at}</s>
           </button>
         ))}
       </div>

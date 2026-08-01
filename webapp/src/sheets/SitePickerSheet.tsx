@@ -14,7 +14,8 @@
 // соседнего старта — ровно этот класс дефекта был Critical задачи 10 (тап
 // по дню второго старта открывал прогноз первого).
 import { useState } from "react"
-import { useDeleteSite } from "../api/queries"
+import { siteName } from "../App"
+import { useDeleteSite, useSites } from "../api/queries"
 import type { Site } from "../api/types"
 import { colorOfCategory } from "../charts/palette"
 import { fmtNum } from "../format"
@@ -34,15 +35,30 @@ export function siteSubtitle(site: Site): string {
 }
 
 type PickerProps = {
-  sites: Site[]
-  current: string | null
+  // Сырой выбор пилота (null — явного выбора ещё не было), а не вычисленный
+  // «текущий старт»: запасной вариант шторка считает сама, из СВЕЖЕГО списка.
+  selected: string | null
   onPick: (name: string) => void
 }
 
-export function SitePickerSheet({ sites, current, onPick }: PickerProps) {
-  const notes = sites.find((s) => s.name === current)?.notes ?? ""
+export function SitePickerSheet({ selected, onPick }: PickerProps) {
+  // Список читается здесь, а не приходит пропом: шторку кладут в стек готовым
+  // элементом, и проп застыл бы на момент нажатия — открытая до ответа
+  // сервера шторка так навсегда оставалась с «Нет стартов» (ревью задачи 13,
+  // N2). Запрос тот же самый (ключ ["sites"]), поэтому второго обращения к
+  // сети не происходит — подписка на общий кэш.
+  const sites = useSites()
 
-  if (sites.length === 0) {
+  if (sites.isPending) return <Spinner />
+  if (sites.isError) return <ErrorBox error={sites.error} onRetry={() => { void sites.refetch() }} />
+
+  // Тем же правилом, что и оболочка (App.tsx: site = selectedSite ?? siteName),
+  // иначе при пустом выборе шторка не отметила бы ни одного старта, хотя
+  // приложение показывает первый.
+  const current = selected ?? siteName(sites.data)
+  const notes = sites.data.find((s) => s.name === current)?.notes ?? ""
+
+  if (sites.data.length === 0) {
     return (
       <div className="empty">
         <b>Нет стартов</b>
@@ -54,7 +70,7 @@ export function SitePickerSheet({ sites, current, onPick }: PickerProps) {
   return (
     <>
       <div className="pick">
-        {sites.map((site) => (
+        {sites.data.map((site) => (
           <button
             key={site.name}
             type="button"

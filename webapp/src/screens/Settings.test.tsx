@@ -49,7 +49,9 @@ function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } })
 }
 
-function stubFetch(reply: (url: string, init?: RequestInit) => Response): void {
+// Ответ может быть и промисом: тесту про «шторку открыли до ответа сервера»
+// нужен запрос, который разрешается по команде, а не сразу.
+function stubFetch(reply: (url: string, init?: RequestInit) => Response | Promise<Response>): void {
   vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
     calls.push({ url: String(url), method: init?.method ?? "GET", body: init?.body })
     return Promise.resolve(reply(String(url), init))
@@ -264,6 +266,37 @@ test("разовая модель не пишется в настройки", as
   expect(screen.getByRole("button", { name: /GFS · разово/ })).toBeInTheDocument()
 })
 
+// Ревью задачи 13 (N2): шторка кладётся в стек ГОТОВЫМ элементом, и её пропы
+// застывали на момент нажатия. Чип модели нажимается и пока настройки в пути
+// (в нём крутится индикатор), и шторка, открытая в этот момент, оставалась с
+// двумя пустыми списками навсегда — даже после прихода /api/prefs. Тест
+// повторяет именно этот порядок: сначала открыть, потом ответить.
+test("шторка модели, открытая до ответа настроек, показывает пришедшие модели", async () => {
+  let deliverPrefs = (): void => { throw new Error("настройки не запрашивались") }
+  const pending = new Promise<Response>((resolve) => {
+    deliverPrefs = () => { resolve(json(prefsState)) }
+  })
+  stubFetch((url, init) => {
+    const path = url.split("?")[0]
+    const method = init?.method ?? "GET"
+    return path === "/api/prefs" && method === "GET" ? pending : defaultReply(url, init)
+  })
+
+  render(<StrictMode><App /></StrictMode>)
+
+  // Пока настроек нет, чип подписан индикатором загрузки — и всё равно
+  // нажимается (в макете он кнопка всегда, prototype.html:423).
+  await userEvent.click(await screen.findByRole("button", { name: "Загрузка" }))
+  expect(screen.getByRole("dialog", { name: "Метеомодель" })).toBeInTheDocument()
+
+  deliverPrefs()
+
+  const permanent = await screen.findByRole("group", { name: /Постоянная/ })
+  expect(within(permanent).getByRole("button", { name: /ICON/ })).toBeInTheDocument()
+  const once = screen.getByRole("group", { name: /Разово/ })
+  expect(within(once).getByRole("button", { name: /GFS/ })).toBeInTheDocument()
+})
+
 // ------------------------------------------------------------ маршрут
 
 test("скорость по маршруту сохраняется", async () => {
@@ -275,6 +308,49 @@ test("скорость по маршруту сохраняется", async () =
   await waitFor(() => { expect(callsTo("/api/prefs", "PATCH")).toHaveLength(1) })
   expect(body(callsTo("/api/prefs", "PATCH")[0]!)).toEqual({ avg_route_speed_kmh: 26 })
   expect(await screen.findByText("26 км/ч")).toBeInTheDocument()
+})
+
+// Ревью задачи 13 (N9): черновик скорости снимался только при отказе, поэтому
+// после успеха он навсегда перекрывал настройки, пришедшие с сервера. Здесь
+// сервер отвечает на PATCH ДРУГИМ числом, чем прислал клиент, — так выглядит
+// и правка с другого устройства, и любое серверное решение о значении:
+// на экране обязана оказаться правда из store, а не желание пилота.
+test("после ответа сервера на экране его значение, а не черновик", async () => {
+  stubFetch((url, init) => {
+    const path = url.split("?")[0]
+    if (path === "/api/prefs" && init?.method === "PATCH") {
+      prefsState = { ...prefsState, avg_route_speed_kmh: 30 }
+      return json(prefsState)
+    }
+    return defaultReply(url, init)
+  })
+  renderSettings()
+
+  expect(await screen.findByText("25 км/ч")).toBeInTheDocument()
+  await userEvent.click(screen.getByRole("button", { name: "Увеличить маршрутную скорость" }))
+
+  expect(await screen.findByText("30 км/ч")).toBeInTheDocument()
+})
+
+// Ревью задачи 13 (N9), вторая половина: два нажатия подряд шлют два PATCH на
+// один и тот же ключ, и порядок их обработки сервером ничем не задан — «+»,
+// затем «−» может оставить в store 26, когда пилот остановился на 25. Пока
+// первый запрос в пути, степпер заперт.
+test("второй шаг скорости не уходит, пока первый в полёте", async () => {
+  stubFetch((url, init) => {
+    const path = url.split("?")[0]
+    if (path === "/api/prefs" && init?.method === "PATCH") return new Promise<Response>(() => {})
+    return defaultReply(url, init)
+  })
+  renderSettings()
+
+  const plus = await screen.findByRole("button", { name: "Увеличить маршрутную скорость" })
+  await userEvent.click(plus)
+  await waitFor(() => { expect(plus).toBeDisabled() })
+  await userEvent.click(screen.getByRole("button", { name: "Уменьшить маршрутную скорость" }))
+
+  expect(callsTo("/api/prefs", "PATCH")).toHaveLength(1)
+  expect(body(callsTo("/api/prefs", "PATCH")[0]!)).toEqual({ avg_route_speed_kmh: 26 })
 })
 
 // Тумблер поправки на ветер иначе не покрыт ничем: он меняет расчёт времени

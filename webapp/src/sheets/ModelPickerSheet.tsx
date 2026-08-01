@@ -12,17 +12,23 @@
 // Список моделей приходит с сервера вместе с настройками (api.py:
 // _prefs_payload кладёт [{key, label}] по engine.MODELS) — своего перечня
 // моделей у приложения нет и быть не может: ключ, которого нет в
-// engine.MODELS, сервер отклонит с 400.
-import type { Model } from "../api/types"
-import { useUpdatePrefs } from "../api/queries"
+// engine.MODELS, сервер отклонит с 400. Читаются настройки ЗДЕСЬ, а не
+// приходят пропами: шторку кладут в стек готовым элементом, и пропы застыли
+// бы на момент нажатия — открытая до ответа /api/prefs шторка навсегда
+// осталась бы с двумя пустыми списками (ревью задачи 13, N2).
+//
+// У пунктов нет подписи `<s>` из макета (там — `m.note`, короткое пояснение
+// про модель, prototype.html:1659, 1677): api._prefs_payload шлёт только
+// {key, label}, и брать пояснение неоткуда. Выдумывать текст про чужую
+// метеомодель нельзя — это утверждение о том, чего приложение не знает.
+import { usePrefs, useUpdatePrefs } from "../api/queries"
 import { ErrorBox } from "../ui/ErrorBox"
 import { Spinner } from "../ui/Spinner"
 
 type Props = {
-  models: Model[]
-  // Постоянная модель пилота (prefs.model_key) и разовая, выбранная в этом
-  // сеансе (null — разового выбора не было).
-  permanent: string | null
+  // Разовая модель, выбранная в этом сеансе (null — разового выбора не было).
+  // Пропом, а не из настроек: разовый выбор нигде не сохраняется и живёт
+  // только в оболочке (App.tsx). Застыть он не может — выбор закрывает шторку.
   once: string | null
   onPickOnce: (key: string) => void
   // Зовётся только после УСПЕШНОГО PATCH: пока сервер не подтвердил, шторку
@@ -31,12 +37,19 @@ type Props = {
   onPickPermanent: (key: string) => void
 }
 
-export function ModelPickerSheet({ models, permanent, once, onPickOnce, onPickPermanent }: Props) {
+export function ModelPickerSheet({ once, onPickOnce, onPickPermanent }: Props) {
+  const prefs = usePrefs()
   const update = useUpdatePrefs()
 
   function setPermanent(key: string): void {
     update.mutate({ model_key: key }, { onSuccess: () => onPickPermanent(key) })
   }
+
+  if (prefs.isPending) return <Spinner />
+  if (prefs.isError) return <ErrorBox error={prefs.error} onRetry={() => { void prefs.refetch() }} />
+
+  const models = prefs.data.models
+  const permanent = prefs.data.model_key
 
   return (
     <>

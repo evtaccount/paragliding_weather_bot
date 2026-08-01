@@ -46,3 +46,18 @@ export function fmtWind(ms: number): string {
 export function fmtHour(h: number): string {
   return `${String(h).padStart(2, "0")}:00`
 }
+
+// Число точек маршрута с правильным окончанием: 1 точка, 2 точки, 5 точек,
+// 11 точек, 21 точка. Нужно в двух местах — в подписи сохранённого маршрута
+// («N точек · дата», sheets/SavedRoutesSheet.tsx) и на кнопке «Показать
+// маршрут» в шторке нового маршрута, — поэтому живёт здесь, а не копией в
+// каждой шторке. Правило обычное для русского счёта: 11-14 всегда «точек»,
+// иначе смотрим на последнюю цифру.
+export function fmtPoints(count: number): string {
+  const lastTwo = Math.abs(count) % 100
+  const last = Math.abs(count) % 10
+  if (lastTwo >= 11 && lastTwo <= 14) return `${count} точек`
+  if (last === 1) return `${count} точка`
+  if (last >= 2 && last <= 4) return `${count} точки`
+  return `${count} точек`
+}
