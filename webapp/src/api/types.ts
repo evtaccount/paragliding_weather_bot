@@ -99,17 +99,30 @@ export type HourFact = {
   cape: number
   sun_elev_deg: number
   sun_az_deg: number
-  slope_sun_index: number
-  score: number
+  // slope_sun_index — null у старта без размеченной экспозиции: engine.py:
+  // slope_sun_index() — «None when the aspect is unknown (ad-hoc point)».
+  // Найдено эмпирически при прогоне facts_1d_no_ceiling.json (aspect: null) —
+  // в исходном ревью этого поля не было, но tsc реально упал на нём.
+  slope_sun_index: number | null
+  // score/lim — criteria.py:HourAssessment.compact(): score может быть null
+  // (533-534), lim (limiting) не ставится, когда ограничивать нечего (666-670).
+  score: number | null
   cat: string
-  lim: string
+  lim: string | null
+  // veto — ключ добавляется, только когда есть сработавшие вето
+  // (criteria.py:536-537: `if self.vetoes: d["veto"] = self.vetoes`), поэтому
+  // это необязательный ключ, а не поле с null. См. facts_1d_windy.json.
+  veto?: string[]
 }
 
 export type Facts = {
   site: {
     name: string
-    aspect: string
-    aspect_deg: number
+    // aspect/aspect_deg — null у старта без размеченной экспозиции
+    // (engine.py:1041: `card(aspect) if aspect is not None else None`).
+    // См. facts_1d_no_ceiling.json (SITE_NO_ASPECT).
+    aspect: string | null
+    aspect_deg: number | null
     elevation_m: number
     timezone: string
     model: string
@@ -126,9 +139,13 @@ export type Facts = {
   assessment: Assessment
   precip_sum_mm: number
   cape_max: number
-  freezing_level_m: number
-  thermal_ceiling_m_agl: number
-  thermal_ceiling_m_msl: number
+  // freezing_level_m/thermal_ceiling_m_agl/msl — null, когда модель не отдаёт
+  // boundary_layer_height/freezing_level_height (ECMWF, модель бота по
+  // умолчанию — engine.py:_series_available, engine.py:1005-1006,1050-1052).
+  // См. facts_1d_no_ceiling.json.
+  freezing_level_m: number | null
+  thermal_ceiling_m_agl: number | null
+  thermal_ceiling_m_msl: number | null
   lcl_m_agl: number
   blue_thermals: boolean
   peak_hour: number
@@ -138,80 +155,93 @@ export type Facts = {
   caveats: string[]
   hourly_daytime: HourFact[]
   wind_profile_peak_hour: { level: string; alt_m_msl: number; wind_ms: number; dir_deg: number }[]
+  // derived_peak_hour — engine.py:1070-1072 строит словарь через
+  // `{k: v for k, v in derive_hour(...).items() if v is not None}`: параметр
+  // без данных не зануляется, а ОТСУТСТВУЕТ как ключ. Поэтому каждое поле
+  // необязательное (`?:`), а не `| null`. См. facts_1d_windy.json (нет
+  // lifted_index) и facts_1d_no_ceiling.json (нет w_star/bl_depth/dir_offset/
+  // base_over_route/foehn_suspect).
   derived_peak_hour: {
-    wind_10m: number
-    wind_925: number
-    wind_850: number
-    gust_factor: number
-    gust_delta: number
-    dir_offset: number
-    w_star: number
-    bl_depth: number
-    thermal_index: number
-    cape: number
-    lifted_index: number
-    cloud_low: number
-    base_clearance: number
-    precip_prob: number
-    visibility: number
-    shear_100m: number
-    spread: number
-    window_hours: number
-    precip_mm: number
-    cin: number
-    wind_at_base: number
-    base_over_route: number
-    dir_misalign: number
-    ti_level_m: number
-    foehn_suspect: boolean
+    wind_10m?: number
+    wind_925?: number
+    wind_850?: number
+    gust_factor?: number
+    gust_delta?: number
+    dir_offset?: number
+    w_star?: number
+    bl_depth?: number
+    thermal_index?: number
+    cape?: number
+    lifted_index?: number
+    cloud_low?: number
+    base_clearance?: number
+    precip_prob?: number
+    visibility?: number
+    shear_100m?: number
+    spread?: number
+    window_hours?: number
+    precip_mm?: number
+    cin?: number
+    wind_at_base?: number
+    base_over_route?: number
+    dir_misalign?: number
+    ti_level_m?: number
+    foehn_suspect?: boolean
   }
 }
 
 // -------------------------------------------------------------- route.json
 // Одна точка маршрута несёт "сырую" почасовую погоду под теми же ключами,
 // что и открытый прогноз open-meteo (см. tests/fixtures.HOURLY_DEFAULTS).
-
+//
+// Каждое поле — `number | null`, а не только `number`: forecast.py:_hourly_facts
+// (507-517) кладёт КЛЮЧ для каждой почасовой переменной БЕЗУСЛОВНО (`for key in
+// H`), а вот значение — через route.interp/_bracket (route.py:542-563), которые
+// возвращают None и когда всего ряда нет (модель его не отдаёт), и когда сам час
+// внутри ряда null. Ключ не пропадает — пропадает только значение. Проверено:
+// forecast._hourly_facts на теле с om_null(..., "boundary_layer_height",
+// "freezing_level_height") — оба ключа присутствуют со значением None.
 export type RouteWeather = {
-  temperature_2m: number
-  dew_point_2m: number
-  relative_humidity_2m: number
-  wind_speed_10m: number
-  wind_gusts_10m: number
-  wind_direction_10m: number
-  wind_speed_80m: number
-  wind_direction_80m: number
-  wind_speed_120m: number
-  wind_direction_120m: number
-  precipitation: number
-  precipitation_probability: number
-  cape: number
-  lifted_index: number
-  convective_inhibition: number
-  visibility: number
-  shortwave_radiation: number
-  cloud_cover_low: number
-  cloud_cover_mid: number
-  cloud_cover_high: number
-  boundary_layer_height: number
-  freezing_level_height: number
-  temperature_850hPa: number
-  temperature_700hPa: number
-  relative_humidity_925hPa: number
-  wind_speed_925hPa: number
-  wind_direction_925hPa: number
-  geopotential_height_925hPa: number
-  wind_speed_850hPa: number
-  wind_direction_850hPa: number
-  geopotential_height_850hPa: number
-  wind_speed_700hPa: number
-  wind_direction_700hPa: number
-  geopotential_height_700hPa: number
-  wind_speed_600hPa: number
-  wind_direction_600hPa: number
-  geopotential_height_600hPa: number
-  wind_speed_500hPa: number
-  wind_direction_500hPa: number
-  geopotential_height_500hPa: number
+  temperature_2m: number | null
+  dew_point_2m: number | null
+  relative_humidity_2m: number | null
+  wind_speed_10m: number | null
+  wind_gusts_10m: number | null
+  wind_direction_10m: number | null
+  wind_speed_80m: number | null
+  wind_direction_80m: number | null
+  wind_speed_120m: number | null
+  wind_direction_120m: number | null
+  precipitation: number | null
+  precipitation_probability: number | null
+  cape: number | null
+  lifted_index: number | null
+  convective_inhibition: number | null
+  visibility: number | null
+  shortwave_radiation: number | null
+  cloud_cover_low: number | null
+  cloud_cover_mid: number | null
+  cloud_cover_high: number | null
+  boundary_layer_height: number | null
+  freezing_level_height: number | null
+  temperature_850hPa: number | null
+  temperature_700hPa: number | null
+  relative_humidity_925hPa: number | null
+  wind_speed_925hPa: number | null
+  wind_direction_925hPa: number | null
+  geopotential_height_925hPa: number | null
+  wind_speed_850hPa: number | null
+  wind_direction_850hPa: number | null
+  geopotential_height_850hPa: number | null
+  wind_speed_700hPa: number | null
+  wind_direction_700hPa: number | null
+  geopotential_height_700hPa: number | null
+  wind_speed_600hPa: number | null
+  wind_direction_600hPa: number | null
+  geopotential_height_600hPa: number | null
+  wind_speed_500hPa: number | null
+  wind_direction_500hPa: number | null
+  geopotential_height_500hPa: number | null
 }
 
 export type RoutePoint = {
@@ -253,9 +283,13 @@ export type RoutePoint = {
   time_margin_min: number | null
   w_star_ms: number | null
   site_match: string | null
-  // weather — {} (без единого ключа) у точек с eta is None (см. eta выше);
-  // иначе полный набор почасовых величин. Partial честно отражает оба случая.
-  weather: Partial<RouteWeather>
+  // weather — {} (без единого ключа) у точек с eta is None (route.py:Sample.weather
+  // по умолчанию `field(default_factory=dict)`, а forecast.py:_evaluate не
+  // вызывает _hourly_facts для таких точек — см. eta выше); иначе — ПОЛНЫЙ набор
+  // из 40 ключей (см. комментарий у RouteWeather), каждый — число или null.
+  // Partial<RouteWeather> был неверен: он допускал ЧАСТИЧНО заполненный объект,
+  // а домен отдаёт только "все 40 ключей" или "ни одного".
+  weather: RouteWeather | Record<string, never>
   profile: string
   // score/category/limiting вместе становятся null, когда s.assessment is None
   // (forecast.py:_point_dict — `None if s.assessment is None else ...`,
