@@ -21,6 +21,21 @@
 		reverse_proxy pgbot:{$API_PORT:8080}
 	}
 
+	# Тайлы идут через свой домен, а не напрямую к tile.openstreetmap.org:
+	# прямой запрос с устройства пилота отдал бы чужому серверу и адрес
+	# устройства, и район, куда он смотрит. Правила использования тайлов
+	# OpenStreetMap требуют, чтобы клиент себя называл в User-Agent —
+	# безымянный поток запросов там блокируют, поэтому header_up переписывает
+	# его на имя приложения перед отправкой апстриму. Блок стоит выше общего
+	# handle — иначе тот отдал бы файл (или 404) на путь /tiles/*, до прокси
+	# дело не дошло бы.
+	handle /tiles/* {
+		reverse_proxy https://tile.openstreetmap.org {
+			header_up Host tile.openstreetmap.org
+			header_up User-Agent "paragliding-bot-miniapp/1.0 (+https://{$PUBLIC_DOMAIN})"
+		}
+	}
+
 	handle {
 		root * /srv/www
 		try_files {path} /index.html

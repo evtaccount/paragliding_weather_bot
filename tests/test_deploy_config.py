@@ -119,3 +119,19 @@ def test_compose_sets_api_host_to_all_interfaces_for_pgbot():
     text = _read("docker-compose.yml")
     pgbot_block = text.split("\n  caddy:")[0]  # услуги идут по порядку: pgbot, затем caddy
     assert "API_HOST=0.0.0.0" in pgbot_block
+
+
+def test_tiles_are_proxied_through_our_own_domain():
+    """Клиент ходит за тайлами только к своему домену: прямые запросы к
+    tile.openstreetmap.org показали бы чужому сервису адрес каждого пилота и
+    район, куда он смотрит. Ради этого прокси и заводился."""
+    text = _read("Caddyfile")
+    assert "handle /tiles/*" in text
+    assert "tile.openstreetmap.org" in text
+
+
+def test_tile_proxy_names_the_application_in_user_agent():
+    """Правила использования тайлов OpenStreetMap требуют, чтобы клиент себя
+    называл. Безымянный поток запросов там блокируют."""
+    text = _read("Caddyfile")
+    assert "header_up User-Agent" in text
