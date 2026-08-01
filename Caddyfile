@@ -29,7 +29,21 @@
 	# его на имя приложения перед отправкой апстриму. Блок стоит выше общего
 	# handle — иначе тот отдал бы файл (или 404) на путь /tiles/*, до прокси
 	# дело не дошло бы.
+	#
+	# uri strip_prefix обязателен: клиент шлёт /tiles/{z}/{x}/{y}.png (см.
+	# webapp/src/map/MapView.tsx), а OpenStreetMap отдаёт тайлы по
+	# /{z}/{x}/{y}.png, БЕЗ префикса /tiles (см. канонический шаблон в
+	# webapp/node_modules/leaflet/src/layer/tile/TileLayer.js). Без среза
+	# наверх уходил бы буквально /tiles/10/637/380.png, и апстрим отвечал бы
+	# 404 на каждый тайл. Ровно симметричная (и ровно противоположная по
+	# знаку) история блоку /api/* выше: там handle_path срезал бы префикс,
+	# который бэкенду как раз нужен, поэтому там стоит handle и НЕ срезает;
+	# здесь handle префикс сохраняет, а тайловому серверу он как раз мешает —
+	# поэтому срез сделан явно директивой uri strip_prefix, а не сменой
+	# handle на handle_path (это заодно оставило бы неотличимым по тексту сам
+	# путь /tiles/* в конфиге).
 	handle /tiles/* {
+		uri strip_prefix /tiles
 		reverse_proxy https://tile.openstreetmap.org {
 			header_up Host tile.openstreetmap.org
 			header_up User-Agent "paragliding-bot-miniapp/1.0 (+https://{$PUBLIC_DOMAIN})"

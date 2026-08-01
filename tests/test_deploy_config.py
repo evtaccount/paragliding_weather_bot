@@ -135,3 +135,21 @@ def test_tile_proxy_names_the_application_in_user_agent():
     называл. Безымянный поток запросов там блокируют."""
     text = _read("Caddyfile")
     assert "header_up User-Agent" in text
+
+
+def test_tile_proxy_strips_the_tiles_prefix_before_the_upstream():
+    """Клиент шлёт /tiles/{z}/{x}/{y}.png (см. webapp/src/map/MapView.tsx),
+    а OpenStreetMap отдаёт тайлы по /{z}/{x}/{y}.png, БЕЗ префикса /tiles —
+    канонический шаблон виден в самом Leaflet, уже лежащем в проекте
+    (webapp/node_modules/leaflet/src/layer/tile/TileLayer.js). Без явного
+    среза наверх уходил бы буквально /tiles/10/637/380.png, и апстрим отвечал
+    бы 404 на каждый тайл — карта не показала бы ни одной картинки, при этом
+    caddy adapt и все остальные тесты остаются зелёными (они не смотрят,
+    что реально доезжает до чужого сервера). Симметрично истории с /api/*
+    выше (test_caddyfile_comment_matches_the_directive_it_uses) — там
+    handle_path срезал бы префикс, который бэкенду был нужен; здесь handle
+    префикс, наоборот, сохраняет, поэтому срез сделан явной директивой uri
+    strip_prefix внутри блока, а не сменой handle на handle_path."""
+    text = _read("Caddyfile")
+    tiles_block = text.split("handle /tiles/*")[1].split("\n\thandle {")[0]
+    assert "uri strip_prefix /tiles" in tiles_block
