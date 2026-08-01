@@ -1,0 +1,23 @@
+{
+  "avg_route_speed_kmh": 25.0,
+  "wind_correction_enabled": true,
+  "model_key": "ecmwf",
+  "models": [
+    {
+      "key": "auto",
+      "label": "Auto (best_match)"
+    },
+    {
+      "key": "ecmwf",
+      "label": "ECMWF"
+    },
+    {
+      "key": "gfs",
+      "label": "GFS"
+    },
+    {
+      "key": "icon",
+      "label": "ICON"
+    }
+  ]
+}
