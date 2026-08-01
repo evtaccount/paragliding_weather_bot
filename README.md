@@ -299,9 +299,11 @@ docker compose logs -f
 ### Caddy: домен, TLS и мини-приложение (фаза 3)
 
 - Переменные в `.env`: `PUBLIC_DOMAIN` (домен, который позже пропишете в
-  BotFather на фазе 5), `TLS_CERT_DIR` (каталог со своим сертификатом — внутри
-  ожидаются `fullchain.pem` и `privkey.pem`), `API_PORT` (порт uvicorn внутри
-  сети compose; наружу не публикуется — в интернет смотрит только Caddy).
+  BotFather на фазе 5) и `API_PORT` (порт uvicorn внутри сети compose; наружу
+  не публикуется — в интернет смотрит только Caddy).
+- Домен должен резолвиться в этот сервер: запись `A` на IPv4-адрес, `AAAA` на
+  IPv6, если он есть. Без этого Let's Encrypt не выдаст сертификат, а клиент
+  Telegram не найдёт приложение.
 - `docker compose up -d` поднимает **два** контейнера: `pgbot` (бот + API,
   порт виден только внутри сети compose) и `caddy` (порты 80/443 наружу, TLS,
   отдача статики, реверс-прокси `/api/*` на `pgbot:8080`).
@@ -312,9 +314,21 @@ docker compose logs -f
   BotFather и открыть `/` в клиенте Telegram — страница `static/index.html`
   спросит `/api/prefs` с подписанной `initData` и напишет «Подпись принята,
   HTTP 200» (или код отказа, если подпись не сошлась).
-- Автоматический Let's Encrypt вместо своего сертификата: удалить в
-  `Caddyfile` строку `tls /certs/fullchain.pem /certs/privkey.pem` целиком —
-  остальное менять не нужно, Caddy сам выпустит сертификат на `PUBLIC_DOMAIN`.
+- **Сертификат по умолчанию выпускает Caddy сам** (Let's Encrypt) и сам
+  продлевает — задавать ничего не нужно, хранится в томе `caddy-data`.
+- **Свой сертификат вместо автоматического** — две строки в `.env`, файлы под
+  git при этом не трогаются (иначе `git pull` на сервере ловил бы конфликт):
+
+  ```
+  COMPOSE_FILE=docker-compose.yml:docker-compose.own-cert.yml
+  TLS_CERT_DIR=/каталог/с/сертификатом
+  ```
+
+  Внутри каталога ждут `fullchain.pem` и `privkey.pem` — именно с такими
+  именами. `COMPOSE_FILE` читает сам compose, поэтому `docker compose up -d`
+  и `docker compose logs` дальше работают без флагов `-f`. Продление в этом
+  режиме на вас: смонтированные файлы Caddy не обновляет, после замены нужен
+  `docker compose restart caddy`.
 - `static/` — однофайловая заглушка ровно для проверки подписи живым
   клиентом Telegram; настоящий интерфейс (`webapp/`) появится на фазе 4, и
   `./static:/srv/www` в `docker-compose.yml` тогда сменится на

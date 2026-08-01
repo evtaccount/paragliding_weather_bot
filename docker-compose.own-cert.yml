@@ -1,0 +1,20 @@
+# Свой сертификат вместо автоматического Let's Encrypt.
+#
+# Включается одной строкой в .env — compose читает COMPOSE_FILE сам:
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.own-cert.yml
+#   TLS_CERT_DIR=/etc/ssl/pgbot
+# После этого обычные `docker compose up -d` и `docker compose logs` работают
+# как раньше: список файлов подставляется автоматически, флаги -f не нужны.
+#
+# Обе строки ниже — одно решение, поэтому и лежат в одном файле. Сниппет без
+# сертификатов роняет Caddy на старте («no such file»), сертификаты без
+# сниппета молча игнорируются, и Caddy выпускает Let's Encrypt, будто своего
+# сертификата нет.
+#
+# Продление — на вас: смонтированные файлы Caddy не обновляет. После замены
+# сертификата на хосте нужен `docker compose restart caddy`.
+services:
+  caddy:
+    volumes:
+      - ./deploy/caddy/own-cert:/etc/caddy/tls:ro
+      - ${TLS_CERT_DIR}:/certs:ro

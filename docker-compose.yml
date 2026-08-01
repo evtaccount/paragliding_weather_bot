@@ -46,7 +46,9 @@ services:
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ./static:/srv/www:ro
-      - ${TLS_CERT_DIR}:/certs:ro
+      # Сертификата здесь нет намеренно: по умолчанию Caddy выпускает его сам
+      # и хранит в caddy-data. Свой сертификат добавляет оверлей
+      # docker-compose.own-cert.yml — он же монтирует директиву tls.
       - caddy-data:/data
       - caddy-config:/config
     depends_on:

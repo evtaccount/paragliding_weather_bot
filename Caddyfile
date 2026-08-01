@@ -1,8 +1,15 @@
-# Домен и пути к сертификату приходят из окружения (см. .env.example).
+# Домен приходит из окружения (см. .env.example).
 {$PUBLIC_DOMAIN} {
-	# Свой купленный сертификат. Чтобы Caddy выпускал Let's Encrypt сам,
-	# удалить эту строку целиком — всё остальное менять не нужно.
-	tls /certs/fullchain.pem /certs/privkey.pem
+	# Пусто — и Caddy сам выпускает Let's Encrypt на {$PUBLIC_DOMAIN} и сам
+	# продлевает. Автоматика включается именно ОТСУТСТВИЕМ директивы tls:
+	# ключевого слова «выпусти сам» у Caddy нет.
+	#
+	# Свой сертификат подключается оверлеем docker-compose.own-cert.yml — он
+	# монтирует сюда deploy/caddy/own-cert/tls.caddy, и директива приезжает
+	# этой строкой. В автоматическом режиме каталога нет вовсе; маска не
+	# совпадает ни с чем, caddy пишет в лог «No files matching import glob
+	# pattern» и продолжает — это ожидаемо, чинить нечего.
+	import /etc/caddy/tls/*.caddy
 
 	encode zstd gzip
 

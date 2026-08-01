@@ -1,0 +1,8 @@
+# Фрагмент Caddyfile: включается только оверлеем docker-compose.own-cert.yml,
+# который монтирует этот каталог в /etc/caddy/tls, откуда его забирает
+# `import /etc/caddy/tls/*.caddy` в основном Caddyfile.
+#
+# Пути указывают внутрь контейнера. /certs — точка монтирования каталога из
+# TLS_CERT_DIR; имена файлов внутри должны быть ровно такими. Тот же оверлей
+# задаёт и том, и этот файл: разъедутся — Caddy упадёт на старте.
+tls /certs/fullchain.pem /certs/privkey.pem
