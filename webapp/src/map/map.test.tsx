@@ -215,11 +215,20 @@ test("подгонка одноразовая: жест пилота не отм
 
   try {
     withContainerSize(VIEW_W, VIEW_H, () => {
-      const { rerender } = render(<MapView points={ROUTE_POINTS} sites={[]} />)
+      const { container, rerender } = render(<MapView points={ROUTE_POINTS} sites={[]} />)
       expect(map).not.toBeNull()
+      // Подгонка ДЕЙСТВИТЕЛЬНО произошла — иначе отменять было бы нечего, и
+      // всё, что ниже, зеленело бы само собой (ре-ревью task-12, N14).
+      expectRouteFillsFrame(container)
 
       // Пилот приблизил карту к своему узкому месту.
       map!.setView([43.9, 45.9], 14)
+      // Жест ДЕЙСТВИТЕЛЬНО сместил карту: без этой проверки обезвреженный
+      // setView (или подделка размера, переставшая работать после обновления
+      // Leaflet) оставил бы тест зелёным, хотя проверять стало нечего.
+      expect(map!.getZoom()).toBe(14)
+      expect(map!.getCenter().lat).toBeCloseTo(43.9, 4)
+      expect(map!.getCenter().lng).toBeCloseTo(45.9, 4)
       const center = map!.getCenter()
       const zoom = map!.getZoom()
 
