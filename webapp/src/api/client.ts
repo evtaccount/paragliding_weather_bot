@@ -9,6 +9,13 @@
 // Автоматических повторов здесь нет и не будет: каждый тяжёлый запрос — это
 // поход в open-meteo или Gemini, и повтор по таймеру тихо удвоил бы расход
 // квоты.
+//
+// `signal?: AbortSignal` у apiGet/apiSend — TanStack Query передаёt его
+// каждому queryFn и вызывает `.abort()`, когда запрос больше не нужен
+// (пилот ушёл с экрана, старт сменился до ответа). Без проброса в fetch()
+// такой запрос доезжал бы до конца молча — и держал бы единственный слот
+// пилота (client: busy в queue.ts, сервер: guards.INFLIGHT) до собственного
+// естественного завершения, задерживая уже нужный следующий запрос.
 
 import { initData } from "../telegram"
 
@@ -89,8 +96,12 @@ async function handleResponse<T>(response: Response): Promise<T> {
   return (await response.json()) as T
 }
 
-export async function apiGet<T>(path: string, params?: Record<string, string | undefined>): Promise<T> {
-  const response = await fetch(buildUrl(path, params), { headers: authHeaders() })
+export async function apiGet<T>(
+  path: string,
+  params?: Record<string, string | undefined>,
+  signal?: AbortSignal,
+): Promise<T> {
+  const response = await fetch(buildUrl(path, params), { headers: authHeaders(), signal })
   return handleResponse<T>(response)
 }
 
@@ -98,6 +109,7 @@ export async function apiSend<T>(
   method: "POST" | "PATCH" | "DELETE",
   path: string,
   body?: unknown,
+  signal?: AbortSignal,
 ): Promise<T> {
   const headers = authHeaders()
   let requestBody: string | undefined
@@ -105,7 +117,7 @@ export async function apiSend<T>(
     headers["Content-Type"] = "application/json"
     requestBody = JSON.stringify(body)
   }
-  const response = await fetch(path, { method, headers, body: requestBody })
+  const response = await fetch(path, { method, headers, body: requestBody, signal })
   return handleResponse<T>(response)
 }
 

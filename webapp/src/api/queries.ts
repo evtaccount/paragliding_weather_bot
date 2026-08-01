@@ -114,14 +114,19 @@ export function useForecast(
 export function useForecast(
   site: string | null, range: Exclude<ForecastRange, "1d">, date: string | null, model: string | null,
 ): UseQueryResult<ForecastOverview, ApiError>
+// `{ signal }` — из QueryFunctionContext, который TanStack Query передаёt
+// каждому queryFn сам; передаётся дальше в apiGet → fetch, чтобы отмена
+// запроса (смена старта/уход с экрана до ответа) реально освобождала слот
+// пилота, а не только переставала интересовать реакт (см. комментарий в
+// client.ts).
 export function useForecast(
   site: string | null, range: ForecastRange, date: string | null, model: string | null,
 ): UseQueryResult<Facts | ForecastOverview, ApiError> {
   return useQuery({
     queryKey: ["forecast", site, range, date, model] as const,
-    queryFn: () => heavy(() => apiGet<Facts | ForecastOverview>("/api/forecast", {
+    queryFn: ({ signal }) => heavy(() => apiGet<Facts | ForecastOverview>("/api/forecast", {
       site: site ?? undefined, range, date: date ?? undefined, model: model ?? undefined,
-    })),
+    }, signal)),
     enabled: site !== null,
     retry: false,
     staleTime: STALE_TIME_MS,
@@ -134,9 +139,9 @@ export function useWindGrid(
 ): UseQueryResult<WindGrid, ApiError> {
   return useQuery({
     queryKey: ["windGrid", site, date, model] as const,
-    queryFn: () => heavy(() => apiGet<WindGrid>("/api/forecast/wind-grid", {
+    queryFn: ({ signal }) => heavy(() => apiGet<WindGrid>("/api/forecast/wind-grid", {
       site: site ?? undefined, date: date ?? undefined, model: model ?? undefined,
-    })),
+    }, signal)),
     // date у /api/forecast/wind-grid обязателен (api.py: `date: str`, без
     // значения по умолчанию) — запрос без даты сервер бы просто отклонил.
     enabled: site !== null && date !== null,
@@ -149,7 +154,7 @@ export function useWindGrid(
 export function useScan(model: string | null): UseQueryResult<Scan, ApiError> {
   return useQuery({
     queryKey: ["scan", model] as const,
-    queryFn: () => heavy(() => apiGet<Scan>("/api/scan", { model: model ?? undefined })),
+    queryFn: ({ signal }) => heavy(() => apiGet<Scan>("/api/scan", { model: model ?? undefined }, signal)),
     retry: false,
     staleTime: STALE_TIME_MS,
     gcTime: GC_TIME_MS,
@@ -157,6 +162,19 @@ export function useScan(model: string | null): UseQueryResult<Scan, ApiError> {
 }
 
 // ------------------------------------------------------------ разбор и маршрут
+// Точка маршрута в "строчном" формате [lat, lon, name] — тот же формат, в
+// котором маршруты хранятся в store и приходят из /api/routes и
+// /api/route/parse. Третий элемент — `string | null`, а не просто `string`:
+// route.py:Point.name типизирован `str | None` (route.py:330,
+// `name=None` по умолчанию), и /api/route/parse отдаёт его как есть
+// (api.py:parse_route — `[p.lat, p.lon, p.name]`). Один именованный тип на
+// все три места, где эта строка встречается ниже (ParsedRoute, RouteInput,
+// RouteSaveInput) — иначе экран задачи 13, который читает результат
+// useParseRoute и тут же отправляет его в useRoute/useSaveRoute, упёрся бы
+// в рассогласование типов между «своим» ответом парсера и «своим» же телом
+// запроса маршрута.
+export type RoutePointRow = [number, number, string | null]
+
 // Поля повторяют api.py:AnalysisIn. У мутации нет фиксированного набора
 // аргументов хука (в отличие от useForecast) — тело запроса меняется на
 // каждый вызов, поэтому это useMutation, а не useQuery с ключом.
@@ -175,10 +193,9 @@ export function useAnalysis(): UseMutationResult<{ text: string }, ApiError, Ana
   })
 }
 
-// Поля повторяют api.py:RouteIn. `points` — строки [lat, lon, name?], тот же
-// формат, в котором маршруты хранятся в store и приходят из /api/routes.
+// Поля повторяют api.py:RouteIn.
 export type RouteInput = {
-  points: (number | string)[][]
+  points: RoutePointRow[]
   name?: string | null
   date: string
   departure?: string | null
@@ -205,7 +222,7 @@ export function useRouteAnalysis(): UseMutationResult<{ text: string }, ApiError
 // вызов.
 export type ParseRouteInput = { file: File } | { text: string }
 
-export type ParsedRoute = { points: [number, number, string | null][] }
+export type ParsedRoute = { points: RoutePointRow[] }
 
 export function useParseRoute(): UseMutationResult<ParsedRoute, ApiError, ParseRouteInput> {
   return useMutation({
@@ -232,7 +249,7 @@ export function useSavedRoutes(): UseQueryResult<SavedRoute[], ApiError> {
   })
 }
 
-export type RouteSaveInput = { name: string; points: (number | string)[][] }
+export type RouteSaveInput = { name: string; points: RoutePointRow[] }
 
 export function useSaveRoute(): UseMutationResult<{ name: string; overwritten: boolean }, ApiError, RouteSaveInput> {
   const client = useQueryClient()
