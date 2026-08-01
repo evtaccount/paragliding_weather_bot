@@ -97,7 +97,43 @@ test("нажатие на день открывает прогноз этого 
   const target = overview.days_daytime[2]!
   await userEvent.click(within(list).getByRole("button", { name: new RegExp(fmtDate(target.date)) }))
 
-  expect(onOpenDay).toHaveBeenCalledWith(target.date)
+  // onOpenDay несёт и старт (текущий, тот же, что передан в проп site), и
+  // дату — не только дату (см. ниже критичный тест про «Все старты» с двумя
+  // стартами: там колбэк обязан нести старт КОНКРЕТНОЙ строки, а не проп).
+  expect(onOpenDay).toHaveBeenCalledWith("Гудаури", target.date)
+})
+
+// Ревью (Critical, воспроизведено на App.test.tsx): день, нажатый внутри
+// группы конкретного старта в скане, обязан открывать прогноз ЭТОГО старта,
+// а не старта, переданного в проп `site` (тот отражает старт диапазонных
+// сегментов 3d/week/2weeks, а не старт под курсором в «Все старты»). До
+// исправления Overview.tsx звал onOpenDay(row.date) без имени старта вовсе —
+// вызывающий код (App.tsx) не мог узнать, чей день нажали, и подставлял
+// прежний текущий старт.
+test("нажатие на день скана несёт старт ЭТОЙ строки, а не переданный в проп site", async () => {
+  const secondSiteDate = "2026-08-05"
+  const scanTwoSites = {
+    sites: [
+      scan.sites[0]!,
+      { name: "Казбеги", aspect: scan.sites[0]!.aspect, days: [{ ...scan.sites[0]!.days[0]!, date: secondSiteDate }] },
+    ],
+    empty: [],
+    failed: [],
+  }
+  stubByPath(scanTwoSites)
+  const onOpenDay = vi.fn()
+  // site="Гудаури" — тот же приём, что и в остальных тестах файла, но здесь
+  // важно, что он ДРУГОЙ, чем старт второй группы (Казбеги): если бы
+  // компонент молча подставлял проп site вместо s.name, тест поймал бы это
+  // явно, а не совпадением значений.
+  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={onOpenDay} />, { wrapper })
+  await screen.findByRole("group", { name: "Дни диапазона" })
+  await userEvent.click(screen.getByRole("button", { name: "Все старты" }))
+
+  const kazbegiGroup = await screen.findByRole("group", { name: "Казбеги" })
+  await userEvent.click(within(kazbegiGroup).getByRole("button"))
+
+  expect(onOpenDay).toHaveBeenCalledWith("Казбеги", secondSiteDate)
 })
 
 test("режим «Все старты» показывает старты и их дни", async () => {

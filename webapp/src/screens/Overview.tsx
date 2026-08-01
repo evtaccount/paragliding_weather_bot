@@ -32,10 +32,17 @@ import { compass, fmtDate, fmtNum } from "../format"
 import { ErrorBox } from "../ui/ErrorBox"
 import { Spinner } from "../ui/Spinner"
 
+// onOpenDay несёт имя старта, а не только дату: в режиме «Все старты»
+// строка дня принадлежит КОНКРЕТНОМУ старту группы (Scan.sites[i].name), а
+// не тому "текущему" старту, чей прогноз показан на диапазонных сегментах
+// (проп site ниже). Без имени старта в колбэке вызывающий код (App.tsx) не
+// может понять, чей именно день нажали, и молча подставляет прежний
+// текущий старт — это и было причиной Critical-находки ревью (тап по дню
+// второго старта в скане открывал прогноз первого).
 type OverviewProps = {
   site: string | null
   model: string | null
-  onOpenDay: (date: string) => void
+  onOpenDay: (site: string, date: string) => void
 }
 
 type RangeKey = Exclude<ForecastRange, "1d"> | "scan"
@@ -96,13 +103,19 @@ function RangeView({ site, range, model, onOpenDay }: {
   site: string | null
   range: Exclude<RangeKey, "scan">
   model: string | null
-  onOpenDay: (date: string) => void
+  onOpenDay: (site: string, date: string) => void
 }) {
   const forecast = useForecast(site, range, null, model)
 
   if (site === null) {
     return <NoSites />
   }
+  // Отдельное имя (не "site") для узкого string ниже — строки дня зовут
+  // onOpenDay(activeSite, day.date) этим именем, а не параметром site,
+  // чтобы не полагаться на то, что сужение до string переживёт замыкание
+  // внутри .map(): дешёвая подстраховка на месте, где однажды уже перепутали
+  // "какой старт" с "какая дата" (Critical, ревью этой задачи).
+  const activeSite = site
   if (forecast.isPending) {
     return <Spinner />
   }
@@ -114,10 +127,13 @@ function RangeView({ site, range, model, onOpenDay }: {
   const days = overview.days_daytime
 
   // Сервер по контракту (engine.facts_overview) не отдаёт пустой
-  // days_daytime на настоящий диапазон — но bestOverviewDay ниже вызывает
-  // .reduce без начального значения, а .reduce на [] без него бросает
-  // исключение, а не просто отдаёт "нет данных". Guard дешёвый, а падать
-  // экрану обзора не из-за чего.
+  // days_daytime на настоящий диапазон — по факту это не только гипотеза:
+  // ревью этой же задачи поймало ровно такой пустой ответ ({days_daytime: []})
+  // в одном из тестов App.test.tsx (упрощённая подделка fetch для теста не
+  // про «Обзор»), и без этого guard'а bestOverviewDay ниже падал бы —
+  // .reduce без начального значения на [] бросает исключение, а не просто
+  // отдаёт "нет данных". Дешёвая защита, а падать экрану обзора не из-за
+  // чего даже на "невозможном" по контракту вводе.
   if (days.length === 0) {
     return (
       <div className="empty">
@@ -154,7 +170,7 @@ function RangeView({ site, range, model, onOpenDay }: {
 
       <div className="days" role="group" aria-label="Дни диапазона">
         {days.map((day) => (
-          <button key={day.date} type="button" className="day" onClick={() => onOpenDay(day.date)}>
+          <button key={day.date} type="button" className="day" onClick={() => onOpenDay(activeSite, day.date)}>
             <div className="day__d">{fmtDate(day.date)}</div>
             <div className="day__m">
               <div
@@ -175,7 +191,7 @@ function RangeView({ site, range, model, onOpenDay }: {
   )
 }
 
-function ScanView({ model, onOpenDay }: { model: string | null; onOpenDay: (date: string) => void }) {
+function ScanView({ model, onOpenDay }: { model: string | null; onOpenDay: (site: string, date: string) => void }) {
   const scan = useScan(model)
 
   if (scan.isPending) {
@@ -189,6 +205,12 @@ function ScanView({ model, onOpenDay }: { model: string | null; onOpenDay: (date
 
   return (
     <>
+      {/* key={s.name}/aria-label={s.name} по имени старта, не по индексу:
+          тот же приём, что и в useDeleteSite(name) (api/queries.ts) — имя
+          старта уже принято уникальным идентификатором в остальном
+          приложении (это же имя приходит в /api/sites и используется как
+          ключ операций над стартом), а не заводится здесь заново. Риск
+          низкий и не новый для этого экрана. */}
       {data.sites.map((s) => (
         <div key={s.name} className="sitegrp">
           <div className="sitegrp__h">
@@ -197,7 +219,7 @@ function ScanView({ model, onOpenDay }: { model: string | null; onOpenDay: (date
           </div>
           <div className="days" role="group" aria-label={s.name}>
             {s.days.map((row) => (
-              <button key={row.date} type="button" className="day" onClick={() => onOpenDay(row.date)}>
+              <button key={row.date} type="button" className="day" onClick={() => onOpenDay(s.name, row.date)}>
                 <div className="day__d">{fmtDate(row.date)}</div>
                 <div className="day__m">
                   <div className="day__bar" style={{ background: colorOfCategory(row.category), width: `${Math.max(6, row.score)}%` }} />

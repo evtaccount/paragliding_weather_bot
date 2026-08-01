@@ -6,6 +6,7 @@ import { App } from "./App"
 import { fmtDate } from "./format"
 import facts from "../test/fixtures/facts_1d.json"
 import overview from "../test/fixtures/forecast_3d.json"
+import scan from "../test/fixtures/scan.json"
 import sites from "../test/fixtures/sites.json"
 import prefs from "../test/fixtures/prefs.json"
 
@@ -139,4 +140,62 @@ test("тап по дню в «Обзоре» переключает вкладк
     const calls = fetchMock.mock.calls.map(([u]) => String(u))
     expect(calls.some((u) => u.includes("range=1d") && u.includes(`date=${target.date}`))).toBe(true)
   })
+})
+
+// Ревью (Critical, воспроизведено): у пилота уже сейчас может быть НЕСКОЛЬКО
+// сохранённых стартов — /api/scan существует именно затем, чтобы агрегировать
+// лётные дни по всем сразу, не дожидаясь выбиралки старта (задача 13). Тап по
+// дню второго старта в скане обязан открыть прогноз ВТОРОГО старта, а не
+// первого из /api/sites: до правки App.tsx всегда брал site = первый элемент
+// списка (siteName(sites.data)), а Overview.tsx звал onOpenDay(date) без
+// имени старта — контекст "какой старт нажали" терялся, и «Прогноз» после
+// тапа тихо показывал первый старт с датой второго, не подавая виду, что это
+// не тот старт. Явная проверка на настоящем сетевом запросе и на шапке —
+// шапка обязана показать имя того старта, чей прогноз реально открылся.
+test("тап по дню ВТОРОГО старта в скане открывает прогноз именно этого старта, а не первого", async () => {
+  const kazbegiDate = "2026-08-05"
+  const twoSites = [sites[0]!, { ...sites[0]!, name: "Казбеги" }]
+  const scanTwoSites = {
+    sites: [
+      scan.sites[0]!,
+      { name: "Казбеги", aspect: scan.sites[0]!.aspect, days: [{ ...scan.sites[0]!.days[0]!, date: kazbegiDate }] },
+    ],
+    empty: [],
+    failed: [],
+  }
+  const fetchMock = vi.fn((url: string) => {
+    const path = url.split("?")[0]
+    const body =
+      path === "/api/sites" ? twoSites
+      : path === "/api/prefs" ? prefs
+      : path === "/api/scan" ? scanTwoSites
+      : path === "/api/forecast" && url.includes("range=1d") ? facts
+      : path === "/api/forecast" ? overview
+      : {}
+    return Promise.resolve(new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } }))
+  })
+  vi.stubGlobal("fetch", fetchMock)
+
+  render(<App />)
+  await userEvent.click(screen.getByRole("tab", { name: "Обзор" }))
+  await userEvent.click(screen.getByRole("button", { name: "Все старты" }))
+  const kazbegiGroup = await screen.findByRole("group", { name: "Казбеги" })
+  await userEvent.click(within(kazbegiGroup).getByRole("button"))
+
+  expect(screen.getByRole("tab", { name: "Прогноз" })).toHaveAttribute("aria-selected", "true")
+  await waitFor(() => {
+    // Ищем запрос ИМЕННО за днём, по которому кликнули (date=kazbegiDate),
+    // а не любой request с range=1d — при монтировании приложение и так
+    // один раз запрашивает "Прогноз" для старта по умолчанию (Гудаури,
+    // сегодняшняя дата), и это законный, отдельный запрос, а не повторение
+    // бага: смешивать его с запросом после клика значило бы проверять
+    // не то, что упало у ревьюера.
+    const requestsForClickedDay = fetchMock.mock.calls
+      .map(([u]) => new URL(String(u), "http://x").searchParams)
+      .filter((params) => params.get("range") === "1d" && params.get("date") === kazbegiDate)
+      .map((params) => params.get("site"))
+    expect(requestsForClickedDay).toEqual(["Казбеги"])
+  })
+  const header = screen.getByRole("banner")
+  expect(within(header).getByText("Казбеги")).toBeInTheDocument()
 })

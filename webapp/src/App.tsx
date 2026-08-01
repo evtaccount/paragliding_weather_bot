@@ -176,6 +176,15 @@ function ShellContent() {
   // рендере. Начальное значение — todayIso(), как и раньше, пока пилот ни
   // разу не тапнул по дню в обзоре.
   const [date, setDate] = useState(todayIso())
+  // Текущий старт — тоже состояние, а не всегда первый элемент /api/sites
+  // (было так до ревью этой задачи, Critical: клик по дню ВТОРОГО старта в
+  // скане «Все старты» открывал прогноз ПЕРВОГО — приложение никак не
+  // запоминало, какой старт реально выбрали, siteName(sites.data) заново
+  // брал sites.data[0] на каждом рендере). null означает "явного выбора
+  // ещё не было" — тогда используется первый старт из списка (см. вычисление
+  // site ниже); задаче 13 (выбиралка старта) это же состояние понадобится
+  // для собственной кнопки выбора, не только для тапа по дню в скане.
+  const [selectedSite, setSelectedSite] = useState<string | null>(null)
   const sheets = useSheetsContext()
   const sites = useSites()
   const prefs = usePrefs()
@@ -230,14 +239,19 @@ function ShellContent() {
     if (bodyRef.current) bodyRef.current.scrollTop = 0
   }, [tab])
 
-  const site = siteName(sites.data)
+  const site = selectedSite ?? siteName(sites.data)
   const model = prefs.data?.model_key ?? null
 
-  // Тап по дню в «Обзоре» — настоящее переключение (day.date выбранного
-  // дня плюс переход на вкладку «Прогноз»), а не только смена вкладки:
-  // задача 8 передавала в Forecast константный todayIso(), это заменяет его
-  // на выбор пилота (task-10-brief).
-  function openDay(pickedDate: string): void {
+  // Тап по дню в «Обзоре» — настоящее переключение (старт и дата ИМЕННО
+  // этого дня плюс переход на вкладку «Прогноз»), а не только смена вкладки:
+  // задача 8 передавала в Forecast константный todayIso() и не менявшийся
+  // первый старт; это заменяет оба на выбор пилота (task-10-brief, Critical
+  // ревью — см. комментарий у selectedSite выше). Диапазонные строки
+  // «Обзора» (3d/week/2weeks) зовут это с тем же site, что уже показан —
+  // setSelectedSite там не меняет видимого старта, но держит переключение
+  // однородным для обоих режимов Overview, а не разными колбэками.
+  function openDay(dayOwnerSite: string, pickedDate: string): void {
+    setSelectedSite(dayOwnerSite)
     setDate(pickedDate)
     setTab("day")
   }
