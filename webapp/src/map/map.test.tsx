@@ -10,6 +10,7 @@
 import { render } from "@testing-library/react"
 import { StrictMode } from "react"
 import { expect, test, vi } from "vitest"
+import L from "leaflet"
 import { MapView } from "./MapView"
 import type { Site } from "../api/types"
 import sitesFixture from "../../test/fixtures/sites.json"
@@ -190,6 +191,50 @@ test("карта, созданная в скрытой вкладке, подг�
     rerender(<MapView points={ROUTE_POINTS} sites={[]} />)
     expectRouteFillsFrame(container)
   })
+})
+
+// Ре-ревью task-12 (N13): подгонка обязана быть ОДНОРАЗОВОЙ. Эффект
+// отложенной подгонки выполняется после каждого рендера, а рендеров у экрана
+// маршрута много (открытие карточки точки, новый ответ после чипа вылета,
+// смена вкладки) — без стража viewFittedRef каждый из них возвращал бы карту
+// к подгонке, и пилот, приблизивший её к узкому месту, терял бы вид от любого
+// касания таблицы. Проверено пробником ре-ревьюера: с убранным стражем
+// карта после жеста (43.9/45.9, зум 14) откатывалась к 42.298/44.479, зум 9.
+//
+// Чтобы «сделать жест», нужен сам объект карты — единственный способ до него
+// добраться снаружи — перехватить L.map (Leaflet нигде не публикует
+// созданную карту). Это тот же приём, которым дефект и воспроизведён; вся
+// остальная работа идёт на настоящем Leaflet, как и в прочих тестах файла.
+test("подгонка одноразовая: жест пилота не отменяется перерисовкой", () => {
+  const createMap = L.map
+  let map: L.Map | null = null
+  const spy = vi.spyOn(L, "map").mockImplementation(((el: HTMLElement | string, options?: L.MapOptions) => {
+    map = createMap(el as HTMLElement, options)
+    return map
+  }) as typeof L.map)
+
+  try {
+    withContainerSize(VIEW_W, VIEW_H, () => {
+      const { rerender } = render(<MapView points={ROUTE_POINTS} sites={[]} />)
+      expect(map).not.toBeNull()
+
+      // Пилот приблизил карту к своему узкому месту.
+      map!.setView([43.9, 45.9], 14)
+      const center = map!.getCenter()
+      const zoom = map!.getZoom()
+
+      // Экран перерисовался дважды — с новой ссылкой на точки, как после
+      // каждого пересчёта маршрута.
+      rerender(<MapView points={[...ROUTE_POINTS]} sites={[]} />)
+      rerender(<MapView points={[...ROUTE_POINTS]} sites={[]} />)
+
+      expect(map!.getZoom()).toBe(zoom)
+      expect(map!.getCenter().lat).toBeCloseTo(center.lat, 6)
+      expect(map!.getCenter().lng).toBeCloseTo(center.lng, 6)
+    })
+  } finally {
+    spy.mockRestore()
+  }
 })
 
 // Ре-ревью task-12 (N10): свой L.SVG() у каждой трассы копился в DOM —
