@@ -12,6 +12,7 @@ import { usePrefs, useSites } from "./api/queries"
 import type { Prefs, Site } from "./api/types"
 import { fmtDate } from "./format"
 import { Forecast } from "./screens/Forecast"
+import { Overview } from "./screens/Overview"
 import * as telegram from "./telegram"
 import { resolveThemeVars } from "./theme"
 import { Chip } from "./ui/Chip"
@@ -169,6 +170,12 @@ export function resetAppQueryClientForTests(): void {
 
 function ShellContent() {
   const [tab, setTab] = useState<TabKey>("day")
+  // Дата «Прогноза» — состояние, а не константа: экран «Обзор» (задача 10)
+  // переключает на конкретный день по тапу, и это должно быть настоящим
+  // переключением (см. task-10-brief), а не сбросом на сегодня при каждом
+  // рендере. Начальное значение — todayIso(), как и раньше, пока пилот ни
+  // разу не тапнул по дню в обзоре.
+  const [date, setDate] = useState(todayIso())
   const sheets = useSheetsContext()
   const sites = useSites()
   const prefs = usePrefs()
@@ -225,7 +232,15 @@ function ShellContent() {
 
   const site = siteName(sites.data)
   const model = prefs.data?.model_key ?? null
-  const date = todayIso()
+
+  // Тап по дню в «Обзоре» — настоящее переключение (day.date выбранного
+  // дня плюс переход на вкладку «Прогноз»), а не только смена вкладки:
+  // задача 8 передавала в Forecast константный todayIso(), это заменяет его
+  // на выбор пилота (task-10-brief).
+  function openDay(pickedDate: string): void {
+    setDate(pickedDate)
+    setTab("day")
+  }
 
   return (
     <div className="app">
@@ -250,7 +265,7 @@ function ShellContent() {
           <Forecast site={site} date={date} model={model} />
         </section>
         <section className="view" hidden={tab !== "over"} aria-label="Обзор">
-          <p>Обзор</p>
+          <Overview site={site} model={model} onOpenDay={openDay} />
         </section>
         <section className="view" hidden={tab !== "route"} aria-label="Маршрут">
           <p>Маршрут</p>

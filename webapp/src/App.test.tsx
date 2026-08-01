@@ -3,7 +3,9 @@ import userEvent from "@testing-library/user-event"
 import { beforeEach, expect, test, vi } from "vitest"
 import { StrictMode } from "react"
 import { App } from "./App"
+import { fmtDate } from "./format"
 import facts from "../test/fixtures/facts_1d.json"
+import overview from "../test/fixtures/forecast_3d.json"
 import sites from "../test/fixtures/sites.json"
 import prefs from "../test/fixtures/prefs.json"
 
@@ -91,7 +93,13 @@ test("под строгим режимом разработки открытие
     const body =
       path === "/api/sites" ? sites
       : path === "/api/prefs" ? prefs
-      : path === "/api/forecast" ? facts
+      // Вкладка «Обзор» (задача 10) смонтирована всегда, как и «Прогноз» —
+      // её собственный запрос (range=3d по умолчанию) идёт на тот же путь
+      // /api/forecast, но с другой формой ответа (ForecastOverview, а не
+      // Facts): без ветвления по range этот тест ловил экран обзора на
+      // чужой фикстуре и падал на .days_daytime, которого у Facts нет.
+      : path === "/api/forecast" && url.includes("range=1d") ? facts
+      : path === "/api/forecast" ? { days_daytime: [] }
       : path === "/api/analysis" ? { text: "Разбор под строгим режимом разработки." }
       : {}
     return Promise.resolve(new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } }))
@@ -100,4 +108,35 @@ test("под строгим режимом разработки открытие
   await screen.findByText(facts.assessment.label_ru)
   await userEvent.click(screen.getByRole("button", { name: /Разбор от ИИ/ }))
   expect(await screen.findByText("Разбор под строгим режимом разработки.")).toBeInTheDocument()
+})
+
+// Задача 10: тап по дню в «Обзоре» должен по-настоящему переключать вкладку
+// «Прогноз» на выбранный день, а не только на вкладку с прежней (сегодняшней)
+// датой — до этой задачи App.tsx передавал в Forecast константный todayIso().
+// Проверяется здесь, на настоящем дереве App, а не в Overview.test.tsx: там
+// проверяется только вызов колбэка onOpenDay, а не то, что App реально
+// меняет дату запроса «Прогноза» в ответ на него.
+test("тап по дню в «Обзоре» переключает вкладку «Прогноз» на дату этого дня", async () => {
+  const fetchMock = vi.fn((url: string) => {
+    const path = url.split("?")[0]
+    const body =
+      path === "/api/sites" ? sites
+      : path === "/api/prefs" ? prefs
+      : path === "/api/forecast" && url.includes("range=1d") ? facts
+      : path === "/api/forecast" ? overview
+      : {}
+    return Promise.resolve(new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } }))
+  })
+  vi.stubGlobal("fetch", fetchMock)
+
+  render(<App />)
+  await userEvent.click(screen.getByRole("tab", { name: "Обзор" }))
+  const target = overview.days_daytime[2]!
+  await userEvent.click(await screen.findByRole("button", { name: new RegExp(fmtDate(target.date)) }))
+
+  expect(screen.getByRole("tab", { name: "Прогноз" })).toHaveAttribute("aria-selected", "true")
+  await waitFor(() => {
+    const calls = fetchMock.mock.calls.map(([u]) => String(u))
+    expect(calls.some((u) => u.includes("range=1d") && u.includes(`date=${target.date}`))).toBe(true)
+  })
 })
