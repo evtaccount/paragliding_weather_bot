@@ -1,12 +1,18 @@
 // Экран «Прогноз»: вердикт дня, полоса часов, столб воздуха, строка
-// ограничения, оговорки, кнопки шторок. Раскладка — из макета
-// (miniapp/prototype.html:739-942, renderDay): вердикт + полоса часов +
-// строка ограничения живут в одной панели (там — panel p1), столб воздуха —
-// в отдельной (там — panel p2), затем действия и оговорки. Секция "факты"
-// макета (диапазон температуры/ветра/направления/осадков, строки 892-910)
-// сюда не перенесена — её нет в перечне экранных элементов задачи 8
-// (task-8-brief.md, "Порядок на экране"): вердикт дня, полоса часов, столб
-// воздуха, строка ограничения, оговорки, кнопки шторок.
+// ограничения, оговорки, кнопки шторок — порядок ровно из task-8-brief.md
+// ("Порядок на экране"), а не из порядка блоков в макете: в
+// miniapp/prototype.html:739-942 (renderDay) строка ограничения (lim)
+// нарисована ВНУТРИ той же панели, что вердикт и полоса часов (panel p1,
+// до столба воздуха), а кнопки действий (acts) — до оговорок (caveats).
+// Бриф явно перечисляет другой порядок (ограничение после столба воздуха,
+// оговорки перед кнопками) — это разрешено раскладкой макета для ОТДЕЛЬНЫХ
+// приборов (какие данные показывать и как), но порядок экрана как целого
+// задаёт бриф, и ревью задачи 8 поймало первую попытку буквально повторить
+// вложенность макета вместо явно прописанного порядка. Раскладка каждого
+// прибора внутри (вердикт+полоса часов в одной панели, столб воздуха — в
+// отдельной) взята из макета, само чередование блоков — из брифа. Секция
+// "факты" макета (диапазон температуры/ветра/направления/осадков, строки
+// 892-910) сюда не перенесена — её нет в перечне экранных элементов брифа.
 import { useForecast } from "../api/queries"
 import type { Facts } from "../api/types"
 import { useSheetsContext } from "../App"
@@ -95,12 +101,6 @@ export function Forecast({ site, date, model }: ForecastProps) {
         <div className="strip">
           <HourStrip hours={facts.hourly_daytime} window={assessment.fly_window} />
         </div>
-        {assessment.limiting_factor_ru !== null && (
-          <div className="limiting">
-            <span className="limiting__k">Ограничивает</span>
-            <span>{assessment.limiting_factor_ru}</span>
-          </div>
-        )}
       </div>
 
       <div className="panel">
@@ -110,6 +110,22 @@ export function Forecast({ site, date, model }: ForecastProps) {
         </div>
         <AirColumn facts={facts} />
       </div>
+
+      {assessment.limiting_factor_ru !== null && (
+        <div className="limiting">
+          <span className="limiting__k">Ограничивает</span>
+          <span>{assessment.limiting_factor_ru}</span>
+        </div>
+      )}
+
+      {facts.caveats.length > 0 && (
+        <div className="panel caveats">
+          <div className="lbl">Оговорки</div>
+          <ul>
+            {facts.caveats.map((c, i) => <li key={`${i}-${c}`}>{c}</li>)}
+          </ul>
+        </div>
+      )}
 
       <div className="acts">
         <button
@@ -137,15 +153,6 @@ export function Forecast({ site, date, model }: ForecastProps) {
           <span>температура, ветер, порывы</span>
         </button>
       </div>
-
-      {facts.caveats.length > 0 && (
-        <div className="panel caveats">
-          <div className="lbl">Оговорки</div>
-          <ul>
-            {facts.caveats.map((c, i) => <li key={`${i}-${c}`}>{c}</li>)}
-          </ul>
-        </div>
-      )}
     </>
   )
 }

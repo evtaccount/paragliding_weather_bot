@@ -47,29 +47,20 @@ test("показывает вердикт дня и лётное окно", asyn
   expect(screen.getByText("07:00 – 17:00")).toBeInTheDocument()
 })
 
-test("пока грузится — показывает индикатор, а не пустоту", async () => {
-  // Свой QueryClient (а не общий wrapper) и fetch, реагирующий на
-  // AbortSignal, — не только чтобы проверить спиннер, а чтобы после теста
-  // явно освободить очередь тяжёлых запросов (api/queue.ts: `busy` —
-  // модульный синглтон на весь файл). Промис, который никогда не
-  // рассчитывается и не слушает signal, навсегда оставил бы `busy = true`
-  // и уронил бы все следующие тесты этого файла тем же зависшим "Загрузка"
-  // — ровно то падение, которое объясняет комментарий у одноимённого теста
-  // в api/queries.test.tsx.
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  function localWrapper({ children }: { children: ReactNode }) {
-    return (
-      <QueryClientProvider client={qc}>
-        <SheetsProvider>{children}</SheetsProvider>
-      </QueryClientProvider>
-    )
-  }
+test("пока грузится — показывает индикатор, а не пустоту", () => {
+  // fetch слушает AbortSignal и отклоняет промис на abort — не только
+  // корректности ради, а чтобы не зависнуть: React Query сам отменяет
+  // запрос при размонтировании (тест заканчивается, RTL размонтирует
+  // компонент), это освобождает очередь тяжёлых запросов (api/queue.ts)
+  // без явного cancelQueries. На случай, если в будущем этот автоматический
+  // разбор перестанет срабатывать (другая версия библиотеки, другой сценарий
+  // размонтирования) — общий сброс очереди перед КАЖДЫМ тестом уже стоит в
+  // test/setup.ts (resetQueueForTests), это вторая, независимая страховка.
   vi.stubGlobal("fetch", (_url: string, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
     init?.signal?.addEventListener("abort", () => reject(new DOMException("отменено", "AbortError")))
   }))
-  render(<Forecast site="Гудаури" date="2026-07-25" model="ecmwf" />, { wrapper: localWrapper })
+  render(<Forecast site="Гудаури" date="2026-07-25" model="ecmwf" />, { wrapper })
   expect(screen.getByRole("status", { name: "Загрузка" })).toBeInTheDocument()
-  await qc.cancelQueries({ queryKey: ["forecast", "Гудаури", "1d", "2026-07-25", "ecmwf"] })
 })
 
 test("на 502 показывает ошибку и кнопку повтора", async () => {
@@ -121,6 +112,31 @@ test("без окна термички — не падает и объясняе
   expect(await screen.findByText(NO_WINDOW.assessment.label_ru)).toBeInTheDocument()
   expect(screen.getByText(/окно не определено/)).toBeInTheDocument()
   expect(screen.getByText(/термическое окно не открывается/)).toBeInTheDocument()
+})
+
+// Ревью: наличие всех блоков уже проверено выше, но ни один тест не ловит,
+// если их переставить местами — так и случилось (строка ограничения стояла
+// перед столбом воздуха, кнопки — перед оговорками). Проверяем порядок в
+// самом документе (compareDocumentPosition), а не порядок вызовов
+// screen.getByXxx в тесте, который сам по себе ничего не гарантирует.
+test("порядок на экране: вердикт → полоса часов → столб воздуха → строка ограничения → оговорки → кнопки", async () => {
+  vi.stubGlobal("fetch", () => jsonResponse(F))
+  render(<Forecast site="Гудаури" date="2026-07-25" model="ecmwf" />, { wrapper })
+  await screen.findByText(F.assessment.label_ru)
+
+  const verdict = screen.getByText(F.assessment.label_ru)
+  const hourStrip = screen.getByRole("img", { name: /Полоса часов дня/ })
+  const airColumn = screen.getByRole("img", { name: /Столб воздуха/ })
+  const limiting = screen.getByText("Ограничивает")
+  const caveats = screen.getByText("Оговорки")
+  const actions = screen.getByRole("button", { name: /Ветер по высотам/ })
+
+  const order = [verdict, hourStrip, airColumn, limiting, caveats, actions]
+  for (let i = 0; i < order.length - 1; i++) {
+    const before = order[i]!
+    const after = order[i + 1]!
+    expect(before.compareDocumentPosition(after) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  }
 })
 
 test("с предупреждениями — показывает оговорки о вето", async () => {
