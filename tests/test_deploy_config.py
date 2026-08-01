@@ -67,6 +67,45 @@ def test_caddyfile_default_port_syntax_has_no_hyphen():
     assert "{$API_PORT:8080}" in text
 
 
+def test_base_caddyfile_leaves_tls_to_caddy():
+    """Умолчание — автоматический Let's Encrypt, то есть ОТСУТСТВИЕ директивы
+    tls: ключевого слова «выпусти сам» у Caddy нет, автоматика включается
+    именно молчанием. Прописанный в базовом файле путь к сертификату означал
+    бы, что раскатка без своего сертификата невозможна без правки файла под
+    git — а правка под git ломает `git pull` на сервере конфликтом."""
+    text = _read("Caddyfile")
+    assert "tls /certs/" not in text
+    assert "import /etc/caddy/tls/*.caddy" in text
+
+
+def test_base_compose_does_not_mount_a_certificate_directory():
+    """`- ${TLS_CERT_DIR}:/certs:ro` в базовом файле делал переменную
+    обязательной: при пустой compose отказывался разбирать том и не поднимал
+    вообще ничего. Автоматический режим не должен требовать значений."""
+    assert "TLS_CERT_DIR" not in _read("docker-compose.yml")
+
+
+def test_own_cert_overlay_mounts_the_snippet_and_the_certificates_together():
+    """Своему сертификату нужны ДВЕ вещи: директива tls (её вносит сниппет) и
+    сами файлы (их вносит том). Порознь они бессмысленны — сниппет без файлов
+    роняет Caddy на старте, файлы без сниппета молча уходят в никуда, и Caddy
+    выпускает Let's Encrypt, будто своего сертификата нет. Поэтому обе строки
+    живут в одном оверлее и включаются одной строкой COMPOSE_FILE."""
+    text = _read("docker-compose.own-cert.yml")
+    assert "./deploy/caddy/own-cert:/etc/caddy/tls:ro" in text
+    assert "${TLS_CERT_DIR}:/certs:ro" in text
+
+
+def test_own_cert_snippet_points_at_the_path_the_overlay_mounts():
+    """Пути внутри сниппета и точка монтирования тома — одно знание в двух
+    файлах. Разъедутся — Caddy упадёт на старте с «no such file», уже после
+    того, как compose отчитается об успешном запуске."""
+    snippet = _read("deploy/caddy/own-cert/tls.caddy")
+    overlay = _read("docker-compose.own-cert.yml")
+    mount = overlay.split("${TLS_CERT_DIR}:")[1].split(":")[0]
+    assert f"tls {mount}/fullchain.pem {mount}/privkey.pem" in snippet
+
+
 def test_compose_sets_api_host_to_all_interfaces_for_pgbot():
     """app.py по умолчанию слушает 127.0.0.1 (верно для bare metal, см.
     tests/test_app_entry.py). В Docker pgbot и caddy — разные контейнеры с
