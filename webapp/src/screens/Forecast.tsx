@@ -20,7 +20,9 @@ import { AirColumn } from "../charts/AirColumn"
 import { HourStrip } from "../charts/HourStrip"
 import { colorOfCategory } from "../charts/palette"
 import { fmtHour } from "../format"
+import { DayAnalysisSheet } from "../sheets/DayAnalysisSheet"
 import { MeteogramSheet } from "../sheets/MeteogramSheet"
+import { WindGridSheet } from "../sheets/WindGridSheet"
 import { ErrorBox } from "../ui/ErrorBox"
 import { Spinner } from "../ui/Spinner"
 
@@ -131,7 +133,7 @@ export function Forecast({ site, date, model }: ForecastProps) {
         <button
           type="button"
           className="act"
-          onClick={() => sheets.push(<p>Здесь будет разбор ветра по высотам.</p>, "Ветер по высотам")}
+          onClick={() => sheets.push(<WindGridSheet site={site} date={date} model={model} />, "Ветер по высотам")}
         >
           <b>Ветер по высотам</b>
           <span>6 уровней × 10 часов</span>
@@ -139,7 +141,7 @@ export function Forecast({ site, date, model }: ForecastProps) {
         <button
           type="button"
           className="act"
-          onClick={() => sheets.push(<p>Здесь будет разбор от ИИ.</p>, "Разбор от ИИ")}
+          onClick={() => sheets.push(<DayAnalysisSheet site={site} date={date} model={model} />, "Разбор от ИИ")}
         >
           <b>Разбор от ИИ</b>
           <span>Gemini по этим числам</span>

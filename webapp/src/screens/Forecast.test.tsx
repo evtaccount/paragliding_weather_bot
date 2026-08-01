@@ -16,6 +16,7 @@ import facts from "../../test/fixtures/facts_1d.json"
 import factsWindy from "../../test/fixtures/facts_1d_windy.json"
 import factsNoCeiling from "../../test/fixtures/facts_1d_no_ceiling.json"
 import factsNoWindow from "../../test/fixtures/facts_1d_no_window.json"
+import windGrid from "../../test/fixtures/wind_grid.json"
 
 const F = facts as unknown as Facts
 const WINDY = factsWindy as unknown as Facts
@@ -71,7 +72,15 @@ test("на 502 показывает ошибку и кнопку повтора"
 })
 
 test("кнопка «Ветер по высотам» открывает шторку", async () => {
-  vi.stubGlobal("fetch", () => jsonResponse(F))
+  // Открытая шторка сама запрашивает /api/forecast/wind-grid (задача 9,
+  // WindGridSheet) — единый ответ F на любой путь (как в остальных тестах
+  // этого файла) отдал бы Facts вместо WindGrid и уронил бы шторку на
+  // `data.levels` (у Facts такого поля нет). Тот же приём, что и в
+  // App.test.tsx:53-57 — ветвление по пути, а не по паре реального URL.
+  vi.stubGlobal("fetch", (url: string) => {
+    const path = url.split("?")[0]
+    return jsonResponse(path === "/api/forecast/wind-grid" ? windGrid : F)
+  })
   render(<Forecast site="Гудаури" date="2026-07-25" model="ecmwf" />, { wrapper })
   await screen.findByText(F.assessment.label_ru)
   await userEvent.click(screen.getByRole("button", { name: /Ветер по высотам/ }))
