@@ -7,3 +7,5 @@ __pycache__
 .env
 deploy/pgbot.service
 README.md
+webapp/node_modules
+webapp/dist

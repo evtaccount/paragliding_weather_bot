@@ -18,3 +18,8 @@ deploy/pgbot.service
 
 # superpowers scratch (SDD workspace)
 .superpowers/
+
+# webapp (Vite + React)
+webapp/node_modules
+webapp/dist
+webapp/test-results

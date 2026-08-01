@@ -8,7 +8,7 @@ COMPOSE     ?= docker compose
 RSYNC_EXCL   = --exclude .git --exclude .venv --exclude .env --exclude __pycache__
 
 .DEFAULT_GOAL := help
-.PHONY: help install run check test secrets clean \
+.PHONY: help install run check test webapp-install webapp-build secrets clean \
         docker-build docker-up docker-down docker-restart docker-logs docker-ps \
         deploy deploy-restart deploy-logs
 
@@ -26,8 +26,15 @@ run:                ## run bot + API locally (needs .env)
 check:              ## byte-compile all modules (quick syntax check)
 	.venv/bin/python -m py_compile *.py && echo "SYNTAX OK"
 
-test:               ## run the dialog test suite (needs requirements-dev.txt installed)
+test:               ## run python + webapp test suites
 	.venv/bin/python -m pytest -q
+	npm --prefix webapp run test -- --run
+
+webapp-install:     ## install webapp dependencies
+	npm --prefix webapp ci
+
+webapp-build:       ## build the webapp into webapp/dist
+	npm --prefix webapp run build
 
 secrets:            ## create .env from example and lock it down (chmod 600)
 	@test -f .env || cp .env.example .env
