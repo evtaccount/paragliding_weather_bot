@@ -16,6 +16,42 @@ import sitesFixture from "../../test/fixtures/sites.json"
 
 const SITES = sitesFixture as Site[]
 
+// jsdom не раскладывает элементы: clientWidth/clientHeight контейнера всегда
+// 0, а Leaflet считает по ним и область просмотра, и положение маркеров.
+// Пока размера нет, проверить «видно ли точку» нечем — DOM маркера создаётся
+// независимо от того, попадает ли он в видимую область (ре-ревью task-12,
+// N1). Подделываем размер на время одного теста, возвращая исходные
+// дескрипторы: они объявлены на Element.prototype, и оставить их
+// переопределёнными значило бы менять поведение jsdom для всех тестов файла.
+function withContainerSize<T>(width: number, height: number, body: () => T): T {
+  const saved = (["clientWidth", "clientHeight"] as const).map(
+    (name) => [name, Object.getOwnPropertyDescriptor(Element.prototype, name)] as const,
+  )
+  Object.defineProperty(Element.prototype, "clientWidth", { configurable: true, get: () => width })
+  Object.defineProperty(Element.prototype, "clientHeight", { configurable: true, get: () => height })
+  try {
+    return body()
+  } finally {
+    for (const [name, descriptor] of saved) {
+      if (descriptor) Object.defineProperty(Element.prototype, name, descriptor)
+      else delete (Element.prototype as unknown as Record<string, unknown>)[name]
+    }
+  }
+}
+
+// Положение маркера в пикселях контейнера (при нулевом смещении панели слоёв
+// это прямо координаты видимой области). Leaflet кладёт его либо в
+// transform: translate3d(...), либо в left/top — выбор делает DomUtil по
+// Browser.any3d, а тот в jsdom ложный (нет ни WebKitCSSMatrix, ни
+// MozPerspective), так что читаются оба варианта, а не только один.
+function markerXY(icon: Element): { x: number; y: number } {
+  const style = (icon as HTMLElement).style
+  const transform = /translate3?d?\((-?[\d.]+)px,\s*(-?[\d.]+)px/.exec(style.transform)
+  if (transform) return { x: Number(transform[1]), y: Number(transform[2]) }
+  if (style.left !== "" && style.top !== "") return { x: parseFloat(style.left), y: parseFloat(style.top) }
+  throw new Error(`У маркера нет положения: transform="${style.transform}", left="${style.left}"`)
+}
+
 test("тап по карте отдаёт координаты наверх", async () => {
   const onTap = vi.fn()
   const { container } = render(
@@ -78,6 +114,70 @@ test("под строгим режимом разработки карта не 
 
   expect(() => unmount()).not.toThrow()
   expect(container.querySelectorAll(".leaflet-container").length).toBe(0)
+})
+
+// Ре-ревью task-12 (N1): карта наводилась на ПЕРВУЮ точку с постоянным зумом
+// 12, а подгонки под маршрут не было нигде. На маршруте из route.json (40 км
+// на юг) это 28 м/пиксель: в рамке 4/3 шириной 360 px видно ~10 × 7,6 км, и
+// пины 10/20/30/40 км лежат за нижним краем на 6/16/26/36 км — пилот видит
+// один пин из пяти. Счёт маркеров такой дефект не ловит (DOM маркера
+// создаётся независимо от области просмотра), поэтому тест смотрит на их
+// ПОЛОЖЕНИЕ в пикселях контейнера.
+test("карта охватывает весь маршрут, а не окрестности первой точки", () => {
+  // Те же координаты, что в test/fixtures/route.json: Гудаури и 40 км на юг.
+  const points = [
+    { lat: 42.4776, lon: 44.4787 },
+    { lat: 42.3877, lon: 44.4787 },
+    { lat: 42.2978, lon: 44.4787 },
+    { lat: 42.2079, lon: 44.4787 },
+    { lat: 42.118, lon: 44.4787 },
+  ]
+  const width = 360
+  const height = 270
+
+  withContainerSize(width, height, () => {
+    const { container } = render(
+      <MapView points={points} sites={[]} onTap={() => {}} onDragPoint={() => {}} />,
+    )
+    const icons = [...container.querySelectorAll(".leaflet-marker-icon")]
+    expect(icons).toHaveLength(points.length)
+
+    // Допуск — половина пина (iconAnchor в pins.ts сдвигает элемент на 8 px):
+    // проверяется, что точка попала в кадр, а не пиксельная раскладка.
+    const slack = 8
+    for (const icon of icons) {
+      const { x, y } = markerXY(icon)
+      expect(x).toBeGreaterThanOrEqual(-slack)
+      expect(x).toBeLessThanOrEqual(width + slack)
+      expect(y).toBeGreaterThanOrEqual(-slack)
+      expect(y).toBeLessThanOrEqual(height + slack)
+    }
+  })
+})
+
+// Ре-ревью task-12 (N6): необязательный onDragPoint (правка круга 1) ничем не
+// закреплён — возврат безусловного `draggable: true` оставлял весь прогон
+// зелёным. Сценарий отказа: на экране маршрута пилот тащит пин, пин уезжает и
+// остаётся на новом месте, а маршрут, таблица, разрез и разбор посчитаны по
+// старым координатам.
+test("без обработчика перетаскивания пин не перетаскивается", () => {
+  const point = { lat: 42.47, lon: 44.48 }
+  const { container } = render(<MapView points={[point]} sites={[]} />)
+
+  const icon = container.querySelector(".leaflet-marker-icon") as HTMLElement
+  expect(icon).not.toBeNull()
+  expect(icon.className).not.toContain("leaflet-marker-draggable")
+
+  // Та же последовательность, что двигает пин в тесте ниже (с `which: 1`), —
+  // положение маркера от неё не меняется.
+  const before = icon.style.transform
+  const opts = (x: number, y: number): MouseEventInit =>
+    ({ bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0, which: 1 }) as MouseEventInit
+  icon.dispatchEvent(new MouseEvent("mousedown", opts(0, 0)))
+  document.body.dispatchEvent(new MouseEvent("mousemove", opts(40, 20)))
+  document.body.dispatchEvent(new MouseEvent("mouseup", opts(40, 20)))
+
+  expect(icon.style.transform).toBe(before)
 })
 
 // Ревью task-11 (повторное): перетаскивание точки маршрута — единственный

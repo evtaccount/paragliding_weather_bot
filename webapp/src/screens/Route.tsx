@@ -85,11 +85,23 @@ const NO_SITES: Site[] = []
 // Карта маршрута отдельным компонентом ради useMemo: MapView пересобирает
 // маркеры при смене ССЫЛКИ на points, а экран перерисовывается ещё и от
 // чужих причин (открытие шторки меняет контекст стека).
-function RouteMap({ points }: { points: RoutePoint[] }) {
-  const latLons = useMemo(() => points.map((p) => ({ lat: p.lat, lon: p.lon })), [points])
+//
+// Подпись пина — дословно из макета (prototype.html:1350: «Точка N км, балл
+// X»), и нажатие на пин открывает ту же карточку точки, что и строка
+// таблицы (там же, 1355): на карте пилот видит, ГДЕ точка, и тапает по ней,
+// а не ищет её километр в таблице.
+function RouteMap({ points, onOpenPoint }: { points: RoutePoint[]; onOpenPoint: (p: RoutePoint) => void }) {
+  const mapPoints = useMemo(
+    () => points.map((p) => ({
+      lat: p.lat,
+      lon: p.lon,
+      title: `Точка ${fmtNum(p.km)} км, балл ${p.score === null ? "—" : fmtNum(p.score)}`,
+    })),
+    [points],
+  )
   return (
     <div className="map">
-      <MapView points={latLons} sites={NO_SITES} />
+      <MapView points={mapPoints} sites={NO_SITES} onPointTap={(i) => onOpenPoint(points[i]!)} />
     </div>
   )
 }
@@ -145,7 +157,7 @@ export function Route({ points, name, date, model }: RouteProps) {
 
   return (
     <>
-      <RouteMap points={result.points} />
+      <RouteMap points={result.points} onOpenPoint={openPointCard} />
 
       <div className="panel">
         <div className="panel__head">
@@ -270,23 +282,27 @@ export function Route({ points, name, date, model }: RouteProps) {
             const isBest = result.best_departure !== null && entry.departure === result.best_departure.departure
             const score = entry.score === null ? "—" : fmtNum(entry.score, 1)
             // Балл не различает варианты вылета: в route.json 15:30
-            // (too_slow) и 07:00 (completable) оба показывают 70,5 —
-            // проходимость приходит отдельным полем каждой записи скана и
-            // попадает в подпись кнопки, чтобы на чипе «не успеваешь» нельзя
-            // было прочитать «то же самое, только позже».
+            // (too_slow) и 07:00 (completable) оба показывают 70,5. Поэтому у
+            // непроходимых вариантов проходимость печатается ВИДИМЫМ текстом
+            // чипа, а не только в его доступном имени: приложение открывают в
+            // Telegram на телефоне, где нет ни курсора, чтобы всплыл title, ни
+            // скринридера, чтобы прочесть aria-label (ре-ревью task-12, N3).
+            // У проходимых вариантов чип остаётся коротким, как в макете
+            // (prototype.html:1155-1163) — предупреждать не о чем.
             const feasibility = feasibilityLabel(entry.feasibility)
+            const warning = entry.feasibility === "completable" ? "" : ` · ${feasibility}`
             return (
               <button
                 key={entry.departure}
                 type="button"
-                className="chip"
+                className="chip chip--dep"
                 aria-pressed={isActive}
                 aria-label={`${entry.departure} → ${score} · ${feasibility}`}
                 style={isActive ? { borderColor: "var(--ink)", color: "var(--ink)" } : undefined}
                 title={isBest ? `Лучший вылет · ${feasibility}` : feasibility}
                 onClick={() => setDeparture(entry.departure)}
               >
-                {entry.departure} → {score}{isBest ? " ★" : ""}
+                {entry.departure} → {score}{isBest ? " ★" : ""}{warning}
               </button>
             )
           })}

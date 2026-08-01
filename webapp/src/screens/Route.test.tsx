@@ -136,12 +136,17 @@ test("маршрут без terrain не роняет экран", async () => {
   expect(screen.getByText(ROUTE_NO_TERRAIN.notes[0]!)).toBeInTheDocument()
 })
 
+// Нажимается НЕ первая строка (третья точка, 20 км): заголовок шторки,
+// собранный из points[0] вместо нажатой точки, обязан ронять этот тест — с
+// первой строкой такая подмена неотличима (ре-ревью task-12, N2). Тот же
+// класс дефекта был Critical задачи 10: тап по дню открывал прогноз первого
+// старта.
 test("нажатие на точку открывает её карточку", async () => {
   vi.stubGlobal("fetch", () => jsonResponse(ROUTE))
   render(<Route points={POINTS} name={ROUTE.route.name} date={ROUTE.route.date} model="ecmwf" />, { wrapper })
   await screen.findByText(ROUTE.verdict.label)
 
-  const target = ROUTE.points[0]!
+  const target = ROUTE.points[2]!
   await userEvent.click(screen.getByRole("button", { name: new RegExp(`^${fmtNum(target.km)} км`) }))
 
   expect(
@@ -202,6 +207,13 @@ test("вердикт и чипы вылета показывают проход�
   expect(screen.getByText(ROUTE.verdict.label)).toBeInTheDocument()
   // Тот же разрыв в чипах перебора: 15:30 и 11:30 показывают одинаковые
   // «70,5», а проходимость у них разная (departure_scan[].feasibility).
+  // Проверяется ВИДИМЫЙ текст, а не только доступное имя (ре-ревью, N3): в
+  // Telegram на телефоне title не всплывает, aria-label читает только
+  // скринридер, и по доступному имени тест был бы зелёным при полностью
+  // одинаковых на вид чипах.
+  expect(screen.getByText("15:30 → 70,5 · не успеваешь до закрытия окна")).toBeInTheDocument()
+  expect(screen.queryByText("15:30 → 70,5")).toBeNull()
+  expect(screen.getByText("11:30 → 70,5")).toBeInTheDocument()
   expect(screen.getByRole("button", { name: "15:30 → 70,5 · не успеваешь до закрытия окна" })).toBeInTheDocument()
   expect(screen.getByRole("button", { name: "11:30 → 70,5 · маршрут проходится" })).toBeInTheDocument()
 })
@@ -209,28 +221,45 @@ test("вердикт и чипы вылета показывают проход�
 // Ревью task-12 (Important-4): тест «нажатие на точку открывает её карточку»
 // сверяет только заголовок шторки, а его собирает сам Route.tsx — тело
 // карточки не проверялось ничем (замена всего PointCardSheet на <div/>
-// оставляла все тесты зелёными). Здесь проверяются именно числа этой точки:
-// подпись высоты берётся из её thermal_ceiling_m, а «Земля» — единственная
-// строка карточки, где домен отдаёт м/с и их надо перевести в км/ч
-// (route.py:MS_TO_KMH): 2,0/4,0 м/с → 7/14 км/ч.
+// оставляла все тесты зелёными).
+//
+// Ре-ревью (N2): открываются ДВЕ разные точки подряд, и первая — не первая
+// строка таблицы. Точка 20 км идёт по маршруту (enroute): у неё свой балл 69
+// и свой лимитирующий фактор, а строки «Земля» нет вовсе — наземный ветер
+// показывается только там, где пилот стоит на земле (route.py:
+// render_point_card). Точка 0 км — старт: балл 84, «Земля» есть, и это
+// единственное место карточки, где домен отдаёт м/с и их надо перевести в
+// км/ч (route.py:MS_TO_KMH): 2,0/4,0 м/с → 7/14 км/ч. Карточка, всегда
+// показывающая первую точку, роняет первую половину теста; карточка,
+// потерявшая перевод единиц или строку роли, — вторую.
 test("карточка точки показывает погоду именно этой точки", async () => {
   vi.stubGlobal("fetch", () => jsonResponse(ROUTE))
   render(<Route points={POINTS} name={ROUTE.route.name} date={ROUTE.route.date} model="ecmwf" />, { wrapper })
   await screen.findByText(ROUTE.verdict.label)
 
-  const target = ROUTE.points[0]!
-  await userEvent.click(screen.getByRole("button", { name: new RegExp(`^${fmtNum(target.km)} км`) }))
-  const card = await screen.findByRole("dialog")
+  const enroute = ROUTE.points[2]!
+  await userEvent.click(screen.getByRole("button", { name: new RegExp(`^${fmtNum(enroute.km)} км`) }))
+  const enrouteCard = await screen.findByRole("dialog")
 
-  expect(within(card).getByText("Ветер 2200 м")).toBeInTheDocument()
-  expect(within(card).getByText("14 км/ч ЮЮЗ")).toBeInTheDocument()
-  expect(within(card).getByText("Земля")).toBeInTheDocument()
-  expect(within(card).getByText("7/14 км/ч")).toBeInTheDocument()
-  expect(within(card).getByText("2464 м")).toBeInTheDocument()
+  expect(within(enrouteCard).getByText("69,0")).toBeInTheDocument()
+  expect(within(enrouteCard).getByText(/ветер вдоль курса/)).toBeInTheDocument()
+  expect(within(enrouteCard).queryByText("Земля")).toBeNull()
+  expect(within(enrouteCard).getByText("Ветер 2200 м")).toBeInTheDocument()
+  expect(within(enrouteCard).getByText("14 км/ч ЮЮЗ")).toBeInTheDocument()
+  expect(within(enrouteCard).getByText("2464 м")).toBeInTheDocument()
+
+  await userEvent.click(within(enrouteCard).getByRole("button", { name: "Закрыть" }))
+  const takeoff = ROUTE.points[0]!
+  await userEvent.click(screen.getByRole("button", { name: new RegExp(`^${fmtNum(takeoff.km)} км`) }))
+  const takeoffCard = await screen.findByRole("dialog")
+
+  expect(within(takeoffCard).getByText("84,0")).toBeInTheDocument()
+  expect(within(takeoffCard).getByText("Земля")).toBeInTheDocument()
+  expect(within(takeoffCard).getByText("7/14 км/ч")).toBeInTheDocument()
   // Подпись и значение — разные узлы (<em>Ограничивает:</em> плюс текст),
   // поэтому две проверки, а не одна на всю строку.
-  expect(within(card).getByText("Ограничивает:")).toBeInTheDocument()
-  expect(within(card).getByText(/спред/)).toBeInTheDocument()
+  expect(within(takeoffCard).getByText("Ограничивает:")).toBeInTheDocument()
+  expect(within(takeoffCard).getByText(/спред/)).toBeInTheDocument()
 })
 
 // Ревью task-12 (Important-4): колонки «вдоль» и «ветер» не проверял никто —
@@ -252,7 +281,10 @@ test("таблица точек показывает составляющую в
 // (prototype.html:1071-1082), а на экране её не было — весь Leaflet задачи 11
 // оставался мёртвым кодом. Маркеров ровно столько, сколько точек в ответе:
 // карта показывает посчитанный профиль, а не только поворотные точки.
-test("на экране маршрута есть карта с точками маршрута", async () => {
+// Трасса (ре-ревью, N7) — единственное, что показывает их ПОРЯДОК: без линии
+// пять одинаковых пинов не читаются как маршрут (в макете её рисует drawMap,
+// prototype.html:1339-1342).
+test("на экране маршрута есть карта с точками маршрута и трассой", async () => {
   vi.stubGlobal("fetch", () => jsonResponse(ROUTE))
   const { container } = render(
     <Route points={POINTS} name={ROUTE.route.name} date={ROUTE.route.date} model="ecmwf" />,
@@ -262,6 +294,42 @@ test("на экране маршрута есть карта с точками �
 
   expect(container.querySelector(".leaflet-container")).not.toBeNull()
   expect(container.querySelectorAll(".leaflet-marker-icon")).toHaveLength(ROUTE.points.length)
+  expect(container.querySelector("path.pgbot-track")).not.toBeNull()
+})
+
+// Ре-ревью task-12 (N7): в макете пин — кнопка, открывающая карточку точки
+// (prototype.html:1345-1356), а перенесённые маркеры не слушали нажатие
+// вовсе. Нажимается пин НЕ первой точки — по той же причине, что и в тесте
+// строки таблицы (N2). Доступное имя пина — подпись из макета «Точка N км,
+// балл X»: Leaflet делает маркер кнопкой (role="button"), и без подписи у
+// неё нет имени ни для пилота, ни для теста.
+test("нажатие на пин карты открывает карточку той же точки", async () => {
+  vi.stubGlobal("fetch", () => jsonResponse(ROUTE))
+  render(<Route points={POINTS} name={ROUTE.route.name} date={ROUTE.route.date} model="ecmwf" />, { wrapper })
+  await screen.findByText(ROUTE.verdict.label)
+
+  const target = ROUTE.points[2]!
+  await userEvent.click(
+    screen.getByRole("button", { name: `Точка ${fmtNum(target.km)} км, балл ${fmtNum(target.score!)}` }),
+  )
+
+  expect(
+    await screen.findByRole("dialog", { name: new RegExp(`${target.eta}.*${roleLabel(target.role)}`) }),
+  ).toBeInTheDocument()
+})
+
+// Ре-ревью task-12 (N5): легенда под разрезом не была закреплена ничем —
+// мутация «легенда убрана» оставляла весь прогон зелёным. Без подписей три
+// слоя (заливка рельефа, полупрозрачный коридор, пунктир базы) пилоту не
+// различить — prototype.html:1113-1119.
+test("под разрезом есть легенда трёх слоёв", async () => {
+  vi.stubGlobal("fetch", () => jsonResponse(ROUTE))
+  render(<Route points={POINTS} name={ROUTE.route.name} date={ROUTE.route.date} model="ecmwf" />, { wrapper })
+  await screen.findByText(ROUTE.verdict.label)
+
+  expect(screen.getByText("рельеф")).toBeInTheDocument()
+  expect(screen.getByText("рабочий коридор")).toBeInTheDocument()
+  expect(screen.getByText("база облаков")).toBeInTheDocument()
 })
 
 // Строка запаса окна и обратного маршрута — prototype.html:1166. Запас
@@ -364,15 +432,29 @@ test("маршрут из двух точек не роняет экран", asy
 })
 
 // Ревью task-9/task-11: main.tsx оборачивает всё приложение в <StrictMode>
-// безусловно (каждый npm run dev). Route.tsx и RouteAnalysisSheet.tsx зовут
-// mutate() в эффекте без стража против повторного вызова (см. комментарий в
-// обоих файлах) — тот же класс дефекта, что уже был Critical на
-// DayAnalysisSheet.tsx (task-9): страж ломал шторку под <StrictMode>, потому
-// что второй вызов mutate() — единственный, что возвращает наблюдателя
-// TanStack Query на мутацию после того, как React синхронно отписал его при
-// пересборке эффекта. Открытие «Разбор от ИИ» проверено через настоящий клик
-// в настоящем дереве (а не изолированным рендером шторки) — task-9 явно
-// показал, что дефект воспроизводится только так.
+// безусловно (каждый npm run dev), поэтому оба теста ниже идут через
+// strictWrapper — дерево той же формы, что в проде, а не голый рендер.
+//
+// ВАЖНО, что именно ловит каждый из них (ре-ревью task-12, N4 — прежний
+// комментарий обещал за оба больше, чем проверял):
+//
+// Первый тест НЕ является регрессионным на страж против повторного вызова
+// mutate(). Проверено мутацией: страж (`useRef(false)` + ранний выход),
+// поставленный в эффект Route.tsx, оставляет этот тест ЗЕЛЁНЫМ, а красным
+// делает «перебор времени вылета шлёт новый запрос с departure» — на экране
+// страж ломает не доставку первого результата, а законный повторный запрос
+// при смене departure. Этот тест закрепляет другое: что экран под двойным
+// монтированием доходит до вердикта, а не остаётся на индикаторе (двойной
+// вызов mutate() проходит через очередь heavy() и не отменяет сам себя).
+//
+// Второй тест (шторка) — тот самый регрессионный: возвращение стража в
+// эффект RouteAnalysisSheet.tsx роняет его по таймауту, проверено и в
+// красной фазе круга правок 1, и мутацией. Дефект того же класса был
+// Critical на DayAnalysisSheet.tsx (task-9): второй вызов mutate() —
+// единственный, что возвращает наблюдателя TanStack Query на мутацию после
+// того, как React отписал его при пересборке эффекта; страж блокировал
+// именно его. Воспроизводится только настоящим кликом в настоящем дереве, а
+// не изолированным рендером шторки (task-9 это показал явно).
 test("под строгим режимом разработки маршрут доходит до вердикта, а не виснет", async () => {
   vi.stubGlobal("fetch", () => jsonResponse(ROUTE))
   render(

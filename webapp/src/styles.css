@@ -227,6 +227,18 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
    не имеют — их цвета приходят из палитры графиков (charts/palette.ts). */
 .map { position: relative; border-radius: var(--r); overflow: hidden; border: 1px solid var(--rule); background: var(--panel); aspect-ratio: 4/3 }
 
+/* Трасса маршрута на карте (в макете её рисует drawMap,
+   prototype.html:1339-1342: цвет --ink поверх светлой подложки). Цвет задан
+   здесь, а не опцией Leaflet, чтобы линия жила в той же теме, что и всё
+   остальное; правило перебивает презентационный атрибут stroke, который
+   Leaflet ставит сам. */
+.pgbot-track { stroke: var(--ink); stroke-width: 2.4; stroke-linejoin: round; stroke-linecap: round; fill: none }
+
+/* Чип времени вылета несёт у непроходимых вариантов целую фразу
+   (route.py:FEASIBILITY_RU) — ему, в отличие от чипа модели в шапке, нужен
+   перенос, иначе фраза вылезает за рамку панели на узком экране. */
+.chip--dep { white-space: normal; text-align: left }
+
 .route-section { width: 100%; height: 150px; display: block }
 
 .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 11px; color: var(--muted); margin-top: 9px }

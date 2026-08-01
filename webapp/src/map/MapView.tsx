@@ -19,19 +19,29 @@ import { routePointIcon, siteIcon } from "./pins"
 
 export type LatLon = { lat: number; lon: number }
 
-// onTap/onDragPoint необязательны: экран «Маршрут» (screens/Route.tsx)
+// Точка на карте — координаты плюс необязательная подпись. Подпись нужна
+// потому, что Leaflet делает маркер клавиатурной кнопкой (Marker._initIcon
+// при keyboard:true ставит role="button" и tabindex), а кнопка без имени —
+// пустая строка для скринридера и для теста. В макете пин подписан «Точка N
+// км, балл X» (prototype.html:1350), эту же подпись передаёт экран маршрута.
+export type MapPoint = LatLon & { title?: string }
+
+// Все три колбэка необязательны: экран «Маршрут» (screens/Route.tsx)
 // показывает картой уже посчитанный маршрут и НЕ владеет его точками (они
 // приходят пропом извне), поэтому ставить и двигать их ему нечем.
 // Перетаскиваемый маркер без обработчика был бы враньём: он остался бы там,
 // куда его бросили, хотя маршрут и его разбор не изменились. Поэтому без
 // onDragPoint маркеры не перетаскиваются вовсе, а без onTap карта не
 // слушает клик. Ставит и двигает точки шторка «Новый маршрут» (задача 13) —
-// она передаёт оба колбэка.
+// она передаёт оба колбэка. onPointTap — нажатие на сам пин: в макете это
+// второй способ открыть карточку точки, наравне со строкой таблицы
+// (prototype.html:1355).
 type Props = {
-  points: LatLon[]
+  points: MapPoint[]
   sites: Site[]
   onTap?: (p: LatLon) => void
   onDragPoint?: (i: number, p: LatLon) => void
+  onPointTap?: (i: number) => void
 }
 
 const TILE_URL = "/tiles/{z}/{x}/{y}.png"
@@ -45,18 +55,24 @@ const TILE_MAX_ZOOM = 19
 const FALLBACK_CENTER: L.LatLngExpression = [42.47, 44.48]
 const DEFAULT_ZOOM = 12
 
-export function MapView({ points, sites, onTap, onDragPoint }: Props) {
+// Поля вокруг маршрута при подгонке области просмотра — чтобы крайние пины
+// не липли к рамке карты и была видна трасса за ними.
+const FIT_PADDING: L.PointExpression = [24, 24]
+
+export function MapView({ points, sites, onTap, onDragPoint, onPointTap }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const mapRef = useRef<L.Map | null>(null)
 
   // Колбэки в ref: родитель обычно передаёт новую функцию на каждый рендер,
   // а карту из-за этого пересоздавать не нужно — эффект создания карты
-  // выполняется один раз (см. ниже), поэтому актуальные onTap/onDragPoint
-  // читаются через ref, а не попадают в его зависимости.
+  // выполняется один раз (см. ниже), поэтому актуальные onTap/onDragPoint/
+  // onPointTap читаются через ref, а не попадают в его зависимости.
   const onTapRef = useRef(onTap)
   const onDragPointRef = useRef(onDragPoint)
+  const onPointTapRef = useRef(onPointTap)
   onTapRef.current = onTap
   onDragPointRef.current = onDragPoint
+  onPointTapRef.current = onPointTap
 
   useEffect(() => {
     const container = containerRef.current
@@ -65,7 +81,27 @@ export function MapView({ points, sites, onTap, onDragPoint }: Props) {
     const first = points[0] ?? sites[0]
     const center: L.LatLngExpression = first ? [first.lat, first.lon] : FALLBACK_CENTER
 
-    const map = L.map(container).setView(center, DEFAULT_ZOOM)
+    const map = L.map(container)
+    // Область просмотра — по всему маршруту, а не по его первой точке.
+    // Наводка на первую точку с постоянным зумом показывает окрестности
+    // старта: на route.json (40 км строго на юг, широта 42,5) зум 12 — это
+    // 28 м/пиксель, то есть около 10 × 7,6 км в рамке 4/3, и четыре пина из
+    // пяти оказываются за краем (ре-ревью task-12, N1).
+    //
+    // Подгонка требует известного размера контейнера (Leaflet берёт его из
+    // clientWidth/clientHeight): при нулевом размере getBoundsZoom считает
+    // масштаб от отрицательной ширины и даёт NaN. Ноль бывает не только в
+    // jsdom: неактивная вкладка приложения скрыта через `display: none`
+    // (styles.css, `.view[hidden]`), и карта, созданная в этот момент,
+    // размера не имеет. Тогда — прежняя наводка на первую точку, а не
+    // сломанный масштаб.
+    const size = map.getSize()
+    const canFit = points.length >= 2 && size.x > 0 && size.y > 0
+    if (canFit) {
+      map.fitBounds(L.latLngBounds(points.map((p) => [p.lat, p.lon])), { padding: FIT_PADDING })
+    } else {
+      map.setView(center, DEFAULT_ZOOM)
+    }
     L.tileLayer(TILE_URL, { attribution: TILE_ATTRIBUTION, maxZoom: TILE_MAX_ZOOM }).addTo(map)
 
     map.on("click", (e: L.LeafletMouseEvent) => {
@@ -78,7 +114,9 @@ export function MapView({ points, sites, onTap, onDragPoint }: Props) {
       mapRef.current = null
     }
     // Карта создаётся один раз при монтировании — сюда намеренно не входят
-    // ни points/sites (нужны только для начального центра), ни onTap
+    // ни points/sites (нужны только для НАЧАЛЬНОЙ области просмотра: центра
+    // или подгонки под маршрут; дальше её двигает пилот, и переставлять её
+    // под каждую правку точек значило бы отменять его жест), ни onTap
     // (читается через ref).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -100,24 +138,44 @@ export function MapView({ points, sites, onTap, onDragPoint }: Props) {
     }
   }, [sites])
 
-  // Маркеры точек маршрута — перетаскиваемые (только когда есть кому отдать
-  // новое положение, см. Props), пересобираются при смене points.
+  // Трасса и маркеры точек маршрута — один набор, пересобирается при смене
+  // points. Трасса (в макете её рисует drawMap, prototype.html:1339-1342) —
+  // единственное, что показывает ПОРЯДОК точек: без линии пять одинаковых
+  // пинов не читаются как маршрут. Цвет линии — не свойство Leaflet, а класс
+  // .pgbot-track в styles.css (var(--ink)): цвета в этом проекте живут
+  // только в CSS-переменных темы и в charts/palette.ts.
+  // interactive: false — линия не должна перехватывать нажатия у пинов.
   useEffect(() => {
     const map = mapRef.current
     if (!map) return
     const draggable = onDragPointRef.current !== undefined
 
+    // Отрисовщик задан явно (new L.SVG()), а не оставлен на автовыбор:
+    // фабрика L.svg() отдаёт слой только если у браузера есть
+    // createSVGRect (Browser.svg) — проверка времён VML и IE8. Там, где её
+    // нет, Leaflet возвращает null, и добавление линии роняет всю карту
+    // (`Cannot use 'in' operator to search for '_leaflet_id' in null`) —
+    // ровно это и происходит в jsdom, где идут тесты карты.
+    const track =
+      points.length >= 2
+        ? L.polyline(points.map((p) => [p.lat, p.lon] as L.LatLngTuple), {
+            className: "pgbot-track", interactive: false, renderer: new L.SVG(),
+          }).addTo(map)
+        : null
+
     const markers = points.map((p, i) => {
-      const marker = L.marker([p.lat, p.lon], { icon: routePointIcon(), draggable })
+      const marker = L.marker([p.lat, p.lon], { icon: routePointIcon(), draggable, title: p.title })
       marker.on("dragend", () => {
         const pos = marker.getLatLng()
         onDragPointRef.current?.(i, { lat: pos.lat, lon: pos.lng })
       })
+      marker.on("click", () => onPointTapRef.current?.(i))
       marker.addTo(map)
       return marker
     })
 
     return () => {
+      track?.remove()
       for (const m of markers) m.remove()
     }
   }, [points])
