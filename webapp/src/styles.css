@@ -1,0 +1,148 @@
+/* Оболочка мини-приложения — раскладка и размеры взяты из
+ * miniapp/prototype.html (единственный источник вёрстки — весь CSS макета
+ * лежит в строках 1-489). Здесь — только то, что нужно оболочке (шапка,
+ * тело/вкладки, шторка, чип, строка настроек, пустое состояние): стили
+ * самих экранов (день/обзор/маршрут — полосы, столб воздуха, таблица
+ * маршрута, сетка ветра и т.д.) заводят задачи 8-13, когда пишут сами
+ * экраны — переносить их сюда заранее было бы лишним.
+ *
+ * Цветов-литералов в TSX-компонентах нет: все цвета — через переменные
+ * темы Telegram (--tg-*, App.tsx выставляет их из telegram.themeVars() на
+ * document.documentElement) с запасными значениями здесь же — теми же hex,
+ * что в макете для светлой темы. Собственной тёмной темы (у макета —
+ * @media (prefers-color-scheme) и [data-theme]) здесь нет: тёмный вариант
+ * приходит от самого Telegram через themeParams, а не через ручной тумблер
+ * или системную схему браузера.
+ *
+ * Палитра графиков макета (--g-*, --s-*, --ground) — задача 7, здесь не
+ * заводится. Исключение — --air/--air-deep/--air-wash: без них не из чего
+ * сделать :focus-visible и .chip--live, которые нужны уже в шапке.
+ */
+
+:root {
+  --surface: var(--tg-bg-color, #FCFCFB);
+  --panel: var(--tg-section-bg-color, #FFFFFF);
+  --sunk: var(--tg-secondary-bg-color, #F3F1EB);
+  --ink: var(--tg-text-color, #1C1C1A);
+  --muted: var(--tg-hint-color, #6A6A63);
+  --faint: var(--tg-subtitle-text-color, #9E9E94);
+  --rule: var(--tg-section-separator-color, #E6E4DD);
+  --air: var(--tg-link-color, #6EAAD2);
+  --air-deep: var(--tg-button-color, #2F6F8F);
+  --air-wash: rgba(110, 170, 210, .14);
+
+  --shadow: 0 1px 2px rgba(28, 28, 26, .06), 0 8px 24px -12px rgba(28, 28, 26, .18);
+  --r: 14px;
+
+  --f-body: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, system-ui, sans-serif;
+  --f-data: ui-monospace, "SF Mono", SFMono-Regular, Menlo, "DejaVu Sans Mono", monospace;
+}
+
+/* ── сброс (miniapp/prototype.html:80-84) ────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box }
+html, body, #root { height: 100% }
+body {
+  margin: 0;
+  background: var(--sunk);
+  color: var(--ink);
+  font-family: var(--f-body);
+  -webkit-font-smoothing: antialiased;
+  font-size: 15px;
+  line-height: 1.45;
+}
+button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer }
+:focus-visible { outline: 2px solid var(--air-deep); outline-offset: 2px; border-radius: 6px }
+
+/* ── оболочка приложения (miniapp/prototype.html:100-103) ─────────────
+   В отличие от макета, рамки телефона (max-width/box-shadow/border-radius
+   у .app, .stage вокруг) здесь нет — та рамка была витриной прототипа в
+   браузере рядом с переключателем темы; настоящее мини-приложение
+   занимает целиком экран, который уже даёт Telegram. */
+.app {
+  position: relative;
+  width: 100%;
+  height: 100dvh;
+  background: var(--surface);
+  overflow: hidden;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+}
+
+/* ── контекстная шапка: не исчезает никогда (100-127) ────────────────── */
+.ctx { background: var(--panel); border-bottom: 1px solid var(--rule); padding: 10px 14px 9px; display: grid; gap: 8px }
+.ctx__top { display: flex; align-items: center; gap: 8px }
+.site { display: flex; align-items: baseline; gap: 7px; min-width: 0; flex: 1; text-align: left }
+.site__name { font-size: 17px; font-weight: 680; letter-spacing: -.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
+.chip { font-family: var(--f-data); font-size: 11px; padding: 4px 8px; border-radius: 7px; border: 1px solid var(--rule); color: var(--muted); white-space: nowrap; flex: none }
+.chip--live { border-color: var(--air); color: var(--air-deep); background: var(--air-wash) }
+.ctx__date { display: flex; align-items: center; gap: 2px }
+.dateline { flex: 1; text-align: center; font-family: var(--f-data); font-size: 12.5px; letter-spacing: .02em; color: var(--ink) }
+
+/* ── тело: единственная область, которая прокручивается (129-133) ───── */
+.body { overflow-y: auto; overflow-x: hidden; background: var(--sunk); -webkit-overflow-scrolling: touch }
+.view { padding: 12px 12px 20px; display: grid; gap: 10px }
+.view[hidden] { display: none }
+
+/* ── нижняя навигация (325-333) ───────────────────────────────────────
+   Селектор активной вкладки — [aria-selected="true"], а не
+   [aria-current="page"] макета: оболочка использует паттерн ARIA
+   tablist/tab (этого требует App.test.tsx), а не навигационные ссылки. */
+.tabs { display: grid; grid-template-columns: repeat(4, 1fr); background: var(--panel); border-top: 1px solid var(--rule); padding: 5px 4px calc(5px + env(safe-area-inset-bottom)) }
+.tab { display: grid; justify-items: center; gap: 2px; padding: 5px 2px; border-radius: 10px; color: var(--faint) }
+.tab svg { width: 21px; height: 21px; stroke: currentColor; fill: none; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round }
+.tab span { font-size: 10px; font-weight: 600; letter-spacing: .01em }
+.tab[aria-selected="true"] { color: var(--ink) }
+
+/* ── шторка (335-351) ─────────────────────────────────────────────────
+   Без z-index макета (20/21 — там шторка всего одна): для настоящего
+   стека шторок z-index намеренно не задаётся, порядок наложения держится
+   на порядке в DOM — каждая следующая открытая шторка рендерится позже и
+   поэтому оказывается выше предыдущей. */
+.scrim { position: absolute; inset: 0; background: rgba(12, 14, 16, .42) }
+.sheet {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  background: var(--panel); border-radius: 20px 20px 0 0;
+  box-shadow: 0 -8px 32px -12px rgba(0, 0, 0, .4);
+  max-height: 88%; display: grid; grid-template-rows: auto 1fr;
+}
+.sheet__h { padding: 13px 16px 10px; border-bottom: 1px solid var(--rule); display: flex; align-items: center; gap: 12px }
+.sheet__h b { flex: 1; font-size: 15px; font-weight: 660 }
+.sheet__x { width: 28px; height: 28px; border-radius: 8px; display: grid; place-items: center; color: var(--muted); background: var(--sunk); font-size: 15px; flex: none }
+.sheet__b { overflow-y: auto; padding: 13px 16px 22px }
+.sheet__grab { width: 34px; height: 4px; border-radius: 2px; background: var(--rule); margin: 7px auto 0 }
+
+/* ── строки настроек/старта (302-311) — использует Row.tsx (задача 11) ─ */
+.rows { background: var(--panel); border: 1px solid var(--rule); border-radius: var(--r); overflow: hidden }
+.row { display: flex; align-items: center; gap: 12px; padding: 11px 13px; width: 100%; text-align: left; border-top: 1px solid var(--rule) }
+.row:first-child { border-top: 0 }
+.row__m { flex: 1; min-width: 0; display: grid; gap: 2px }
+.row__t { font-size: 14px; font-weight: 560 }
+.row__s { font-size: 11.5px; color: var(--muted) }
+.row__v { font-family: var(--f-data); font-size: 13px; color: var(--muted); flex: none }
+
+/* ── пустое состояние (261-263) — использует ErrorBox и экран вне Telegram */
+.empty { padding: 13px 14px; font-size: 12.5px; color: var(--muted); background: var(--panel); border: 1px dashed var(--rule); border-radius: var(--r) }
+.empty b { display: block; color: var(--ink); font-size: 13.5px; margin-bottom: 3px }
+.empty button { margin-top: 8px; padding: 7px 12px; border: 1px solid var(--rule); border-radius: 8px; color: var(--ink); font-weight: 600 }
+.empty button:hover { border-color: var(--air) }
+
+/* ── экран вне Telegram — своего в макете нет: прототип не открывается
+   вне Telegram по определению (это его демонстрационная HTML-страница) */
+.offline { min-height: 100dvh; display: grid; place-items: center; padding: 24px; background: var(--sunk) }
+.offline .empty { max-width: 360px }
+
+/* ── спиннер — в макете нет: прототип статичен, состояний загрузки не
+   показывает */
+@keyframes spin { to { transform: rotate(360deg) } }
+.spinner {
+  display: inline-block;
+  width: 14px; height: 14px;
+  border-radius: 50%;
+  border: 2px solid var(--rule);
+  border-top-color: var(--ink);
+  animation: spin .7s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner { animation-duration: .001ms }
+}

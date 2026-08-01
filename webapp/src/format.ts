@@ -1,0 +1,48 @@
+// Форматирование чисел, дат, направлений ветра и часов — общее для всех
+// экранов мини-приложения.
+//
+// Числа и румбы взяты дословно из miniapp/prototype.html (единственный
+// источник вёрстки и форматов, см. task-6-brief): `num` (строка 715) и
+// `CARD16`/`compass` (строки 497-499) — чтобы вид совпадал с тем, что бот
+// уже показывает пилоту в PNG-графиках и тексте.
+//
+// Дата (`fmtDate`) и час (`fmtHour`) в макете форматируются иначе (там —
+// сокращённый месяц и заглавный день недели для внутреннего прототипа);
+// здесь формат продиктован дословным тестом task-6-brief (Step 1) —
+// "сб, 25 июля": строчный день недели, число без ведущего нуля, месяц
+// полным словом в родительном падеже.
+
+const CARD16 = ["С", "ССВ", "СВ", "ВСВ", "В", "ВЮВ", "ЮВ", "ЮЮВ", "Ю", "ЮЮЗ", "ЮЗ", "ЗЮЗ", "З", "ЗСЗ", "СЗ", "ССЗ"]
+
+const WEEKDAYS = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"]
+
+const MONTHS_GENITIVE = [
+  "января", "февраля", "марта", "апреля", "мая", "июня",
+  "июля", "августа", "сентября", "октября", "ноября", "декабря",
+]
+
+export function fmtNum(v: number, dec?: number): string {
+  return v.toFixed(dec ?? 0).replace(".", ",")
+}
+
+export function compass(deg: number): string {
+  const normalized = ((deg % 360) + 360) % 360
+  return CARD16[Math.round(normalized / 22.5) % 16]!
+}
+
+export function fmtDate(iso: string): string {
+  const date = new Date(`${iso}T00:00:00`)
+  const weekday = WEEKDAYS[(date.getDay() + 6) % 7]!
+  const month = MONTHS_GENITIVE[date.getMonth()]!
+  return `${weekday}, ${date.getDate()} ${month}`
+}
+
+// м/с с одним знаком после запятой — то же соглашение, что в макете для
+// скорости ветра (`num(v, 1) + " м/с"`, см. строки 812, 905, 972, 1518).
+export function fmtWind(ms: number): string {
+  return `${fmtNum(ms, 1)} м/с`
+}
+
+export function fmtHour(h: number): string {
+  return `${String(h).padStart(2, "0")}:00`
+}
