@@ -9,10 +9,12 @@ import { createContext, useContext, useCallback, useEffect, useRef, useState } f
 import type { ReactNode } from "react"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { usePrefs, useSites } from "./api/queries"
+import type { RoutePointRow } from "./api/queries"
 import type { Prefs, Site } from "./api/types"
 import { fmtDate } from "./format"
 import { Forecast } from "./screens/Forecast"
 import { Overview } from "./screens/Overview"
+import { Route } from "./screens/Route"
 import * as telegram from "./telegram"
 import { resolveThemeVars } from "./theme"
 import { Chip } from "./ui/Chip"
@@ -124,6 +126,16 @@ const TABS: { key: TabKey; label: string; icon: ReactNode }[] = [
     ),
   },
 ]
+
+// Вкладка «Маршрут» (задача 12) читает готовый список точек, а не создаёт
+// его сама — форм ввода (карта/GPX/KML) и сохранённых маршрутов ещё нет,
+// их заводит задача 13. Пустой массив — константа МОДУЛЯ, а не литерал
+// внутри JSX: Route.tsx перечитывает проп `points` в зависимостях своего
+// эффекта и зовёт mutate() заново при смене ссылки — новый `[]` на каждый
+// рендер Shell слал бы этот эффект вхолостую на каждый чужой ре-рендер
+// (экран и так рано выходит по `points.length < 2`, но зачем создавать
+// новую ссылку без нужды).
+const NO_ROUTE_POINTS: RoutePointRow[] = []
 
 // ────────────────────────────────────────────────────────────── шапка
 // Возвращает null и когда список стартов ещё грузится, и когда он пуст —
@@ -282,7 +294,7 @@ function ShellContent() {
           <Overview site={site} model={model} onOpenDay={openDay} />
         </section>
         <section className="view" hidden={tab !== "route"} aria-label="Маршрут">
-          <p>Маршрут</p>
+          <Route points={NO_ROUTE_POINTS} name={null} date={date} model={model} />
         </section>
         <section className="view" hidden={tab !== "set"} aria-label="Настройки">
           <p>Настройки</p>
