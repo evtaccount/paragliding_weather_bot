@@ -18,11 +18,15 @@
 // (последний км рельефной сетки — единственная общая система координат
 // между рельефом и погодой на этом графике).
 //
-// Рабочий коридор и база облаков известны только В ТОЧКАХ маршрута (route.py:
-// cloud_base_m/working_band_m считаются на сэмпл, не на каждый километр
-// рельефной сетки) — линии между соседними точками соединены отрезками
-// (обычная практика графиков, а не выдумывание данных: как и метеограмма
-// соединяет часовые отсчёты прямыми, не имея данных между ними).
+// Рабочий коридор и база облаков известны только В ТОЧКАХ маршрута
+// (forecast.py:_ceiling_m и route.py:cloud_base_m считают их на сэмпл, не на
+// каждый километр рельефной сетки) — линии между соседними точками соединены
+// отрезками (обычная практика графиков, а не выдумывание данных: как и
+// метеограмма соединяет часовые отсчёты прямыми, не имея данных между ними).
+// Верх коридора — thermal_ceiling_m (рельеф плюс глубина пограничного слоя,
+// forecast.py:_ceiling_m:568-578), а НЕ cloud_base_m: база облаков выше
+// потолка термички и рисуется отдельным пунктиром — рисовать коридор до неё
+// значило бы завышать рабочую высоту.
 //
 // Цвета: TERRAIN/BAND — из palette.ts (те же, что и в AirColumn.tsx, чтобы
 // рельеф на разных приборах выглядел одинаково); цвет точки — colorOfCategory
@@ -47,10 +51,23 @@ const PAD_BOTTOM = 20
 const CHART_H = HEIGHT - PAD_TOP - PAD_BOTTOM
 const GRID_STEP_M = 500
 
-// Точка «плывёт» внутри рабочего коридора (55% высоты от рельефа до потолка),
-// как в макете (buildSection: `p.terrain + (p.base - p.terrain) * .55`) —
-// чисто отображение, не влияет на расчёт.
+// Точка «плывёт» внутри рабочего коридора — на 55% высоты от рельефа до его
+// верха, как в макете (buildSection: `p.terrain + (p.base - p.terrain) *
+// .55`; у макета верх коридора называется base, здесь это
+// thermal_ceiling_m — см. шапку файла). Чисто отображение, на расчёт не
+// влияет.
 const MARKER_BAND_FRACTION = 0.55
+
+// Километр точки округлён доменом до 0,1 (forecast.py:_point_dict — `"km":
+// round(s.km, 1)`), а километр узкого места приходит СЫРЫМ float того же
+// сэмпла (criteria.py:802 — `{"km": worst["km"], ...}`, в forecast.py не
+// округляется). На route.json это 10.007557221018047 против 10,0 — строгое
+// равенство не совпадало никогда, и подпись узкого места на разрезе не
+// выделялась ни разу (ревью task-12, Important-4). Сравниваются поэтому оба
+// километра, приведённые к той же десятой, что и сам домен.
+function sameKm(a: number, b: number): boolean {
+  return Math.round(a * 10) === Math.round(b * 10)
+}
 
 export function RouteProfile({ points, terrain, bottleneckKm }: RouteProfileProps) {
   if (terrain === null || terrain.km.length === 0) {
@@ -97,6 +114,8 @@ export function RouteProfile({ points, terrain, bottleneckKm }: RouteProfileProp
       ? cloudBasePoints.map((p) => `${x(p.km)},${y(p.cloud_base_m!)}`).join(" ")
       : null
 
+  const isBottleneck = (km: number): boolean => bottleneckKm !== null && sameKm(km, bottleneckKm)
+
   function markerY(p: RoutePoint): number {
     if (p.terrain_m === null) return y(lo)
     if (p.thermal_ceiling_m === null) return y(p.terrain_m)
@@ -120,10 +139,15 @@ export function RouteProfile({ points, terrain, bottleneckKm }: RouteProfileProp
         </g>
       ))}
 
-      {bandPolygon !== null && <polygon points={bandPolygon} fill={BAND} opacity={0.34} />}
+      {/* Классы route-band/route-cloud-base — как и route-terrain ниже: не
+          для стилей (цвета и штрих заданы атрибутами), а чтобы тест мог
+          отличить слой коридора от заливки рельефа и пунктир базы от прочих
+          линий, не гадая по атрибуту fill. */}
+      {bandPolygon !== null && <polygon className="route-band" points={bandPolygon} fill={BAND} opacity={0.34} />}
 
       {cloudBaseLine !== null && (
         <polyline
+          className="route-cloud-base"
           points={cloudBaseLine}
           fill="none"
           style={{ stroke: "var(--air-deep)" }}
@@ -148,8 +172,8 @@ export function RouteProfile({ points, terrain, bottleneckKm }: RouteProfileProp
           />
           <text
             x={x(p.km)} y={HEIGHT - 6} textAnchor="middle" fontSize={8}
-            style={{ fill: p.km === bottleneckKm ? "var(--ink)" : "var(--faint)" }}
-            fontWeight={p.km === bottleneckKm ? 700 : 400}
+            style={{ fill: isBottleneck(p.km) ? "var(--ink)" : "var(--faint)" }}
+            fontWeight={isBottleneck(p.km) ? 700 : 400}
           >
             {Math.round(p.km)}
           </text>

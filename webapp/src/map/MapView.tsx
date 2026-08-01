@@ -19,11 +19,19 @@ import { routePointIcon, siteIcon } from "./pins"
 
 export type LatLon = { lat: number; lon: number }
 
+// onTap/onDragPoint необязательны: экран «Маршрут» (screens/Route.tsx)
+// показывает картой уже посчитанный маршрут и НЕ владеет его точками (они
+// приходят пропом извне), поэтому ставить и двигать их ему нечем.
+// Перетаскиваемый маркер без обработчика был бы враньём: он остался бы там,
+// куда его бросили, хотя маршрут и его разбор не изменились. Поэтому без
+// onDragPoint маркеры не перетаскиваются вовсе, а без onTap карта не
+// слушает клик. Ставит и двигает точки шторка «Новый маршрут» (задача 13) —
+// она передаёт оба колбэка.
 type Props = {
   points: LatLon[]
   sites: Site[]
-  onTap: (p: LatLon) => void
-  onDragPoint: (i: number, p: LatLon) => void
+  onTap?: (p: LatLon) => void
+  onDragPoint?: (i: number, p: LatLon) => void
 }
 
 const TILE_URL = "/tiles/{z}/{x}/{y}.png"
@@ -61,7 +69,7 @@ export function MapView({ points, sites, onTap, onDragPoint }: Props) {
     L.tileLayer(TILE_URL, { attribution: TILE_ATTRIBUTION, maxZoom: TILE_MAX_ZOOM }).addTo(map)
 
     map.on("click", (e: L.LeafletMouseEvent) => {
-      onTapRef.current({ lat: e.latlng.lat, lon: e.latlng.lng })
+      onTapRef.current?.({ lat: e.latlng.lat, lon: e.latlng.lng })
     })
 
     mapRef.current = map
@@ -92,16 +100,18 @@ export function MapView({ points, sites, onTap, onDragPoint }: Props) {
     }
   }, [sites])
 
-  // Маркеры точек маршрута — перетаскиваемые, пересобираются при смене points.
+  // Маркеры точек маршрута — перетаскиваемые (только когда есть кому отдать
+  // новое положение, см. Props), пересобираются при смене points.
   useEffect(() => {
     const map = mapRef.current
     if (!map) return
+    const draggable = onDragPointRef.current !== undefined
 
     const markers = points.map((p, i) => {
-      const marker = L.marker([p.lat, p.lon], { icon: routePointIcon(), draggable: true })
+      const marker = L.marker([p.lat, p.lon], { icon: routePointIcon(), draggable })
       marker.on("dragend", () => {
         const pos = marker.getLatLng()
-        onDragPointRef.current(i, { lat: pos.lat, lon: pos.lng })
+        onDragPointRef.current?.(i, { lat: pos.lat, lon: pos.lng })
       })
       marker.addTo(map)
       return marker

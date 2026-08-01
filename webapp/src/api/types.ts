@@ -372,7 +372,12 @@ export type RoutePoint = {
 
 export type RouteResult = {
   route: {
-    name: string
+    // name — null у безымянного маршрута: поле запроса необязательно
+    // (api.py:RouteIn — `name: str | None = None`), а домен кладёт его в
+    // ответ как есть (forecast.py:799 — `"name": name`). Экран маршрута
+    // сегодня получает именно null (App.tsx передаёт name={null}, пока
+    // задача 13 не даёт выбрать сохранённый маршрут).
+    name: string | null
     date: string
     departure: string
     timezone: string

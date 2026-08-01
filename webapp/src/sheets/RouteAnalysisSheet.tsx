@@ -20,7 +20,14 @@
 // продакшен-сборке его не будет вовсе, а серверный кэш разбора (forecast.py)
 // и клиентская очередь (api/queue.ts) не дают второму запросу тратить квоту
 // Gemini впустую.
-import { useEffect, useRef } from "react"
+//
+// Ревью task-12 (Critical-1) поймало ровно этот дефект уже здесь: страж
+// `useRef(false)` уехал в коммит с меткой «ДЕФЕКТ ДЛЯ КРАСНОЙ ФАЗЫ», и
+// шторка под каждым `npm run dev` навсегда оставалась на индикаторе. Тест
+// «под строгим режимом разработки открытие «Разбор от ИИ» доходит до
+// текста, а не виснет» (screens/Route.test.tsx) краснеет от возвращения
+// стража — проверено перед его удалением.
+import { useEffect } from "react"
 import { useRouteAnalysis } from "../api/queries"
 import type { RoutePointRow } from "../api/queries"
 import { ErrorBox } from "../ui/ErrorBox"
@@ -37,12 +44,8 @@ type RouteAnalysisSheetProps = {
 export function RouteAnalysisSheet({ points, name, date, departure, model }: RouteAnalysisSheetProps) {
   const analysis = useRouteAnalysis()
   const { mutate } = analysis
-  // ДЕФЕКТ ДЛЯ КРАСНОЙ ФАЗЫ (временно): страж от повторного вызова.
-  const called = useRef(false)
 
   useEffect(() => {
-    if (called.current) return
-    called.current = true
     mutate({ points, name, date, departure, model })
   }, [points, name, date, departure, model, mutate])
 

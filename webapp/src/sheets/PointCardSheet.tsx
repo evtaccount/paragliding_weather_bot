@@ -126,10 +126,15 @@ export function PointCardSheet({ point: p }: PointCardSheetProps) {
         </p>
       ))}
 
-      <div className="kv" style={{ marginTop: 10, display: "grid", gap: 4 }}>
+      {/* Раскладка пар — класс .kv из макета (prototype.html:378-383):
+          моноширинный шрифт, разделители строк и tabular-nums, без которых
+          числа в правой колонке не выстраиваются друг под другом. Инлайновых
+          повторов тех же свойств здесь нет — они молча перебивали бы правила
+          styles.css при следующей правке макета. */}
+      <div className="kv" style={{ marginTop: 10 }}>
         {rows.map((row) => (
-          <div key={row.label} style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5 }}>
-            <span style={{ color: "var(--muted)" }}>{row.label}</span>
+          <div key={row.label}>
+            <span>{row.label}</span>
             <b>{row.value}</b>
           </div>
         ))}

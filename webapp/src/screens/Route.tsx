@@ -1,10 +1,13 @@
-// Экран «Маршрут»: вердикт, разрез рельефа, таблица точек, перебор времени
-// вылета, разбор от ИИ — раскладка ровно из renderRoute (miniapp/
-// prototype.html:1067-1194). Карта в макете (строки 1071-1082) сюда не
-// перенесена: заголовок задачи называет ровно четыре элемента (вердикт,
-// разрез, карточка точки, разбор маршрута) — карта, сохранённые маршруты и
-// «Новый маршрут» принадлежат задаче 13 (там же появится способ добавить
-// точки; здесь их подставляют извне).
+// Экран «Маршрут»: карта, вердикт, разрез рельефа, таблица точек, перебор
+// времени вылета, разбор от ИИ — раскладка ровно из renderRoute (miniapp/
+// prototype.html:1067-1194). Кнопки «Сохранённые» и «Новый маршрут» из того
+// же макета сюда не перенесены: их шторки заводит задача 13.
+//
+// Карта (строки 1071-1082 макета) — ПОКАЗ уже посчитанного маршрута, а не
+// способ его задать: в макете drawMap рисует трассу и пины точек, а
+// «Точки на карте» живут в отдельной шторке «Новый маршрут» (1781-1804,
+// задача 13). Поэтому MapView здесь без onTap/onDragPoint — карта только
+// показывает (см. комментарий у Props в map/MapView.tsx).
 //
 // Экран НЕ создаёт маршрут и не хранит его — он получает готовый список
 // точек пропом (`points`, формат [lat, lon, name] — как ответ
@@ -19,14 +22,15 @@
 // (состояние, а не литерал `[]`/новый массив на каждый рендер), иначе экран
 // будет слать запрос на каждый чужой ре-рендер родителя. App.tsx хранит
 // пустой маршрут константой вне компонента ровно по этой причине.
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { useRoute } from "../api/queries"
 import type { RoutePointRow } from "../api/queries"
-import type { RoutePoint } from "../api/types"
+import type { RoutePoint, Site } from "../api/types"
 import { useSheetsContext } from "../App"
-import { colorOfCategory } from "../charts/palette"
+import { BAND, TERRAIN, colorOfCategory } from "../charts/palette"
 import { RouteProfile } from "../charts/RouteProfile"
 import { compass, fmtNum } from "../format"
+import { MapView } from "../map/MapView"
 import { PointCardSheet, roleLabel } from "../sheets/PointCardSheet"
 import { RouteAnalysisSheet } from "../sheets/RouteAnalysisSheet"
 import { ErrorBox } from "../ui/ErrorBox"
@@ -39,6 +43,25 @@ type RouteProps = {
   model: string | null
 }
 
+// route.py:FEASIBILITY_RU — дословно те же четыре строки, что печатает
+// карточка маршрута в Telegram (route.py:756-761, показывается всегда:
+// _verdict_lines кладёт её строкой под баллом). Без неё экран рисует
+// одинаковый вердикт для «проходится» и «не успеваешь до закрытия окна»:
+// балл и категория у них совпадают (route.json: вылет 15:30 — too_slow при
+// том же 70,5 и «отличная лётная»), различает их только это поле.
+// Незнакомый ключ показывается как есть, а не подменяется чужим смыслом —
+// тот же приём, что и ROLE_RU в sheets/PointCardSheet.tsx.
+const FEASIBILITY_RU: Record<string, string> = {
+  completable: "маршрут проходится",
+  blocked_at_km: "маршрут обрывается",
+  too_slow: "не успеваешь до закрытия окна",
+  unknown: "данных не хватает для вердикта",
+}
+
+function feasibilityLabel(feasibility: string): string {
+  return FEASIBILITY_RU[feasibility] ?? feasibility
+}
+
 function alongCell(v: number | null): string {
   return v === null ? "н/д" : `${v >= 0 ? "→" : "←"}${fmtNum(Math.abs(v))}`
 }
@@ -47,8 +70,28 @@ function windCell(deg: number | null, kmh: number | null): string {
   return deg === null || kmh === null ? "н/д" : `${compass(deg)} ${fmtNum(kmh)}`
 }
 
-const CELL: { padding: string; textAlign: "left" | "center" | "right"; fontSize: number } = {
-  padding: "6px 8px", textAlign: "left", fontSize: 12,
+// route.py:_signed — знак минуса тот же типографский «−», что и в карточке
+// Telegram, чтобы запас окна читался одинаково в боте и в приложении.
+function signedMin(v: number): string {
+  return `${v < 0 ? "−" : "+"}${fmtNum(Math.abs(v))}`
+}
+
+// Стартов на карте маршрута нет (макет рисует только трассу и её точки), но
+// проп MapView обязателен — пустой массив держим КОНСТАНТОЙ модуля: новый
+// литерал на каждый рендер пересобирал бы маркеры стартов вхолостую (эффект
+// MapView зависит от ссылки на массив).
+const NO_SITES: Site[] = []
+
+// Карта маршрута отдельным компонентом ради useMemo: MapView пересобирает
+// маркеры при смене ССЫЛКИ на points, а экран перерисовывается ещё и от
+// чужих причин (открытие шторки меняет контекст стека).
+function RouteMap({ points }: { points: RoutePoint[] }) {
+  const latLons = useMemo(() => points.map((p) => ({ lat: p.lat, lon: p.lon })), [points])
+  return (
+    <div className="map">
+      <MapView points={latLons} sites={NO_SITES} />
+    </div>
+  )
 }
 
 export function Route({ points, name, date, model }: RouteProps) {
@@ -63,7 +106,6 @@ export function Route({ points, name, date, model }: RouteProps) {
   useEffect(() => {
     if (points.length < 2) return
     mutate({ points, name, date, departure, model })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [points, name, date, departure, model, mutate])
 
   if (points.length < 2) {
@@ -84,6 +126,16 @@ export function Route({ points, name, date, model }: RouteProps) {
   const result = route.data
   const lastPoint: RoutePoint | undefined = result.points[result.points.length - 1]
 
+  // Запас окна — у первой и последней точки, где домен его посчитал: ровно
+  // тот же отбор, что и в карточке Telegram (route.py:990-993 — margins[0] и
+  // margins[-1] среди непустых, а не у крайних точек маршрута, у которых
+  // запас может быть не посчитан вовсе).
+  const margins = result.points.map((p) => p.time_margin_min).filter((v): v is number => v !== null)
+  const marginLine =
+    margins.length === 0
+      ? null
+      : `Запас окна: старт ${signedMin(margins[0]!)} мин · финиш ${signedMin(margins[margins.length - 1]!)} мин`
+
   function openPointCard(p: RoutePoint): void {
     sheets.push(
       <PointCardSheet point={p} />,
@@ -93,6 +145,8 @@ export function Route({ points, name, date, model }: RouteProps) {
 
   return (
     <>
+      <RouteMap points={result.points} />
+
       <div className="panel">
         <div className="panel__head">
           <span className="lbl">Маршрут</span>
@@ -101,8 +155,13 @@ export function Route({ points, name, date, model }: RouteProps) {
         <div className="verdict">
           <div>
             <div className="verdict__win">{fmtNum(result.route.total_km)} км</div>
+            {/* Имя маршрута необязательно (api.py:RouteIn — `name: str | None
+                = None`, forecast.py:799 кладёт его в ответ как есть), поэтому
+                разделитель живёт вместе с именем: иначе строка начиналась бы
+                с висячего « · вылет …». */}
             <div className="verdict__sub">
-              {result.route.name} · вылет {result.route.departure} → прилёт ~{lastPoint?.eta ?? "—"}
+              {result.route.name === null ? "" : `${result.route.name} · `}
+              вылет {result.route.departure} → прилёт ~{lastPoint?.eta ?? "—"}
             </div>
           </div>
           <div className="verdict__score">
@@ -110,6 +169,7 @@ export function Route({ points, name, date, model }: RouteProps) {
               {result.verdict.score === null ? "—" : fmtNum(result.verdict.score, 1)}
             </div>
             <div className="verdict__cat">{result.verdict.label}</div>
+            <div className="verdict__cat">{feasibilityLabel(result.verdict.feasibility)}</div>
           </div>
         </div>
 
@@ -141,6 +201,19 @@ export function Route({ points, name, date, model }: RouteProps) {
           terrain={result.terrain}
           bottleneckKm={result.verdict.bottleneck?.km ?? null}
         />
+        {/* Легенда — prototype.html:1113-1119. Три слоя разреза без подписей
+            неразличимы: пилот не знает, что за прозрачная зона над рельефом.
+            Цвета квадратиков берутся из тех же констант палитры и с той же
+            прозрачностью, которыми нарисован сам разрез (RouteProfile), —
+            иначе легенда объясняла бы не то, что нарисовано. Без рельефа
+            разреза нет вовсе, и объяснять нечего. */}
+        {result.terrain !== null && (
+          <div className="legend">
+            <span><i style={{ background: TERRAIN }} />рельеф</span>
+            <span><i style={{ background: BAND, opacity: 0.34 }} />рабочий коридор</span>
+            <span><i style={{ background: "var(--air-deep)" }} />база облаков</span>
+          </div>
+        )}
       </div>
 
       <div className="panel">
@@ -149,14 +222,17 @@ export function Route({ points, name, date, model }: RouteProps) {
           <span className="lbl">тап — карточка точки</span>
         </div>
         <div style={{ overflowX: "auto" }}>
-          <table style={{ borderCollapse: "collapse", width: "100%" }}>
+          {/* Колонки и классы ячеек — .rtable из макета (prototype.html:
+              284-294): моноширинный шрифт, числа вправо, приглушённые
+              колонки времени и ветра (.u), жирный балл (.sc). */}
+          <table className="rtable">
             <thead>
               <tr>
-                <th scope="col" style={CELL}>км</th>
-                <th scope="col" style={CELL}>время</th>
-                <th scope="col" style={CELL}>вдоль</th>
-                <th scope="col" style={CELL}>ветер</th>
-                <th scope="col" style={CELL}>балл</th>
+                <th scope="col">км</th>
+                <th scope="col">время</th>
+                <th scope="col">вдоль</th>
+                <th scope="col">ветер</th>
+                <th scope="col">балл</th>
               </tr>
             </thead>
             <tbody>
@@ -166,15 +242,14 @@ export function Route({ points, name, date, model }: RouteProps) {
                   role="button"
                   tabIndex={0}
                   aria-label={`${fmtNum(p.km)} км · ${p.eta ?? "без времени"} · ${roleLabel(p.role)}`}
-                  style={{ cursor: "pointer" }}
                   onClick={() => openPointCard(p)}
                   onKeyDown={(e) => { if (e.key === "Enter") openPointCard(p) }}
                 >
-                  <td style={CELL}>{fmtNum(p.km)}</td>
-                  <td style={CELL}>{p.eta ?? "—"}</td>
-                  <td style={CELL}>{alongCell(p.wind_along_kmh)}</td>
-                  <td style={CELL}>{windCell(p.wind_working_alt_dir, p.wind_working_alt_kmh)}</td>
-                  <td style={{ ...CELL, fontWeight: 700, color: p.category === null ? undefined : colorOfCategory(p.category) }}>
+                  <td>{fmtNum(p.km)}</td>
+                  <td className="u">{p.eta ?? "—"}</td>
+                  <td>{alongCell(p.wind_along_kmh)}</td>
+                  <td className="u">{windCell(p.wind_working_alt_dir, p.wind_working_alt_kmh)}</td>
+                  <td className="sc" style={{ color: p.category === null ? undefined : colorOfCategory(p.category) }}>
                     {p.score ?? "—"}
                   </td>
                 </tr>
@@ -193,27 +268,40 @@ export function Route({ points, name, date, model }: RouteProps) {
           {result.departure_scan.map((entry) => {
             const isActive = entry.departure === result.route.departure
             const isBest = result.best_departure !== null && entry.departure === result.best_departure.departure
+            const score = entry.score === null ? "—" : fmtNum(entry.score, 1)
+            // Балл не различает варианты вылета: в route.json 15:30
+            // (too_slow) и 07:00 (completable) оба показывают 70,5 —
+            // проходимость приходит отдельным полем каждой записи скана и
+            // попадает в подпись кнопки, чтобы на чипе «не успеваешь» нельзя
+            // было прочитать «то же самое, только позже».
+            const feasibility = feasibilityLabel(entry.feasibility)
             return (
               <button
                 key={entry.departure}
                 type="button"
                 className="chip"
                 aria-pressed={isActive}
+                aria-label={`${entry.departure} → ${score} · ${feasibility}`}
                 style={isActive ? { borderColor: "var(--ink)", color: "var(--ink)" } : undefined}
-                title={isBest ? "Лучший вылет" : undefined}
+                title={isBest ? `Лучший вылет · ${feasibility}` : feasibility}
                 onClick={() => setDeparture(entry.departure)}
               >
-                {entry.departure} → {entry.score === null ? "—" : fmtNum(entry.score, 1)}{isBest ? " ★" : ""}
+                {entry.departure} → {score}{isBest ? " ★" : ""}
               </button>
             )
           })}
         </div>
-        {result.reverse.better && (
-          <div className="attrib">
-            Обратный маршрут лучше: {result.reverse.score === null ? "—" : fmtNum(result.reverse.score, 1)} против{" "}
-            {result.verdict.score === null ? "—" : fmtNum(result.verdict.score, 1)}
-          </div>
-        )}
+        {/* Строка запаса окна и обратного маршрута — prototype.html:1166.
+            Запас берётся у первой и последней точки с посчитанным запасом,
+            как в карточке Telegram (route.py:990-993); обратный маршрут
+            показывается ВСЕГДА, а не только когда он лучше: «обратный — 84,0»
+            против «прямой — 70,5» пилот сравнивает сам, а исчезающая строка
+            выглядела бы как отсутствие данных. */}
+        <div className="attrib">
+          {marginLine === null ? "" : `${marginLine}. `}
+          Обратный маршрут — {result.reverse.score === null ? "—" : fmtNum(result.reverse.score, 1)}
+          {result.reverse.better ? " (лучше прямого)" : ""}
+        </div>
       </div>
 
       <div className="acts">
