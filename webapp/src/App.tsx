@@ -11,6 +11,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { usePrefs, useSites } from "./api/queries"
 import type { Prefs, Site } from "./api/types"
 import { fmtDate } from "./format"
+import { Forecast } from "./screens/Forecast"
 import * as telegram from "./telegram"
 import { resolveThemeVars } from "./theme"
 import { Chip } from "./ui/Chip"
@@ -51,6 +52,29 @@ function useSheets(): Sheets {
   }, [])
 
   return { push, pop, stack }
+}
+
+// Провайдер стека шторок, отдельный от Shell: экранным тестам (например
+// screens/Forecast.test.tsx) нужен настоящий стек с настоящим рендером
+// <Sheet> (тест проверяет видимый заголовок открытой шторки), а не только
+// заглушка контекста — SheetsProvider даёт это без всей оболочки (шапка,
+// вкладки, тема Telegram), которая тестам экрана не нужна и потребовала бы
+// лишних подделок. Shell использует этот же компонент в production-дереве
+// (см. ниже), а не держит собственную копию — раскладка стека (шторки как
+// сиблинги контента, а не поверх одной конкретной вкладки) не должна
+// разойтись между тестовым и настоящим деревом.
+export function SheetsProvider({ children }: { children: ReactNode }) {
+  const sheets = useSheets()
+  return (
+    <SheetsContext.Provider value={sheets}>
+      {children}
+      {sheets.stack.map((entry) => (
+        <Sheet key={entry.id} title={entry.title} onClose={sheets.pop}>
+          {entry.node}
+        </Sheet>
+      ))}
+    </SheetsContext.Provider>
+  )
 }
 
 // ────────────────────────────────────────────────────────────── вкладки
@@ -101,8 +125,11 @@ const TABS: { key: TabKey; label: string; icon: ReactNode }[] = [
 ]
 
 // ────────────────────────────────────────────────────────────── шапка
-function siteLabel(sites: Site[] | undefined): string | undefined {
-  return sites?.[0]?.name
+// Возвращает null и когда список стартов ещё грузится, и когда он пуст —
+// оба случая различает разметка ниже (sites.isPending), а не эта функция:
+// ей самой достаточно знать только "есть ли имя старта".
+function siteName(sites: Site[] | undefined): string | null {
+  return sites?.[0]?.name ?? null
 }
 
 function modelLabel(prefs: Prefs | undefined): string | undefined {
@@ -122,9 +149,9 @@ function todayIso(): string {
 
 const queryClient = new QueryClient()
 
-function Shell() {
+function ShellContent() {
   const [tab, setTab] = useState<TabKey>("day")
-  const sheets = useSheets()
+  const sheets = useSheetsContext()
   const sites = useSites()
   const prefs = usePrefs()
   const bodyRef = useRef<HTMLElement>(null)
@@ -178,59 +205,70 @@ function Shell() {
     if (bodyRef.current) bodyRef.current.scrollTop = 0
   }, [tab])
 
+  const site = siteName(sites.data)
+  const model = prefs.data?.model_key ?? null
+  const date = todayIso()
+
   return (
-    <SheetsContext.Provider value={sheets}>
-      <div className="app">
-        <header className="ctx">
-          <div className="ctx__top">
-            <span className="site">
-              <span className="site__name">{siteLabel(sites.data) ?? <Spinner />}</span>
-            </span>
-            <Chip live>{modelLabel(prefs.data) ?? <Spinner />}</Chip>
-          </div>
-          <div className="ctx__date">
-            <span className="dateline">{fmtDate(todayIso())}</span>
-          </div>
-        </header>
-
-        <main className="body" ref={bodyRef}>
-          <section className="view" hidden={tab !== "day"} aria-label="Прогноз на день">
-            <p>Прогноз</p>
-          </section>
-          <section className="view" hidden={tab !== "over"} aria-label="Обзор">
-            <p>Обзор</p>
-          </section>
-          <section className="view" hidden={tab !== "route"} aria-label="Маршрут">
-            <p>Маршрут</p>
-          </section>
-          <section className="view" hidden={tab !== "set"} aria-label="Настройки">
-            <p>Настройки</p>
-          </section>
-        </main>
-
-        <div className="tabs" role="tablist" aria-label="Разделы">
-          {TABS.map((t) => (
-            <button
-              key={t.key}
-              type="button"
-              role="tab"
-              aria-selected={tab === t.key ? "true" : "false"}
-              className="tab"
-              onClick={() => setTab(t.key)}
-            >
-              {t.icon}
-              <span>{t.label}</span>
-            </button>
-          ))}
+    <div className="app">
+      <header className="ctx">
+        <div className="ctx__top">
+          <span className="site">
+            {/* Список стартов пуст (не идёт запрос — прогнав isPending) — понятный
+                текст вместо спиннера, который никогда бы не пропал: пустой массив
+                success-запроса не значит, что старт вот-вот появится, задача 13
+                ещё не даёт способа его добавить. */}
+            <span className="site__name">{sites.isPending ? <Spinner /> : (site ?? "Нет стартов")}</span>
+          </span>
+          <Chip live>{modelLabel(prefs.data) ?? <Spinner />}</Chip>
         </div>
+        <div className="ctx__date">
+          <span className="dateline">{fmtDate(date)}</span>
+        </div>
+      </header>
 
-        {sheets.stack.map((entry) => (
-          <Sheet key={entry.id} title={entry.title} onClose={sheets.pop}>
-            {entry.node}
-          </Sheet>
+      <main className="body" ref={bodyRef}>
+        <section className="view" hidden={tab !== "day"} aria-label="Прогноз на день">
+          <Forecast site={site} date={date} model={model} />
+        </section>
+        <section className="view" hidden={tab !== "over"} aria-label="Обзор">
+          <p>Обзор</p>
+        </section>
+        <section className="view" hidden={tab !== "route"} aria-label="Маршрут">
+          <p>Маршрут</p>
+        </section>
+        <section className="view" hidden={tab !== "set"} aria-label="Настройки">
+          <p>Настройки</p>
+        </section>
+      </main>
+
+      <div className="tabs" role="tablist" aria-label="Разделы">
+        {TABS.map((t) => (
+          <button
+            key={t.key}
+            type="button"
+            role="tab"
+            aria-selected={tab === t.key ? "true" : "false"}
+            className="tab"
+            onClick={() => setTab(t.key)}
+          >
+            {t.icon}
+            <span>{t.label}</span>
+          </button>
         ))}
       </div>
-    </SheetsContext.Provider>
+    </div>
+  )
+}
+
+// Shell — обвязка ShellContent в SheetsProvider (см. выше): вынесена
+// отдельно, чтобы ShellContent мог читать стек шторок через
+// useSheetsContext(), а не заново создавать свой.
+function Shell() {
+  return (
+    <SheetsProvider>
+      <ShellContent />
+    </SheetsProvider>
   )
 }
 

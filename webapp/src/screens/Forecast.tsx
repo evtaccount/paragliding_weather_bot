@@ -1,0 +1,151 @@
+// Экран «Прогноз»: вердикт дня, полоса часов, столб воздуха, строка
+// ограничения, оговорки, кнопки шторок. Раскладка — из макета
+// (miniapp/prototype.html:739-942, renderDay): вердикт + полоса часов +
+// строка ограничения живут в одной панели (там — panel p1), столб воздуха —
+// в отдельной (там — panel p2), затем действия и оговорки. Секция "факты"
+// макета (диапазон температуры/ветра/направления/осадков, строки 892-910)
+// сюда не перенесена — её нет в перечне экранных элементов задачи 8
+// (task-8-brief.md, "Порядок на экране"): вердикт дня, полоса часов, столб
+// воздуха, строка ограничения, оговорки, кнопки шторок.
+import { useForecast } from "../api/queries"
+import type { Facts } from "../api/types"
+import { useSheetsContext } from "../App"
+import { AirColumn } from "../charts/AirColumn"
+import { HourStrip } from "../charts/HourStrip"
+import { colorOfCategory } from "../charts/palette"
+import { fmtHour } from "../format"
+import { MeteogramSheet } from "../sheets/MeteogramSheet"
+import { ErrorBox } from "../ui/ErrorBox"
+import { Spinner } from "../ui/Spinner"
+
+type ForecastProps = {
+  site: string | null
+  date: string | null
+  model: string | null
+}
+
+// fly_window — null, когда лётное окно не открывается вовсе (см.
+// facts_1d_no_window.json: assessment.fly_window null) — часы не
+// выдумываются, текст говорит об этом прямо.
+function windowLabel(window: number[] | null): string {
+  const start = window?.[0]
+  const end = window?.[1]
+  if (start === undefined || end === undefined) return "окно не определено"
+  return `${fmtHour(start)} – ${fmtHour(end)}`
+}
+
+// thermal_window — null по той же причине (engine.py:sun_hours), что и
+// fly_window, но это отдельное поле про солнце на склоне, а не про
+// лётность само по себе — текст сформулирован иначе (не "окно не
+// определено"), чтобы поиск текста в тесте мог отличить одну подпись от
+// другой, а не поймать сразу обе.
+function thermalWindowLabel(facts: Facts): string {
+  const tw = facts.thermal_window
+  const sun = tw === null
+    ? "термическое окно не открывается"
+    : `солнце на склоне ${fmtHour(tw.start_hour)}–${fmtHour(tw.end_hour)}`
+  return `${sun} · световой день ${facts.daylight_hours}`
+}
+
+export function Forecast({ site, date, model }: ForecastProps) {
+  const sheets = useSheetsContext()
+  const forecast = useForecast(site, "1d", date, model)
+
+  // Нет сохранённых стартов (свежая установка, задача 13 их ещё не
+  // заводит) — понятный текст вместо вечной загрузки: useForecast сам
+  // никогда не завершит "загрузку", пока site === null (enabled: false в
+  // queries.ts), то же рассуждение, что и для шапки в App.tsx.
+  if (site === null) {
+    return (
+      <div className="empty">
+        <b>Нет стартов</b>
+        Добавьте старт, чтобы увидеть прогноз.
+      </div>
+    )
+  }
+  if (forecast.isPending) {
+    return <Spinner />
+  }
+  if (forecast.isError) {
+    return <ErrorBox error={forecast.error} onRetry={() => { void forecast.refetch() }} />
+  }
+
+  const facts = forecast.data
+  const { assessment } = facts
+
+  return (
+    <>
+      <div className="panel panel--flush">
+        <div className="panel__head" style={{ padding: "0 14px" }}>
+          <span className="lbl">Лётное окно</span>
+          <span className="lbl">пик {fmtHour(facts.peak_hour)}</span>
+        </div>
+        <div className="verdict" style={{ padding: "0 14px" }}>
+          <div>
+            <div className="verdict__win">{windowLabel(assessment.fly_window)}</div>
+            <div className="verdict__sub">{thermalWindowLabel(facts)}</div>
+          </div>
+          <div className="verdict__score">
+            <div className="verdict__num" style={{ color: colorOfCategory(assessment.category) }}>
+              {assessment.score ?? "—"}
+            </div>
+            <div className="verdict__cat">{assessment.label_ru}</div>
+          </div>
+        </div>
+        <div className="strip">
+          <HourStrip hours={facts.hourly_daytime} window={assessment.fly_window} />
+        </div>
+        {assessment.limiting_factor_ru !== null && (
+          <div className="limiting">
+            <span className="limiting__k">Ограничивает</span>
+            <span>{assessment.limiting_factor_ru}</span>
+          </div>
+        )}
+      </div>
+
+      <div className="panel">
+        <div className="panel__head">
+          <span className="lbl">Столб воздуха</span>
+          <span className="lbl">метры MSL</span>
+        </div>
+        <AirColumn facts={facts} />
+      </div>
+
+      <div className="acts">
+        <button
+          type="button"
+          className="act"
+          onClick={() => sheets.push(<p>Здесь будет разбор ветра по высотам.</p>, "Ветер по высотам")}
+        >
+          <b>Ветер по высотам</b>
+          <span>6 уровней × 10 часов</span>
+        </button>
+        <button
+          type="button"
+          className="act"
+          onClick={() => sheets.push(<p>Здесь будет разбор от ИИ.</p>, "Разбор от ИИ")}
+        >
+          <b>Разбор от ИИ</b>
+          <span>Gemini по этим числам</span>
+        </button>
+        <button
+          type="button"
+          className="act act--wide"
+          onClick={() => sheets.push(<MeteogramSheet facts={facts} />, "Метеограмма")}
+        >
+          <b>Метеограмма</b>
+          <span>температура, ветер, порывы</span>
+        </button>
+      </div>
+
+      {facts.caveats.length > 0 && (
+        <div className="panel caveats">
+          <div className="lbl">Оговорки</div>
+          <ul>
+            {facts.caveats.map((c, i) => <li key={`${i}-${c}`}>{c}</li>)}
+          </ul>
+        </div>
+      )}
+    </>
+  )
+}

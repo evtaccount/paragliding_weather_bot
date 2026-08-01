@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react"
+import { render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { beforeEach, expect, test, vi } from "vitest"
 import { App } from "./App"
@@ -42,4 +42,27 @@ test("без Telegram приложение объясняет, что делат
   delete window.Telegram
   render(<App />)
   expect(screen.getByText(/Откройте приложение из Telegram/)).toBeInTheDocument()
+})
+
+// Известная недоделка задачи 6 (progress.md, Task 6 m2): пустой список
+// стартов (свежая установка, задача 13 ещё не даёт способа его завести) —
+// раньше показывал спиннер, который никогда не пропадал (siteLabel
+// возвращал undefined и на "ещё грузится", и на "пуст" одинаково). Задача 8
+// первой заводит в шапку настоящие данные и приводит это в порядок.
+test("шапка показывает понятный текст, а не вечную загрузку, когда список стартов пуст", async () => {
+  vi.stubGlobal("fetch", (url: string) => {
+    const path = url.split("?")[0]
+    const body = path === "/api/sites" ? "[]" : "{}"
+    return Promise.resolve(new Response(body, { status: 200, headers: { "content-type": "application/json" } }))
+  })
+  render(<App />)
+  // Область поиска — именно шапка (role="banner" у <header>), а не весь
+  // документ: вкладка «Прогноз» при том же пустом списке стартов показывает
+  // собственный текст "Нет стартов" (Forecast.tsx) — без сужения тест был
+  // бы зелёным и на старой ошибке (спиннер в шапке навсегда), просто найдя
+  // чужую надпись.
+  const header = screen.getByRole("banner")
+  await waitFor(() => {
+    expect(within(header).getByText("Нет стартов")).toBeInTheDocument()
+  })
 })
