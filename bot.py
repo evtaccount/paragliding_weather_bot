@@ -139,19 +139,6 @@ def _analysis_html(text: str) -> str:
     return re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", esc, flags=re.S)
 
 
-# worst-case callback_data around a name: "deep|" + name + "|2weeks|YYYY-MM-DD" must fit 64 bytes
-_NAME_MAX_BYTES = 40
-
-
-def name_error(name: str) -> str | None:
-    """Why a site name can't live inside inline-button callback_data, or None if it can."""
-    if "|" in name:
-        return "Имя не должно содержать символ «|»."
-    if len(name.encode("utf-8")) > _NAME_MAX_BYTES:
-        return "Слишком длинное имя — не влезет в кнопки Telegram. До ~20 символов, короче?"
-    return None
-
-
 def _btn(text: str, data: str) -> InlineKeyboardButton | None:
     """Inline button, or None (with a warning) when callback_data exceeds Telegram's
     64-byte limit — otherwise Telegram rejects the WHOLE message with the keyboard."""
@@ -193,7 +180,7 @@ def parse_coords(text: str) -> tuple[float, float] | None:
     if len(nums) != 2:
         return None
     lat, lon = (float(n.replace(",", ".")) for n in nums)
-    if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+    if store.coords_error(lat, lon):
         return None
     return lat, lon
 
@@ -582,12 +569,12 @@ async def cmd_add(message: Message, command: CommandObject, state: FSMContext):
     if len(parts) >= 4:  # one-shot: /add <Имя> <lat> <lon> <экспозиция>
         *name_parts, lat_s, lon_s, aspect_s = parts
         name = " ".join(name_parts)
-        if err := name_error(name):
+        if err := store.name_error(name):
             await message.answer(f"⚠️ {err}")
             return
         try:
             lat, lon = float(lat_s), float(lon_s)
-            if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+            if store.coords_error(lat, lon):
                 raise ValueError
         except ValueError:
             await message.answer("Координаты неверные. Формат: /add <Имя> <lat> <lon> <экспозиция>")
@@ -632,7 +619,7 @@ async def add_name(message: Message, state: FSMContext):
     if not name:
         await message.answer("Пустое название. Введи имя старта.")
         return
-    if err := name_error(name):
+    if err := store.name_error(name):
         await message.answer(f"{err}\nДругое имя?")
         return
     await state.update_data(name=name)
@@ -1042,7 +1029,7 @@ async def cmd_saveroute(message: Message, command: CommandObject):
     name = (command.args or "").strip()
     if not name:
         return await message.answer("Как назвать маршрут? /saveroute <имя>")
-    err = name_error(name)
+    err = store.name_error(name)
     if err:
         return await message.answer(f"❌ {err}")
     uid = message.from_user.id
@@ -1068,6 +1055,22 @@ async def cmd_saveroute(message: Message, command: CommandObject):
                          f"{route.plural(n, 'точка', 'точки', 'точек')}.")
 
 
+def _local_date(iso: str | None) -> str:
+    """Дата сохранения в часовом поясе бота.
+
+    store пишет UTC (однозначно и сортируемо), а пилот живёт в TZ старта:
+    между 20:00 и полуночью по Тбилиси UTC-дата — это ещё вчера, и /routes
+    показывал бы маршрут сохранённым «вчера» сразу после сохранения.
+    """
+    if not iso:
+        return "—"
+    try:
+        return dt.datetime.fromisoformat(iso).astimezone().date().isoformat()
+    except ValueError:
+        # чужой формат в старой записи: лучше показать как есть, чем упасть
+        return iso.split("T", 1)[0]
+
+
 @dp.message(Command("routes"), flags={"forecast": True})
 async def cmd_routes(message: Message):
     uid = message.from_user.id
@@ -1080,10 +1083,9 @@ async def cmd_routes(message: Message):
     for name in sorted(saved):
         pts = route.points_from_rows(store.route_rows(uid, name)) or []
         n = len(pts)
-        # saved_at — полный ISO-таймстамп (store._now()); удалённый routes.py
-        # хранил дату сохранения (dt.date.today().isoformat()) — показываем
-        # только дату и здесь, без времени, которое пилоту не нужно.
-        saved_at = saved[name].get("saved", "—").split("T", 1)[0]
+        # saved_at — полный ISO-таймстамп (store._now()), в UTC; показываем
+        # дату в местном поясе бота, без времени, которое пилоту не нужно.
+        saved_at = _local_date(saved[name].get("saved"))
         lines.append(f"• {name} — {route.total_km(pts):.0f} км, {n} "
                      f"{route.plural(n, 'точка', 'точки', 'точек')}, "
                      f"{saved_at}")
@@ -1241,17 +1243,14 @@ async def cb_saved_route(cb: CallbackQuery):
                       cfg=store.prefs(uid), uid=uid)
 
 
-_DOC_PARSERS = ((".gpx", route.parse_gpx), (".kml", route.parse_kml))
-
-
 @dp.message(F.document, flags={"forecast": True})
 async def route_document(message: Message):
     doc = message.document
     fname = (doc.file_name or "").lower()
-    if fname.endswith(".kmz"):
-        return await message.answer("KMZ — это архив. Распакуй и пришли .kml")
-    parser = next((p for ext, p in _DOC_PARSERS if fname.endswith(ext)), None)
-    if parser is None:
+    # Разборщик по расширению — знание route.parse_upload; здесь только фильтр
+    # «файл вообще похож на маршрут», чтобы неизвестное расширение отвечало
+    # своей репликой, а не текстом RouteError из route.py.
+    if not fname.endswith((".gpx", ".kml", ".kmz")):
         return await message.answer("Я понимаю маршруты в форматах GPX и KML.")
     if (doc.file_size or 0) > route.MAX_GPX_BYTES:
         return await message.answer(
@@ -1259,7 +1258,7 @@ async def route_document(message: Message):
     buf = io.BytesIO()
     await message.bot.download(doc, destination=buf)
     try:
-        points, name = parser(buf.getvalue())
+        points, name = route.parse_upload(fname, buf.getvalue())
     except route.RouteError as e:
         return await message.answer(f"❌ {e}")
     date, departure = _parse_when(message.caption or "")
@@ -1288,7 +1287,7 @@ def _bootstrap_store() -> dict:
     """
     repo_root = os.path.dirname(os.path.abspath(engine.__file__))
     data_dir = os.path.dirname(store.DB_PATH) or "."
-    report = store.bootstrap(data_dir, guards._allowed_ids(),
+    report = store.bootstrap(data_dir, guards.allowed_ids(),
                              os.path.join(repo_root, "sites.json"),
                              extra_dirs=(repo_root,),
                              valid_model_keys=set(engine.MODELS))
@@ -1303,15 +1302,25 @@ def _bootstrap_store() -> dict:
     return report
 
 
-async def main():
-    token = os.environ.get("BOT_TOKEN")
-    if not token:
+def bootstrap() -> dict:
+    """Всё, что должно случиться ДО первого запроса, с любой поверхности."""
+    if not os.environ.get("BOT_TOKEN"):
         raise SystemExit("BOT_TOKEN не задан (см. .env.example)")
-    _bootstrap_store()
-    bot = Bot(token=token)
+    return _bootstrap_store()
+
+
+async def run_polling() -> None:
+    """Long polling. Хранилище должно быть готово — см. bootstrap()."""
+    bot = Bot(token=os.environ["BOT_TOKEN"])
     await bot.set_my_commands(BOT_COMMANDS)
     log.info("bot started, db: %s, sites: %s", store.DB_PATH, forecast.known_sites())
     await dp.start_polling(bot)
+
+
+async def main():
+    """Только чат — для запуска без HTTP-слоя (`python bot.py`)."""
+    bootstrap()
+    await run_polling()
 
 
 if __name__ == "__main__":

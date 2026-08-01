@@ -254,7 +254,9 @@ Ikuma 3 P** (trim ≈10,6 м/с ≈ 38 км/ч), не новичок.
 - **Токен бота** — у [@BotFather](https://t.me/BotFather): `/newbot`.
 - **Ключ Gemini** (бесплатный) — https://aistudio.google.com/apikey. Нужен для
   анализа; без него включается встроенный разбор на правилах.
-- Docker **или** Python 3.10+.
+- Docker **или** Python 3.11+ — точка входа `app.py` держит бота и API одним
+  процессом через `asyncio.TaskGroup` (появился в 3.11); на более старой
+  версии это упадёт неочевидным `AttributeError` вместо внятного сообщения.
 
 ---
 
@@ -294,6 +296,35 @@ docker compose logs -f
 
 Обновление: `git pull && docker compose up -d --build`.
 
+### Caddy: домен, TLS и мини-приложение (фаза 3)
+
+- Переменные в `.env`: `PUBLIC_DOMAIN` (домен, который позже пропишете в
+  BotFather на фазе 5), `TLS_CERT_DIR` (каталог со своим сертификатом — внутри
+  ожидаются `fullchain.pem` и `privkey.pem`), `API_PORT` (порт uvicorn внутри
+  сети compose; наружу не публикуется — в интернет смотрит только Caddy).
+- `docker compose up -d` поднимает **два** контейнера: `pgbot` (бот + API,
+  порт виден только внутри сети compose) и `caddy` (порты 80/443 наружу, TLS,
+  отдача статики, реверс-прокси `/api/*` на `pgbot:8080`).
+- Проверка живости: `curl -s https://$PUBLIC_DOMAIN/api/health` должен
+  вернуть число стартов в поле `sites` — пустая база почти всегда означает,
+  что том `pgbot-data` не примонтирован.
+- Проверка подписи: временно повесить Web App-кнопку на этот домен через
+  BotFather и открыть `/` в клиенте Telegram — страница `static/index.html`
+  спросит `/api/prefs` с подписанной `initData` и напишет «Подпись принята,
+  HTTP 200» (или код отказа, если подпись не сошлась).
+- Автоматический Let's Encrypt вместо своего сертификата: удалить в
+  `Caddyfile` строку `tls /certs/fullchain.pem /certs/privkey.pem` целиком —
+  остальное менять не нужно, Caddy сам выпустит сертификат на `PUBLIC_DOMAIN`.
+- `static/` — однофайловая заглушка ровно для проверки подписи живым
+  клиентом Telegram; настоящий интерфейс (`webapp/`) появится на фазе 4, и
+  `./static:/srv/www` в `docker-compose.yml` тогда сменится на
+  `./webapp/dist:/srv/www`. Вместе с этим нужно передвинуть и
+  `api.STATIC_DIR` (`api.py`) на `webapp/dist` — Caddy в Docker-раскатке эту
+  константу не использует (отдаёт статику сам, в обход pgbot), но
+  bare-metal-раскатка (вариант B, без Caddy) идёт ровно через неё: не
+  подвинуть — и systemd-путь продолжит отдавать старую заглушку из
+  `static/`, пока Docker-путь уже открывает настоящее приложение.
+
 ## Раскатка — вариант B: systemd + venv (bare metal / VPS)
 
 ```bash
@@ -308,6 +339,13 @@ journalctl -u pgbot -f
 
 `deploy.sh` сам подставит в unit-файл текущий путь, пользователя и python из venv.
 
+> ⚠️ **Мини-приложение здесь без Caddy.** Юнит запускает `app.py` — тот же
+> объединённый процесс (чат + API), что и в Docker: Caddy и TLS в этом плане
+> покрывают лишь Docker-раскатку (вариант A). Перед процессом здесь никто не
+> стоит, а `app.py` слушает `API_HOST = 127.0.0.1` — снаружи сервера порт всё
+> равно недоступен, и без собственного реверс-прокси мини-приложение по
+> HTTPS не откроется; чат через polling при этом работает как обычно.
+
 > ⚠️ **Шрифты для графиков.** На Linux нужен кириллический TTF, иначе подписи на
 > PNG будут «квадратиками» или мелким дефолтом. Docker ставит `fonts-dejavu-core`
 > сам; для bare-metal: `sudo apt-get install -y fonts-dejavu-core`. `charts.py`
@@ -319,8 +357,11 @@ journalctl -u pgbot -f
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env          # BOT_TOKEN (+ GEMINI_API_KEY)
-python bot.py
+python app.py                 # бот + API на 127.0.0.1:8080
 ```
+
+`python bot.py` по-прежнему поднимает только чат, без HTTP-слоя — пригодится,
+если API не нужен.
 
 Или через `make`: `make install`, `make run`, `make docker-up`, `make docker-logs`.
 

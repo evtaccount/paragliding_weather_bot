@@ -27,17 +27,31 @@ log = logging.getLogger("pgbot.guards")
 _REFUSAL_COOLDOWN = 60  # seconds between refusal replies to the same stranger
 
 
-def _allowed_ids() -> frozenset[int]:
+_warned_open = False
+
+
+def allowed_ids() -> frozenset[int]:
+    """Кому можно — общий список для чата и приложения.
+
+    Публичная: зовут три модуля (middleware, bootstrap хранилища, HTTP-слой),
+    и подчёркивание в чужом импорте означало бы, что граница проведена не там.
+
+    Предупреждение об открытом режиме печатается один раз за процесс: HTTP-слой
+    зовёт эту функцию на каждый запрос, и построчный вой в логе утопил бы всё
+    остальное.
+    """
+    global _warned_open
     raw = os.environ.get("ALLOWED_USER_IDS", "")
     ids = frozenset(int(p) for p in raw.replace(";", ",").split(",") if p.strip())
-    if not ids:
+    if not ids and not _warned_open:
+        _warned_open = True
         log.warning("ALLOWED_USER_IDS не задан — бот открыт для ВСЕХ пользователей")
     return ids
 
 
 class WhitelistMiddleware(BaseMiddleware):
     def __init__(self):
-        self.allowed = _allowed_ids()
+        self.allowed = allowed_ids()
         self._refused_at: dict[int, float] = {}
 
     async def __call__(self, handler, event, data):
@@ -55,27 +69,71 @@ class WhitelistMiddleware(BaseMiddleware):
         return None
 
 
+class InFlight:
+    """Кто из пилотов прямо сейчас чего-то ждёт.
+
+    Общий на чат и приложение намеренно: гарантия сформулирована про пилота,
+    а не про поверхность, и открыть приложение, пока бот считает тот же
+    прогноз, — это второй запрос того же человека.
+
+    Множество, а не счётчик: параллельных запросов одного пилота не бывает
+    по определению, а счётчик пришлось бы чинить после каждого падения.
+    """
+
+    def __init__(self):
+        self._busy: set[int] = set()
+
+    def acquire(self, uid: int) -> bool:
+        """True — слот занят нами. False — пилот уже что-то ждёт."""
+        if uid in self._busy:
+            return False
+        self._busy.add(uid)
+        return True
+
+    def busy(self, uid: int) -> bool:
+        """Ждёт ли пилот чего-то прямо сейчас. Ничего не занимает.
+
+        Отдельно от `acquire` намеренно: в чате проверка занятости стоит
+        раньше проверки паузы, а захват — позже неё. Слитые в один вызов,
+        они держали бы слот на время ответа «не так часто», то есть на всё
+        сетевое обращение к Telegram.
+        """
+        return uid in self._busy
+
+    def release(self, uid: int) -> None:
+        self._busy.discard(uid)
+
+    def clear(self) -> None:
+        """Только для тестов: реестр процессный и переживает тест."""
+        self._busy.clear()
+
+
+INFLIGHT = InFlight()
+
+
 class ThrottleMiddleware(BaseMiddleware):
     def __init__(self):
         self.cooldown = float(os.environ.get("COOLDOWN_SEC", "10"))
         self._last: dict[int, float] = {}
-        self._inflight: set[int] = set()
 
     async def __call__(self, handler, event, data):
         if not get_flag(data, "forecast") or not event.from_user:
             return await handler(event, data)
         uid = event.from_user.id
-        if uid in self._inflight:
+        if INFLIGHT.busy(uid):
             return await event.answer("⏳ Уже готовлю — дождись ответа.")
-        # follow-up button presses aren't spam — only typed commands get the cooldown
+        # follow-up button presses aren't spam — only typed commands get the cooldown.
+        # Проверка стоит ДО acquire: отказ по паузе — это await event.answer(...),
+        # настоящее сетевое обращение, и держать слот на это время значило бы
+        # отвечать 429 в приложении пилоту, который в этот момент ничего не считает.
         if not isinstance(event, CallbackQuery):
             now = time.monotonic()
             wait = self._last.get(uid, -math.inf) + self.cooldown - now
             if wait > 0:
                 return await event.answer(f"⏳ Не так часто: подожди {math.ceil(wait)} сек.")
             self._last[uid] = now
-        self._inflight.add(uid)
+        INFLIGHT.acquire(uid)
         try:
             return await handler(event, data)
         finally:
-            self._inflight.discard(uid)
+            INFLIGHT.release(uid)

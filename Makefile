@@ -20,11 +20,11 @@ help:               ## show this help
 install:            ## create venv and install deps
 	python3 -m venv .venv && .venv/bin/pip install -U pip -r requirements.txt
 
-run:                ## run the bot locally (needs .env)
-	.venv/bin/python bot.py
+run:                ## run bot + API locally (needs .env)
+	.venv/bin/python app.py
 
 check:              ## byte-compile all modules (quick syntax check)
-	python3 -m py_compile bot.py forecast.py engine.py charts.py && echo "SYNTAX OK"
+	.venv/bin/python -m py_compile *.py && echo "SYNTAX OK"
 
 test:               ## run the dialog test suite (needs requirements-dev.txt installed)
 	.venv/bin/python -m pytest -q

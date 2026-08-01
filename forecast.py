@@ -165,12 +165,27 @@ def register_adhoc(lat: float, lon: float, elev: int) -> str:
     return store.adhoc_put(lat, lon, elev)
 
 
+def site_by_name(site_name: str):
+    """Старт по имени: сохранённый в библиотеке или разовая точка по координатам.
+
+    Одна функция на всех, кто резолвит имя, и публичная намеренно: её зовёт
+    и HTTP-слой. Вторая строка `find_site(...)` где-нибудь ещё молча теряла
+    бы разовые точки — и обнаружилось бы это не падением, а тем, что кнопка
+    под карточкой по координатам не работает.
+
+    Что считается стартом для прогноза — знание forecast, а не хранилища:
+    `store` про разовые точки знает, но не знает, что они равноправны
+    сохранённым.
+    """
+    return store.find_site(site_name) or store.adhoc_get(site_name)
+
+
 def _resolve(site_name: str, rng: str, date: str | None, model):
     """`model` обязателен: вызывающий (одна из пяти публичных функций forecast)
     уже разрешил его сам, и угадывать здесь нечего."""
     if rng not in engine.RANGE_DAYS:
         raise ForecastError(f"Неизвестный диапазон: {rng}")
-    site = store.find_site(site_name) or store.adhoc_get(site_name)
+    site = site_by_name(site_name)
     if site is None:
         raise ForecastError(f"Старт не найден: {site_name}. /sites — список.")
     if rng == "1d" and not date:
@@ -374,14 +389,28 @@ async def get_facts(site_name: str, rng: str, date: str | None = None, *, model)
     return _derive(site, rng, data, assessment, derived, "facts")
 
 
-async def get_wind_grid(site_name: str, date: str, *, model) -> bytes:
-    """PNG of the altitude × hour wind grid for a single day. Reuses the warm 1d cache
-    (no re-fetch) and builds the image on demand — /today never pays for it unused."""
+async def wind_grid_data(site_name: str, date: str, *, model) -> dict:
+    """Сетка «высота × час» числами. Тот же тёплый кэш 1d, что у карточки.
+
+    get_wind_grid отдаёт PNG для чата; приложение рисует сетку само, и
+    гонять картинку туда, где нужны числа, значит считать одно и то же
+    дважды — и разойтись в оформлении с остальными графиками приложения.
+    """
     site, date, key = _resolve(site_name, "1d", date, model)
     data, assessment, derived = await _ensure(site, "1d", date, key, model)
     grid = _derive(site, "1d", data, assessment, derived, "grid")
     if not grid:
         raise ForecastError("Данные по высотам недоступны для этого дня.")
+    return grid
+
+
+async def get_wind_grid(site_name: str, date: str, *, model) -> bytes:
+    """PNG сетки для чата. Данные берутся общей функцией: две независимые
+    выборки уровней разъехались бы при первой правке фильтра."""
+    grid = await wind_grid_data(site_name, date, model=model)
+    site = site_by_name(site_name)
+    if site is None:
+        raise ForecastError(f"Старт не найден: {site_name}. /sites — список.")
     out = tempfile.mkdtemp(prefix="pgwg_")
     try:
         import charts

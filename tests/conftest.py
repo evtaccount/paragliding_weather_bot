@@ -6,6 +6,7 @@ import os
 import pathlib
 import sys
 import tempfile
+import time
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -22,6 +23,13 @@ os.environ["ALLOWED_USER_IDS"] = ""  # open mode — whitelist passes everyone
 os.environ["COOLDOWN_SEC"] = "0"
 os.environ["GEMINI_API_KEY"] = ""
 
+# Часовой пояс закреплён: от него зависит вся датная логика бота — /today,
+# /tomorrow, выбор дня прогноза, дата сохранения маршрута. Без этого тесты
+# проверяют пояс машины, на которой их запустили, а не тот, в котором бот
+# живёт в проде (docker-compose: TZ=${TZ:-Asia/Tbilisi}).
+os.environ["TZ"] = "Asia/Tbilisi"
+time.tzset()
+
 DEFAULT_SITES = [
     {"name": "Гудаури", "aliases": ["gudauri", "гуда"], "lat": 42.47, "lon": 44.48,
      "elevation_m": 2200, "aspect": "Ю", "aspect_deg": 180.0, "notes": ""},
@@ -35,6 +43,7 @@ from aiogram.client.session.base import BaseSession  # noqa: E402
 
 import bot as botmod  # noqa: E402
 import forecast  # noqa: E402
+import guards  # noqa: E402
 import store  # noqa: E402
 
 TEST_USER_ID = 1  # id, который подставляют tests/tg.py в сообщениях и колбэках
@@ -99,6 +108,7 @@ def fresh_state():
     forecast._rcache.clear()
     botmod.dp.fsm.storage.storage.clear()  # MemoryStorage internals
     botmod._route_cache.clear()            # токены маршрутов под кнопками
+    guards.INFLIGHT.clear()   # реестр процессный: упавший тест запер бы следующий
     yield
 
 
@@ -151,3 +161,31 @@ def elevation(monkeypatch):
         return 1234
 
     monkeypatch.setattr(forecast, "fetch_elevation", fake)
+
+
+@pytest.fixture()
+async def client():
+    """HTTP-клиент поверх ASGI-приложения: без сокета и свободного порта.
+
+    Импорт api откладывается до вызова фикстуры — модуль тянет FastAPI, и
+    падение импорта не должно ронять сбор тестов, которые до API не касаются.
+    """
+    import httpx
+
+    import api
+    transport = httpx.ASGITransport(app=api.app)
+    async with httpx.AsyncClient(transport=transport,
+                                 base_url="http://test") as c:
+        yield c
+
+
+@pytest.fixture()
+def allowlist(monkeypatch):
+    """Переписать ALLOWED_USER_IDS на время теста.
+
+    guards.allowed_ids() читает окружение на каждом вызове, поэтому
+    достаточно подменить переменную.
+    """
+    def _set(value: str):
+        monkeypatch.setenv("ALLOWED_USER_IDS", value)
+    return _set
