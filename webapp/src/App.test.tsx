@@ -1,7 +1,11 @@
 import { render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { beforeEach, expect, test, vi } from "vitest"
+import { StrictMode } from "react"
 import { App } from "./App"
+import facts from "../test/fixtures/facts_1d.json"
+import sites from "../test/fixtures/sites.json"
+import prefs from "../test/fixtures/prefs.json"
 
 beforeEach(() => {
   const back = { show: vi.fn(), hide: vi.fn(), onClick: vi.fn(), offClick: vi.fn() }
@@ -65,4 +69,35 @@ test("шапка показывает понятный текст, а не ве�
   await waitFor(() => {
     expect(within(header).getByText("Нет стартов")).toBeInTheDocument()
   })
+})
+
+// Ревью task-9: main.tsx оборачивает всё приложение в <StrictMode>
+// безусловно (действует при каждом npm run dev). Открытие шторки «Разбор
+// от ИИ» через настоящий клик в настоящем дереве — DayAnalysisSheet
+// монтируется не первым коммитом всего дерева, а ПОЗЖЕ, из setState стека
+// шторок (App.tsx: sheets.push) глубоко внутри — и этого достаточно,
+// чтобы React синхронно отписал и переподписал внутренний слушатель
+// useSyncExternalStore, на котором построен useMutation
+// (@tanstack/query-core, mutationObserver.ts: onUnsubscribe снимает
+// observer с ТЕКУЩЕЙ мутации, когда слушателей не осталось; заново он
+// возвращается только повторным вызовом mutate()). Прямой рендер шторки в
+// изоляции внутри <StrictMode> (без настоящего дерева и настоящего клика)
+// эту гонку не ловит — проверено при разборе ревью: воспроизводится только
+// через настоящий путь монтирования, поэтому тест здесь, рядом с
+// остальными тестами полного дерева App, а не в sheets.test.tsx.
+test("под строгим режимом разработки открытие «Разбор от ИИ» доходит до текста, а не виснет", async () => {
+  vi.stubGlobal("fetch", (url: string) => {
+    const path = url.split("?")[0]
+    const body =
+      path === "/api/sites" ? sites
+      : path === "/api/prefs" ? prefs
+      : path === "/api/forecast" ? facts
+      : path === "/api/analysis" ? { text: "Разбор под строгим режимом разработки." }
+      : {}
+    return Promise.resolve(new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } }))
+  })
+  render(<StrictMode><App /></StrictMode>)
+  await screen.findByText(facts.assessment.label_ru)
+  await userEvent.click(screen.getByRole("button", { name: /Разбор от ИИ/ }))
+  expect(await screen.findByText("Разбор под строгим режимом разработки.")).toBeInTheDocument()
 })

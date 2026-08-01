@@ -7,6 +7,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { render, screen, within } from "@testing-library/react"
 import { beforeEach, expect, test, vi } from "vitest"
+import { StrictMode } from "react"
 import type { ReactNode } from "react"
 import { WindGridSheet } from "./WindGridSheet"
 import { DayAnalysisSheet } from "./DayAnalysisSheet"
@@ -108,6 +109,26 @@ test("пустая сетка не роняет шторку", async () => {
   expect(rows).toHaveLength(1)
 })
 
+// Ревью (minor): шапка строится из data.hours, ячейки строки — из
+// level.hourly того же уровня; совпадение длин и порядка раньше ничем не
+// проверялось (позиционное сопоставление). У домена это гарантированный
+// инвариант (engine.py строит оба списка по одному набору индексов), но
+// если он когда-нибудь нарушится — таблица не должна молча съезжать.
+test("уровень с неполным набором часов не сдвигает соседние колонки", async () => {
+  const shortLevel = { ...GRID.levels[0]!, hourly: GRID.levels[0]!.hourly.filter((h) => h.hour !== 10) }
+  vi.stubGlobal("fetch", () => jsonResponse({ ...GRID, levels: [shortLevel, ...GRID.levels.slice(1)] }))
+  render(<WindGridSheet site="Гудаури" date="2026-07-25" model="ecmwf" />, { wrapper })
+
+  const rows = await screen.findAllByRole("row")
+  const shortRow = rows.find((r) => r.textContent?.startsWith(shortLevel.label))
+  if (!shortRow) throw new Error("не нашёл строку урезанного уровня")
+  const cells = within(shortRow).getAllByRole("cell")
+  // Ровно столько ячеек, сколько часов в шапке — недостающий час рисует
+  // прочерк на своём месте, а не съедает одну ячейку у соседних часов.
+  expect(cells).toHaveLength(GRID.hours.length)
+  expect(within(shortRow).getByText("—")).toBeInTheDocument()
+})
+
 // ------------------------------------------------------------ DayAnalysisSheet
 
 test("разбор показывает текст от Gemini", async () => {
@@ -136,4 +157,26 @@ test("длинный текст разбора сохраняет перенос
   const paragraph = await screen.findByRole("paragraph")
   expect(paragraph.textContent).toBe(text)
   expect(paragraph).toHaveStyle({ whiteSpace: "pre-wrap" })
+})
+
+// Ревью: main.tsx оборачивает всё приложение в <StrictMode> безусловно
+// (действует при каждом npm run dev, не только в тестах) — ни один из
+// тестов выше этого не ловил, потому что ни один не рендерит дерево внутри
+// <StrictMode>. Под ним React синхронно подписывает-отписывает-подписывает
+// заново внутренний слушатель useSyncExternalStore (react-query's
+// useMutation: mutationObserver.ts:96-100 — onUnsubscribe снимает
+// observer с ТЕКУЩЕЙ мутации, если слушателей не осталось). Только второй
+// вызов mutate() возвращает observer на мутацию — сторож против двойного
+// вызова как раз его блокирует, и тогда результат первой (реально
+// выполняющейся) мутации становится недоставляемым: экран висит на
+// Spinner навсегда, без единой ошибки в консоли.
+test("под строгим режимом разработки шторка всё равно показывает разбор", async () => {
+  vi.stubGlobal("fetch", () => jsonResponse({ text: "Текст под строгим режимом разработки." }))
+  render(
+    <StrictMode>
+      <DayAnalysisSheet site="Гудаури" date="2026-07-25" model="ecmwf" />
+    </StrictMode>,
+    { wrapper },
+  )
+  expect(await screen.findByText("Текст под строгим режимом разработки.")).toBeInTheDocument()
 })

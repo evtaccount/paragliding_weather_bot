@@ -149,6 +149,24 @@ function todayIso(): string {
 
 const queryClient = new QueryClient()
 
+// Сброс для тестов — тот же класс проблемы, что и resetQueueForTests()
+// в api/queue.ts (см. комментарий там): queryClient здесь — процессный
+// синглтон на весь модуль, общий для КАЖДОГО render(<App />) в тестах
+// одного файла. Кэш живёт 5 минут (STALE_TIME_MS, api/queries.ts) — без
+// сброса второй и последующие тесты в App.test.tsx читают ["sites"]/
+// ["prefs"]/["forecast", ...] из КЭША первого теста, а не из собственного
+// vi.stubGlobal("fetch", ...) конкретного теста. Найдено на тесте про
+// <StrictMode> (task-9 review): он первым в файле требует настоящих данных
+// facts из своей фикстуры, а не только структурных подписей вкладок — и
+// без сброса получал ["sites"] от прогона предыдущего теста ("шапка...
+// пуст", sites: []), из-за чего site оставался null и экран так и не
+// доходил до реального контента. Вызывается в test/setup.ts перед КАЖДЫМ
+// тестом, а не только в App.test.tsx — по той же причине, по которой
+// resetQueueForTests() зовётся глобально, а не точечно.
+export function resetAppQueryClientForTests(): void {
+  queryClient.clear()
+}
+
 function ShellContent() {
   const [tab, setTab] = useState<TabKey>("day")
   const sheets = useSheetsContext()

@@ -80,30 +80,47 @@ export function WindGridSheet({ site, date, model }: WindGridSheetProps) {
                     {level.alt_m_msl} м MSL
                   </div>
                 </th>
-                {level.hourly.map((cell) => (
-                  <td
-                    key={cell.hour}
-                    style={{ ...CELL, textAlign: "center" }}
-                    title={`${fmtWind(cell.wind_ms)}, ${compass(cell.dir_deg)} ${cell.dir_deg}°`}
-                  >
-                    {/* Остриём вниз = азимут 180°; ветер дует В сторону dir+180,
-                        поэтому поворот SVG равен dir (см. комментарий сверху). */}
-                    <svg
-                      viewBox="0 0 24 24"
-                      width={14}
-                      height={14}
-                      aria-hidden="true"
-                      style={{ transform: `rotate(${cell.dir_deg}deg)`, display: "block", margin: "0 auto" }}
+                {data.hours.map((hour) => {
+                  // Ищем по номеру часа, а не берём level.hourly[i] по индексу
+                  // тем же порядковым номером, что и колонка заголовка: домен
+                  // это гарантирует (engine.py:897-926 строит и hours, и
+                  // hourly каждого уровня по ОДНОМУ И ТОМУ ЖЕ списку индексов
+                  // day), но поиск по ключу не даёт рассинхрону строк и
+                  // столбцов молча сдвинуть таблицу, если это когда-нибудь
+                  // перестанет быть так — отсутствующий час просто рисует
+                  // прочерк, а не съезжает на соседнюю колонку.
+                  const cell = level.hourly.find((h) => h.hour === hour)
+                  return (
+                    <td
+                      key={hour}
+                      style={{ ...CELL, textAlign: "center" }}
+                      title={cell ? `${fmtWind(cell.wind_ms)}, ${compass(cell.dir_deg)} ${cell.dir_deg}°` : undefined}
                     >
-                      <path
-                        d="M12 3v18M12 21l-5-6M12 21l5-6"
-                        style={{ stroke: "var(--ink)", fill: "none" }}
-                        strokeWidth={2}
-                      />
-                    </svg>
-                    <b style={{ fontSize: 12 }}>{fmtNum(cell.wind_ms, cell.wind_ms < 10 ? 1 : 0)}</b>
-                  </td>
-                ))}
+                      {cell ? (
+                        <>
+                          {/* Остриём вниз = азимут 180°; ветер дует В сторону dir+180,
+                              поэтому поворот SVG равен dir (см. комментарий сверху). */}
+                          <svg
+                            viewBox="0 0 24 24"
+                            width={14}
+                            height={14}
+                            aria-hidden="true"
+                            style={{ transform: `rotate(${cell.dir_deg}deg)`, display: "block", margin: "0 auto" }}
+                          >
+                            <path
+                              d="M12 3v18M12 21l-5-6M12 21l5-6"
+                              style={{ stroke: "var(--ink)", fill: "none" }}
+                              strokeWidth={2}
+                            />
+                          </svg>
+                          <b style={{ fontSize: 12 }}>{fmtNum(cell.wind_ms, cell.wind_ms < 10 ? 1 : 0)}</b>
+                        </>
+                      ) : (
+                        <span style={{ color: "var(--faint)" }}>—</span>
+                      )}
+                    </td>
+                  )
+                })}
               </tr>
             ))}
           </tbody>
