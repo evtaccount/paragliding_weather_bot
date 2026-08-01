@@ -3,12 +3,14 @@ import sites from "../../test/fixtures/sites.json"
 import facts from "../../test/fixtures/facts_1d.json"
 import factsWindy from "../../test/fixtures/facts_1d_windy.json"
 import factsNoCeiling from "../../test/fixtures/facts_1d_no_ceiling.json"
+import factsNoWindow from "../../test/fixtures/facts_1d_no_window.json"
 import grid from "../../test/fixtures/wind_grid.json"
 import overview from "../../test/fixtures/overview_3d.json"
 import scan from "../../test/fixtures/scan.json"
 import scanMixed from "../../test/fixtures/scan_mixed.json"
 import routes from "../../test/fixtures/routes.json"
-import type { Prefs, Site, Facts, WindGrid, OverviewRow, Scan, SavedRoute } from "./types"
+import forecast3d from "../../test/fixtures/forecast_3d.json"
+import type { Prefs, Site, Facts, WindGrid, OverviewRow, Scan, SavedRoute, ForecastOverview } from "./types"
 
 /* Проверка на этапе компиляции: `tsc --noEmit` в npm run build упадёт, если тип
    разошёлся с настоящим ответом. Тело теста нужно, чтобы файл считался тестом.
@@ -36,4 +38,21 @@ test("непустые массивы фикстур реально провер
   const fn: Facts = factsNoCeiling
   const cm: Scan = scanMixed
   expect([fw, fn, cm].every(Boolean)).toBe(true)
+})
+
+/* thermal_window уходит в null не только гипотетически: на настоящих
+   координатах Гудаури с северной экспозицией в декабре солнце не набирает
+   термического окна вовсе (engine.py:sun_hours). facts_1d_no_window.json —
+   реальный такой ответ, а не выдуманный edge case. */
+test("Facts.thermal_window допускает null по-настоящему", () => {
+  const fn: Facts = factsNoWindow
+  expect(fn.thermal_window).toBeNull()
+})
+
+/* GET /api/forecast?range=3d|week|2weeks отдаёт engine.facts_overview — форму,
+   которую Facts (range=1d) не описывает. forecast_3d.json — реальный такой
+   ответ (range="3d" на недельных данных, как и у overview_3d.json). */
+test("диапазонный /api/forecast описывается ForecastOverview", () => {
+  const fo: ForecastOverview = forecast3d
+  expect(fo).toBeTruthy()
 })

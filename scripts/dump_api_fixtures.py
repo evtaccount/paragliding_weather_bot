@@ -31,6 +31,12 @@ SITE_NO_ASPECT = {"name": "Плато", "lat": 42.30, "lon": 44.20, "elevation_m
                   "aspect": None, "aspect_deg": None, "slope_deg": None, "route_top_m": None,
                   "aliases": [], "notes": "экспозиция не размечена"}
 
+# Настоящие координаты Гудаури, но склон смотрит на север — реальный старт бота
+# зимой, не искусственная широта.
+SITE_NORTH = {"name": "Гудаури-Север", "lat": 42.47, "lon": 44.48, "elevation_m": 2200,
+             "aspect": "С", "aspect_deg": 0.0, "slope_deg": 25.0, "route_top_m": 3000.0,
+             "aliases": [], "notes": ""}
+
 
 def _windy_day():
     """Задутый ветром обед + пропавший CIN утром + отсутствующий lifted_index.
@@ -64,6 +70,13 @@ def _no_ceiling_day():
     return fx.om_null(fx.om_1day(), "boundary_layer_height", "freezing_level_height")
 
 
+def _december_day():
+    """Декабрьский короткий день — солнце невысоко и в SITE_NORTH не набирается
+    часов с нужной высотой: engine.sun_hours отдаёт термическое окно None
+    (facts_1day кладёт его в thermal_window без проверки)."""
+    return fx.om_1day(date="2026-12-15", sunrise="07:15", sunset="16:45")
+
+
 def write(name: str, payload) -> None:
     path = OUT / f"{name}.json"
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -78,6 +91,13 @@ def main() -> None:
     write("facts_1d", engine.facts_1day(day, SITE))
     write("facts_1d_windy", engine.facts_1day(_windy_day(), SITE))
     write("facts_1d_no_ceiling", engine.facts_1day(_no_ceiling_day(), SITE_NO_ASPECT))
+    write("facts_1d_no_window", engine.facts_1day(_december_day(), SITE_NORTH))
+    # GET /api/forecast?range=3d|week|2weeks — ДРУГАЯ форма ответа, чем range=1d:
+    # forecast.py:347-349 зовёт engine.facts_overview, а не facts_1day. Без этой
+    # фикстуры экран обзора (задача 10) типизировал бы диапазонный ответ формой
+    # однодневного — поля бы не совпали (site без "model", days_daytime вместо
+    # hourly_daytime, другой набор ключей дня).
+    write("forecast_3d", engine.facts_overview(week, SITE, "3d"))
     write("wind_grid", engine.wind_grid(day, SITE))
     write("overview_3d", engine.overview_rows(week, SITE))
     write("sites", [SITE])

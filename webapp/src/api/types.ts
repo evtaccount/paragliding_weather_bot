@@ -59,6 +59,12 @@ export type WindGrid = {
   levels: WindLevel[]
 }
 
+// OverviewRow — форма ОДНОГО дня внутри GET /api/scan (forecast.py:scan_week,
+// строит его через engine.overview_rows). Это НЕ форма ответа GET /api/forecast:
+// у диапазонного /api/forecast (range=3d|week|2weeks) свой формат дня —
+// см. ForecastOverview ниже. engine.overview_rows никогда не попадает в ответ
+// /api/forecast (forecast.py:350-351: ветка "rows" зовёт overview_rows, а её
+// читает только scan_week, а не get_facts).
 export type OverviewRow = {
   date: string
   emoji: string
@@ -124,17 +130,26 @@ export type Facts = {
     aspect: string | null
     aspect_deg: number | null
     elevation_m: number
-    timezone: string
+    // timezone — `data.get("timezone")` (engine.py:1042), тот же вызов, что и
+    // в WindGrid.timezone (engine.py:925) и ForecastOverview.site.timezone
+    // (engine.py:1105) — везде один и тот же `| null`, чтобы три копии одного
+    // поля не разошлись в разные стороны.
+    timezone: string | null
     model: string
   }
   date: string
   daylight_hours: string
+  // thermal_window — null, когда термическое окно не открывается (engine.py:
+  // sun_hours возвращает `window = None`, если не набралось часов с достаточной
+  // высотой солнца). Не гипотеза: воспроизведено на настоящих координатах
+  // Гудаури (42.47) с северной экспозицией в декабре — рабочий зимний сценарий
+  // бота, не искусственная широта.
   thermal_window: {
     start_hour: number
     end_hour: number
     peak_hour: number
     solar_noon: string
-  }
+  } | null
   criteria_version: string
   assessment: Assessment
   precip_sum_mm: number
@@ -188,6 +203,49 @@ export type Facts = {
     ti_level_m?: number
     foehn_suspect?: boolean
   }
+}
+
+// ------------------------------------------------------------ forecast_3d.json
+// GET /api/forecast?range=1d отдаёт Facts (engine.facts_1day) — форма выше.
+// GET /api/forecast?range=3d|week|2weeks отдаёт СОВСЕМ ДРУГУЮ форму —
+// engine.facts_overview (forecast.py:347-349: `engine.facts_1day(...) if rng ==
+// "1d" else engine.facts_overview(data, site, rng)`). У неё свой site (без
+// "model"), свой список дней ("days_daytime", а не "hourly_daytime") и другой
+// набор ключей внутри дня. Экран обзора (задача 10) читает ЭТУ форму, когда
+// открывает диапазон, а не Facts и не OverviewRow (тот — форма /api/scan,
+// см. комментарий у OverviewRow выше).
+export type ForecastOverview = {
+  site: {
+    name: string
+    aspect: string | null
+    aspect_deg: number | null
+    elevation_m: number
+    // Тот же `data.get("timezone")`, что и в Facts.site.timezone/WindGrid.timezone.
+    timezone: string | null
+  }
+  range: string
+  criteria_version: string
+  fidelity: string
+  days_daytime: {
+    date: string
+    weather: string
+    temp_max_c: number
+    temp_min_c: number
+    wind_max_ms: number
+    gust_max_ms: number
+    wind_dir_window: string
+    precip_mm: number
+    sunshine_h: number
+    // thermal_window — та же функция (engine.py:sun_summary → sun_hours), что и
+    // у Facts.thermal_window, и то же условие null (см. комментарий там).
+    thermal_window: {
+      start_hour: number
+      end_hour: number
+      peak_hour: number
+      solar_noon: string
+    } | null
+    assessment: Assessment
+  }[]
 }
 
 // -------------------------------------------------------------- route.json

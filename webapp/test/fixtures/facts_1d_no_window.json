@@ -1,0 +1,303 @@
+{
+  "site": {
+    "name": "Гудаури-Север",
+    "aspect": "С",
+    "aspect_deg": 0.0,
+    "elevation_m": 2200,
+    "timezone": "Asia/Tbilisi",
+    "model": "Auto (best_match)"
+  },
+  "date": "2026-12-15",
+  "daylight_hours": "07-16",
+  "thermal_window": null,
+  "criteria_version": "2026-07-doc-v1",
+  "assessment": {
+    "score": 0,
+    "category": "danger",
+    "label_ru": "опасная",
+    "limiting_factor": "dir_offset",
+    "limiting_factor_ru": "отклонение ветра от склона",
+    "fly_window": null,
+    "confidence": 0.98,
+    "warnings": [
+      "no_data:window_hours"
+    ],
+    "vetoes_in_window": [
+      "старт с подветра"
+    ],
+    "unchecked_vetoes": []
+  },
+  "precip_sum_mm": 0.0,
+  "cape_max": 50,
+  "freezing_level_m": 4000,
+  "thermal_ceiling_m_agl": 1200,
+  "thermal_ceiling_m_msl": 3400,
+  "lcl_m_agl": 1464,
+  "blue_thermals": true,
+  "peak_hour": 7,
+  "fly_dir_deg": 180.0,
+  "dir_verdict": "в спину ❌",
+  "dir_class": "tail",
+  "caveats": [
+    "вето внутри окна: старт с подветра",
+    "голубая термичка (без облаков-маркеров)",
+    "ветер в спину в рабочее окно — опасно, сверь экспозицию",
+    "высота старта по гриду (2200 м); прогноз далеко вперёд — пересними за 1–2 суток"
+  ],
+  "hourly_daytime": [
+    {
+      "time": "07:00",
+      "temp_c": 20.0,
+      "wind_ms": 2.0,
+      "gust_ms": 4.0,
+      "dir_deg": 180,
+      "cloud_low_pct": 10,
+      "precip_mm": 0.0,
+      "cape": 50,
+      "sun_elev_deg": 0,
+      "sun_az_deg": 122,
+      "slope_sun_index": 0.0,
+      "score": 0,
+      "cat": "danger",
+      "lim": "dir_offset",
+      "veto": [
+        "lee_side"
+      ]
+    },
+    {
+      "time": "08:00",
+      "temp_c": 20.0,
+      "wind_ms": 2.0,
+      "gust_ms": 4.0,
+      "dir_deg": 180,
+      "cloud_low_pct": 10,
+      "precip_mm": 0.0,
+      "cape": 50,
+      "sun_elev_deg": 8,
+      "sun_az_deg": 133,
+      "slope_sun_index": 0.0,
+      "score": 0,
+      "cat": "danger",
+      "lim": "dir_offset",
+      "veto": [
+        "lee_side"
+      ]
+    },
+    {
+      "time": "09:00",
+      "temp_c": 20.0,
+      "wind_ms": 2.0,
+      "gust_ms": 4.0,
+      "dir_deg": 180,
+      "cloud_low_pct": 10,
+      "precip_mm": 0.0,
+      "cape": 50,
+      "sun_elev_deg": 16,
+      "sun_az_deg": 146,
+      "slope_sun_index": 0.0,
+      "score": 0,
+      "cat": "danger",
+      "lim": "dir_offset",
+      "veto": [
+        "lee_side"
+      ]
+    },
+    {
+      "time": "10:00",
+      "temp_c": 20.0,
+      "wind_ms": 2.0,
+      "gust_ms": 4.0,
+      "dir_deg": 180,
+      "cloud_low_pct": 10,
+      "precip_mm": 0.0,
+      "cape": 50,
+      "sun_elev_deg": 21,
+      "sun_az_deg": 159,
+      "slope_sun_index": 0.0,
+      "score": 0,
+      "cat": "danger",
+      "lim": "dir_offset",
+      "veto": [
+        "lee_side"
+      ]
+    },
+    {
+      "time": "11:00",
+      "temp_c": 20.0,
+      "wind_ms": 2.0,
+      "gust_ms": 4.0,
+      "dir_deg": 180,
+      "cloud_low_pct": 10,
+      "precip_mm": 0.0,
+      "cape": 50,
+      "sun_elev_deg": 24,
+      "sun_az_deg": 173,
+      "slope_sun_index": 0.0,
+      "score": 0,
+      "cat": "danger",
+      "lim": "dir_offset",
+      "veto": [
+        "lee_side"
+      ]
+    },
+    {
+      "time": "12:00",
+      "temp_c": 20.0,
+      "wind_ms": 2.0,
+      "gust_ms": 4.0,
+      "dir_deg": 180,
+      "cloud_low_pct": 10,
+      "precip_mm": 0.0,
+      "cape": 50,
+      "sun_elev_deg": 24,
+      "sun_az_deg": 187,
+      "slope_sun_index": 0.0,
+      "score": 0,
+      "cat": "danger",
+      "lim": "dir_offset",
+      "veto": [
+        "lee_side"
+      ]
+    },
+    {
+      "time": "13:00",
+      "temp_c": 20.0,
+      "wind_ms": 2.0,
+      "gust_ms": 4.0,
+      "dir_deg": 180,
+      "cloud_low_pct": 10,
+      "precip_mm": 0.0,
+      "cape": 50,
+      "sun_elev_deg": 21,
+      "sun_az_deg": 201,
+      "slope_sun_index": 0.0,
+      "score": 0,
+      "cat": "danger",
+      "lim": "dir_offset",
+      "veto": [
+        "lee_side"
+      ]
+    },
+    {
+      "time": "14:00",
+      "temp_c": 20.0,
+      "wind_ms": 2.0,
+      "gust_ms": 4.0,
+      "dir_deg": 180,
+      "cloud_low_pct": 10,
+      "precip_mm": 0.0,
+      "cape": 50,
+      "sun_elev_deg": 16,
+      "sun_az_deg": 214,
+      "slope_sun_index": 0.0,
+      "score": 0,
+      "cat": "danger",
+      "lim": "dir_offset",
+      "veto": [
+        "lee_side"
+      ]
+    },
+    {
+      "time": "15:00",
+      "temp_c": 20.0,
+      "wind_ms": 2.0,
+      "gust_ms": 4.0,
+      "dir_deg": 180,
+      "cloud_low_pct": 10,
+      "precip_mm": 0.0,
+      "cape": 50,
+      "sun_elev_deg": 8,
+      "sun_az_deg": 227,
+      "slope_sun_index": 0.0,
+      "score": 0,
+      "cat": "danger",
+      "lim": "dir_offset",
+      "veto": [
+        "lee_side"
+      ]
+    },
+    {
+      "time": "16:00",
+      "temp_c": 20.0,
+      "wind_ms": 2.0,
+      "gust_ms": 4.0,
+      "dir_deg": 180,
+      "cloud_low_pct": 10,
+      "precip_mm": 0.0,
+      "cape": 50,
+      "sun_elev_deg": 0,
+      "sun_az_deg": 238,
+      "slope_sun_index": 0.0,
+      "score": 0,
+      "cat": "danger",
+      "lim": "dir_offset",
+      "veto": [
+        "lee_side"
+      ]
+    }
+  ],
+  "wind_profile_peak_hour": [
+    {
+      "level": "10m",
+      "alt_m_msl": 2210,
+      "wind_ms": 2.0,
+      "dir_deg": 180
+    },
+    {
+      "level": "925hPa",
+      "alt_m_msl": 760,
+      "wind_ms": 3.0,
+      "dir_deg": 190
+    },
+    {
+      "level": "850hPa",
+      "alt_m_msl": 1500,
+      "wind_ms": 4.0,
+      "dir_deg": 200
+    },
+    {
+      "level": "700hPa",
+      "alt_m_msl": 3000,
+      "wind_ms": 6.0,
+      "dir_deg": 210
+    },
+    {
+      "level": "600hPa",
+      "alt_m_msl": 4200,
+      "wind_ms": 9.0,
+      "dir_deg": 220
+    },
+    {
+      "level": "500hPa",
+      "alt_m_msl": 5600,
+      "wind_ms": 13.0,
+      "dir_deg": 230
+    }
+  ],
+  "derived_peak_hour": {
+    "wind_10m": 2.0,
+    "wind_925": 3.0,
+    "wind_850": 4.0,
+    "gust_factor": 0.66,
+    "gust_delta": 2.0,
+    "dir_offset": 180.0,
+    "w_star": 2.04,
+    "bl_depth": 1200.0,
+    "thermal_index": -9.2,
+    "cape": 50.0,
+    "lifted_index": 2.0,
+    "cloud_low": 10.0,
+    "base_clearance": 1464,
+    "precip_prob": 0.0,
+    "visibility": 30000.0,
+    "shear_100m": 1.28,
+    "spread": 12.0,
+    "precip_mm": 0.0,
+    "cin": 60.0,
+    "wind_at_base": 6.0,
+    "base_over_route": 664,
+    "dir_misalign": 5.0,
+    "ti_level_m": 3000,
+    "foehn_suspect": false
+  }
+}
