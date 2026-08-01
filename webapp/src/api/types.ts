@@ -37,7 +37,7 @@ export type Assessment = {
   label_ru: string
   limiting_factor: string | null
   limiting_factor_ru: string | null
-  fly_window: [number, number] | null
+  fly_window: number[] | null
   confidence: number
   warnings: string[]
   vetoes_in_window: string[]
@@ -67,7 +67,7 @@ export type OverviewRow = {
   category: string
   limiting: string | null
   confidence: number
-  fly_window: [number, number] | null
+  fly_window: number[] | null
   tmax: number
   wmax: number
   gmax: number
@@ -222,32 +222,56 @@ export type RoutePoint = {
   lon: number
   name: string | null
   track_bearing_deg: number
-  eta: string
+  // eta уходит в null, если расчётный прилёт попадает за полночь (данные
+  // запрошены на один день дальше не считаются) — forecast.py:_evaluate
+  // (`for s in over: s.eta_h = None`), проверено
+  // tests/test_route_profile.py::test_arrival_past_midnight_is_truncated_and_reported.
+  eta: string | null
   eta_fixed: string
-  terrain_m: number
-  terrain_point_m: number
+  // terrain_m/terrain_point_m остаются null, если рельеф не получен —
+  // route.py:attach_terrain делает `if not elevations or not grid: return` и
+  // высоты сэмпла не проставляются; см. route_no_terrain.json.
+  terrain_m: number | null
+  terrain_point_m: number | null
   is_terrain_peak: boolean
-  cloud_base_m: number
-  working_band_m: number
-  wind_along_kmh: number
-  wind_cross_kmh: number
-  wind_working_alt_kmh: number
-  wind_working_alt_dir: number
+  // cloud_base_m/working_band_m — null без рельефа (route.py:cloud_base_m /
+  // working_band_m возвращают None при terrain_m is None) и дополнительно не
+  // считаются вовсе для точек с eta is None (forecast.py:_evaluate пропускает
+  // расчёт по `continue`, оставляя дефолт None у Sample).
+  cloud_base_m: number | null
+  working_band_m: number | null
+  wind_along_kmh: number | null
+  wind_cross_kmh: number | null
+  wind_working_alt_kmh: number | null
+  wind_working_alt_dir: number | null
   effective_ground_speed_kmh: number
   crab_limited: boolean
-  window: { start_hour: number; end_hour: number }
-  time_margin_min: number
-  w_star_ms: number
+  // window — термическое окно; route.py:thermal_window возвращает None на
+  // нескольких ветках (нет blh/radiation, астрономическое окно пусто, рабочих
+  // часов не нашлось).
+  window: { start_hour: number; end_hour: number } | null
+  time_margin_min: number | null
+  w_star_ms: number | null
   site_match: string | null
-  weather: RouteWeather
+  // weather — {} (без единого ключа) у точек с eta is None (см. eta выше);
+  // иначе полный набор почасовых величин. Partial честно отражает оба случая.
+  weather: Partial<RouteWeather>
   profile: string
-  score: number
-  category: string
-  limiting: string
+  // score/category/limiting вместе становятся null, когда s.assessment is None
+  // (forecast.py:_point_dict — `None if s.assessment is None else ...`,
+  // то есть та же точка, что и eta is None выше). limiting дополнительно
+  // может быть null и при существующей оценке: criteria.py — «если всё на
+  // максимуме, ограничивать нечему — лимит-фактора нет» (a.limiting остаётся
+  // None).
+  score: number | null
+  category: string | null
+  limiting: string | null
   vetoes: string[]
   storm_ahead: { km: number; eta: string | null } | null
   is_turnpoint: boolean
-  thermal_ceiling_m: number
+  // thermal_ceiling_m — null без рельефа или без boundary_layer_height
+  // (forecast.py:_ceiling_m: `if s.terrain_m is None or blh is None: return None`).
+  thermal_ceiling_m: number | null
   // Набор ключей subs/groups зависит от профиля точки (takeoff/enroute/goal
   // считаются разными наборами критериев) — фиксированной формы у него нет.
   subs: Record<string, number>
@@ -268,22 +292,37 @@ export type RouteResult = {
     model: string
   }
   points: RoutePoint[]
-  terrain: { km: number[]; elevations: number[] }
+  // terrain — null, если Elevation API не ответил: forecast.py:get_route —
+  // `"terrain": ({...} if elev else None)`. См. route_no_terrain.json.
+  terrain: { km: number[]; elevations: number[] } | null
   verdict: {
-    score: number
+    // score/mean_score — null, если ни одна точка не получила оценку
+    // (criteria.py:score_route — `if not scored: return RouteAssessment(None,
+    // *NO_DATA, ...)`, mean_score остаётся на дефолте None).
+    score: number | null
     category: string
     label: string
     emoji: string
     feasibility: string
-    bottleneck: { km: number; score: number; reason: string }
+    // bottleneck — null в том же случае (RouteAssessment.bottleneck: dict |
+    // None = None, не устанавливается в ветке `not scored`).
+    // reason — null, если у самой слабой точки нет лимитирующего фактора
+    // (criteria.py: `"reason": worst["assessment"].limiting`, а
+    // HourAssessment.limiting: str | None).
+    bottleneck: { km: number; score: number; reason: string | null } | null
     blocked_at_km: number | null
     blocked_reason: string | null
-    flyable_until_km: number
-    mean_score: number
+    flyable_until_km: number | null
+    mean_score: number | null
     confidence: number
   }
-  departure_scan: { departure: string; score: number; feasibility: string }[]
-  best_departure: { departure: string; score: number; feasibility: string }
-  reverse: { score: number; feasibility: string; better: boolean }
+  // score в каждой записи скана — null по той же причине, что и verdict.score
+  // (тот же RouteAssessment на другое время вылета).
+  departure_scan: { departure: string; score: number | null; feasibility: string }[]
+  // best_departure — null, если ни один вариант вылета не «завершаемый»
+  // (forecast.py:get_route — `best = max(completable, ...) if completable
+  // else None`; tests/test_route_scored.py::test_best_departure_is_none_when_nothing_is_completable).
+  best_departure: { departure: string; score: number | null; feasibility: string } | null
+  reverse: { score: number | null; feasibility: string; better: boolean }
   notes: string[]
 }
