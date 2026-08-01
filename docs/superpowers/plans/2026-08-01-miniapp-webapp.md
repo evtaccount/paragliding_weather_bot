@@ -497,7 +497,8 @@ git commit -m "feat(webapp): обёртка над Telegram WebApp"
 
 **Interfaces:**
 - Produces: типы `Prefs`, `Model`, `Site`, `Facts`, `Assessment`, `HourFact`, `OverviewRow`, `WindGrid`, `WindLevel`, `Scan`, `RouteResult`, `RoutePoint`, `SavedRoute`, `Elevation`.
-- Produces: `scripts/dump_api_fixtures.py` — пишет `webapp/test/fixtures/{prefs,sites,facts_1d,overview_3d,wind_grid,scan,route,routes}.json`.
+- Produces: `scripts/dump_api_fixtures.py` — пишет `webapp/test/fixtures/{prefs,sites,facts_1d,forecast_3d,overview_3d,wind_grid,scan,route,routes}.json`.
+- Внимание, две разные формы: `GET /api/forecast` с `range=1d` отдаёт `engine.facts_1day`, а с `3d`/`week`/`2weeks` — `engine.facts_overview` (`forecast.py:347-349`). Это разные структуры. `engine.overview_rows` в ответ этого эндпоинта не попадает вовсе — он идёт только внутрь `/api/scan`. Фикстура `forecast_3d.json` описывает первое, `overview_3d.json` — второе, и путать их нельзя: экран обзора читает именно `forecast_3d`.
 
 - [ ] **Step 1: Написать скрипт снятия фикстур**
 
@@ -643,8 +644,8 @@ export type Assessment = {
   label_ru: string
   limiting_factor: string | null
   limiting_factor_ru: string | null
-  fly_window: [number, number] | null
-  confidence: string
+  fly_window: number[] | null
+  confidence: number
   warnings: string[]
   vetoes_in_window: string[]
   unchecked_vetoes: string[]
@@ -672,8 +673,8 @@ export type OverviewRow = {
   score: number
   category: string
   limiting: string | null
-  confidence: string
-  fly_window: [number, number] | null
+  confidence: number
+  fly_window: number[] | null
   tmax: number
   wmax: number
   gmax: number
@@ -1376,7 +1377,7 @@ git add webapp/src && git commit -m "feat(webapp): шторки ветра по 
 
 - [ ] **Step 1: Написать тесты**
 
-На `overview_3d.json` и `scan.json`:
+На `forecast_3d.json` (ответ `GET /api/forecast` с диапазоном — это `engine.facts_overview`, а НЕ строки обзора) и `scan.json`:
 
 ```tsx
 test("строка на каждый день диапазона", async () => {})
