@@ -12,6 +12,7 @@ import { usePrefs, useSites } from "./api/queries"
 import type { Prefs, Site } from "./api/types"
 import { fmtDate } from "./format"
 import * as telegram from "./telegram"
+import { resolveThemeVars } from "./theme"
 import { Chip } from "./ui/Chip"
 import { Sheet } from "./ui/Sheet"
 import { Spinner } from "./ui/Spinner"
@@ -134,9 +135,14 @@ function Shell() {
   }, [])
 
   // Переменные темы Telegram — на document.documentElement, чтобы
-  // styles.css (var(--tg-*, запасное значение)) их подхватил.
+  // styles.css (var(--surface) и т.п.) их подхватил. resolveThemeVars
+  // берёт схему (colorScheme() — есть всегда, даже без themeParams) и
+  // накладывает присланные Telegram поля на ЦЕЛЬНУЮ палитру той же
+  // схемы — недостающие поля не берутся из чужой (см. theme.ts, правка
+  // ревью: было наоборот, каждая переменная бралась независимо и при
+  // частичном themeParams получался тёмный фон со светлым текстом).
   useEffect(() => {
-    const vars = telegram.themeVars()
+    const vars = resolveThemeVars(telegram.colorScheme(), telegram.themeVars())
     for (const [key, value] of Object.entries(vars)) {
       document.documentElement.style.setProperty(key, value)
     }

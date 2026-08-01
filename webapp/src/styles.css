@@ -7,12 +7,17 @@
  * экраны — переносить их сюда заранее было бы лишним.
  *
  * Цветов-литералов в TSX-компонентах нет: все цвета — через переменные
- * темы Telegram (--tg-*, App.tsx выставляет их из telegram.themeVars() на
- * document.documentElement) с запасными значениями здесь же — теми же hex,
- * что в макете для светлой темы. Собственной тёмной темы (у макета —
- * @media (prefers-color-scheme) и [data-theme]) здесь нет: тёмный вариант
- * приходит от самого Telegram через themeParams, а не через ручной тумблер
- * или системную схему браузера.
+ * --surface/--panel/--ink и т.д., которые App.tsx выставляет на
+ * document.documentElement через theme.ts:resolveThemeVars(). Там же —
+ * почему подставлять запасное значение независимо на каждую переменную
+ * (как было раньше) нельзя: Telegram не гарантирует полный themeParams,
+ * и при частичном наборе фон и текст могут случайно взяться из разных
+ * схем (тёмный фон + запасной тёмный текст на светлую тему = нечитаемо).
+ * :root ниже — статический светлый набор ровно на время до первого
+ * рендера/эффекта (JS его тут же перекрывает полным набором нужной
+ * схемы), самостоятельной тёмной темы или системной схемы браузера
+ * (@media (prefers-color-scheme), [data-theme] у макета) здесь нет —
+ * тёмный вариант выбирается только через telegram.colorScheme().
  *
  * Палитра графиков макета (--g-*, --s-*, --ground) — задача 7, здесь не
  * заводится. Исключение — --air/--air-deep/--air-wash: без них не из чего
@@ -20,15 +25,15 @@
  */
 
 :root {
-  --surface: var(--tg-bg-color, #FCFCFB);
-  --panel: var(--tg-section-bg-color, #FFFFFF);
-  --sunk: var(--tg-secondary-bg-color, #F3F1EB);
-  --ink: var(--tg-text-color, #1C1C1A);
-  --muted: var(--tg-hint-color, #6A6A63);
-  --faint: var(--tg-subtitle-text-color, #9E9E94);
-  --rule: var(--tg-section-separator-color, #E6E4DD);
-  --air: var(--tg-link-color, #6EAAD2);
-  --air-deep: var(--tg-button-color, #2F6F8F);
+  --surface: #FCFCFB;
+  --panel: #FFFFFF;
+  --sunk: #F3F1EB;
+  --ink: #1C1C1A;
+  --muted: #6A6A63;
+  --faint: #9E9E94;
+  --rule: #E6E4DD;
+  --air: #6EAAD2;
+  --air-deep: #2F6F8F;
   --air-wash: rgba(110, 170, 210, .14);
 
   --shadow: 0 1px 2px rgba(28, 28, 26, .06), 0 8px 24px -12px rgba(28, 28, 26, .18);
