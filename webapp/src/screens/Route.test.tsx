@@ -89,7 +89,7 @@ beforeEach(() => {
 
 test("показывает вердикт маршрута и километраж", async () => {
   vi.stubGlobal("fetch", () => jsonResponse(ROUTE))
-  render(<Route points={POINTS} name={ROUTE.route.name} date={ROUTE.route.date} model="ecmwf" />, { wrapper })
+  render(<Route points={POINTS} name={ROUTE.route.name} date={ROUTE.route.date} model="ecmwf" onPickRoute={() => {}} />, { wrapper })
 
   expect(await screen.findByText(ROUTE.verdict.label)).toBeInTheDocument()
   expect(screen.getByText(/40\s*км/)).toBeInTheDocument()
@@ -127,7 +127,7 @@ test("разрез рисует рельеф из terrain, а не из точе
 test("маршрут без terrain не роняет экран", async () => {
   vi.stubGlobal("fetch", () => jsonResponse(ROUTE_NO_TERRAIN))
   render(
-    <Route points={POINTS} name={ROUTE_NO_TERRAIN.route.name} date={ROUTE_NO_TERRAIN.route.date} model="ecmwf" />,
+    <Route points={POINTS} name={ROUTE_NO_TERRAIN.route.name} date={ROUTE_NO_TERRAIN.route.date} model="ecmwf" onPickRoute={() => {}} />,
     { wrapper },
   )
 
@@ -143,7 +143,7 @@ test("маршрут без terrain не роняет экран", async () => {
 // старта.
 test("нажатие на точку открывает её карточку", async () => {
   vi.stubGlobal("fetch", () => jsonResponse(ROUTE))
-  render(<Route points={POINTS} name={ROUTE.route.name} date={ROUTE.route.date} model="ecmwf" />, { wrapper })
+  render(<Route points={POINTS} name={ROUTE.route.name} date={ROUTE.route.date} model="ecmwf" onPickRoute={() => {}} />, { wrapper })
   await screen.findByText(ROUTE.verdict.label)
 
   const target = ROUTE.points[2]!
@@ -159,7 +159,7 @@ test("перебор времени вылета шлёт новый запро�
   // тип вызова — пустой кортеж, и разбор mock.calls ниже не компилируется.
   const fetchMock = vi.fn((_url: string, _init?: RequestInit) => jsonResponse(ROUTE))
   vi.stubGlobal("fetch", fetchMock)
-  render(<Route points={POINTS} name={ROUTE.route.name} date={ROUTE.route.date} model="ecmwf" />, { wrapper })
+  render(<Route points={POINTS} name={ROUTE.route.name} date={ROUTE.route.date} model="ecmwf" onPickRoute={() => {}} />, { wrapper })
   await screen.findByText(ROUTE.verdict.label)
 
   const target = ROUTE.departure_scan.find((e) => e.departure !== ROUTE.route.departure)!
@@ -179,7 +179,7 @@ test("разбор маршрута показывает текст", async () =
     const path = url.split("?")[0]
     return jsonResponse(path === "/api/route/analysis" ? { text: "Маршрут проходится, но без запаса." } : ROUTE)
   })
-  render(<Route points={POINTS} name={ROUTE.route.name} date={ROUTE.route.date} model="ecmwf" />, { wrapper })
+  render(<Route points={POINTS} name={ROUTE.route.name} date={ROUTE.route.date} model="ecmwf" onPickRoute={() => {}} />, { wrapper })
   await screen.findByText(ROUTE.verdict.label)
 
   await userEvent.click(screen.getByRole("button", { name: /Разбор от ИИ/ }))
@@ -198,7 +198,7 @@ test("разбор маршрута показывает текст", async () =
 test("вердикт и чипы вылета показывают проходимость, а не только балл", async () => {
   const tooSlow: RouteResult = { ...ROUTE, verdict: { ...ROUTE.verdict, feasibility: "too_slow" } }
   vi.stubGlobal("fetch", () => jsonResponse(tooSlow))
-  render(<Route points={POINTS} name={ROUTE.route.name} date={ROUTE.route.date} model="ecmwf" />, { wrapper })
+  render(<Route points={POINTS} name={ROUTE.route.name} date={ROUTE.route.date} model="ecmwf" onPickRoute={() => {}} />, { wrapper })
 
   expect(await screen.findByText("не успеваешь до закрытия окна")).toBeInTheDocument()
   // Балл и категория при этом ровно те же, что у проходимого маршрута —
@@ -234,7 +234,7 @@ test("вердикт и чипы вылета показывают проход�
 // потерявшая перевод единиц или строку роли, — вторую.
 test("карточка точки показывает погоду именно этой точки", async () => {
   vi.stubGlobal("fetch", () => jsonResponse(ROUTE))
-  render(<Route points={POINTS} name={ROUTE.route.name} date={ROUTE.route.date} model="ecmwf" />, { wrapper })
+  render(<Route points={POINTS} name={ROUTE.route.name} date={ROUTE.route.date} model="ecmwf" onPickRoute={() => {}} />, { wrapper })
   await screen.findByText(ROUTE.verdict.label)
 
   const enroute = ROUTE.points[2]!
@@ -268,7 +268,7 @@ test("карточка точки показывает погоду именно
 // стрелка, само число берётся по модулю, ветер — румб плюс скорость.
 test("таблица точек показывает составляющую вдоль курса и ветер на рабочей высоте", async () => {
   vi.stubGlobal("fetch", () => jsonResponse(ROUTE))
-  render(<Route points={POINTS} name={ROUTE.route.name} date={ROUTE.route.date} model="ecmwf" />, { wrapper })
+  render(<Route points={POINTS} name={ROUTE.route.name} date={ROUTE.route.date} model="ecmwf" onPickRoute={() => {}} />, { wrapper })
   await screen.findByText(ROUTE.verdict.label)
 
   const target = ROUTE.points[1]!
@@ -287,7 +287,7 @@ test("таблица точек показывает составляющую в
 test("на экране маршрута есть карта с точками маршрута и трассой", async () => {
   vi.stubGlobal("fetch", () => jsonResponse(ROUTE))
   const { container } = render(
-    <Route points={POINTS} name={ROUTE.route.name} date={ROUTE.route.date} model="ecmwf" />,
+    <Route points={POINTS} name={ROUTE.route.name} date={ROUTE.route.date} model="ecmwf" onPickRoute={() => {}} />,
     { wrapper },
   )
   await screen.findByText(ROUTE.verdict.label)
@@ -305,7 +305,7 @@ test("на экране маршрута есть карта с точками �
 // неё нет имени ни для пилота, ни для теста.
 test("нажатие на пин карты открывает карточку той же точки", async () => {
   vi.stubGlobal("fetch", () => jsonResponse(ROUTE))
-  render(<Route points={POINTS} name={ROUTE.route.name} date={ROUTE.route.date} model="ecmwf" />, { wrapper })
+  render(<Route points={POINTS} name={ROUTE.route.name} date={ROUTE.route.date} model="ecmwf" onPickRoute={() => {}} />, { wrapper })
   await screen.findByText(ROUTE.verdict.label)
 
   const target = ROUTE.points[2]!
@@ -324,7 +324,7 @@ test("нажатие на пин карты открывает карточку 
 // различить — prototype.html:1113-1119.
 test("под разрезом есть легенда трёх слоёв", async () => {
   vi.stubGlobal("fetch", () => jsonResponse(ROUTE))
-  render(<Route points={POINTS} name={ROUTE.route.name} date={ROUTE.route.date} model="ecmwf" />, { wrapper })
+  render(<Route points={POINTS} name={ROUTE.route.name} date={ROUTE.route.date} model="ecmwf" onPickRoute={() => {}} />, { wrapper })
   await screen.findByText(ROUTE.verdict.label)
 
   expect(screen.getByText("рельеф")).toBeInTheDocument()
@@ -337,7 +337,7 @@ test("под разрезом есть легенда трёх слоёв", asyn
 // точка с посчитанным запасом, знак — типографский минус/плюс.
 test("показывает запас окна и балл обратного маршрута", async () => {
   vi.stubGlobal("fetch", () => jsonResponse(ROUTE))
-  render(<Route points={POINTS} name={ROUTE.route.name} date={ROUTE.route.date} model="ecmwf" />, { wrapper })
+  render(<Route points={POINTS} name={ROUTE.route.name} date={ROUTE.route.date} model="ecmwf" onPickRoute={() => {}} />, { wrapper })
   await screen.findByText(ROUTE.verdict.label)
 
   expect(screen.getByText(/Запас окна: старт \+450 мин · финиш \+231 мин/)).toBeInTheDocument()
@@ -350,7 +350,7 @@ test("показывает запас окна и балл обратного м
 test("безымянный маршрут не показывает висячий разделитель", async () => {
   const noName: RouteResult = { ...ROUTE, route: { ...ROUTE.route, name: null } }
   vi.stubGlobal("fetch", () => jsonResponse(noName))
-  render(<Route points={POINTS} name={null} date={ROUTE.route.date} model="ecmwf" />, { wrapper })
+  render(<Route points={POINTS} name={null} date={ROUTE.route.date} model="ecmwf" onPickRoute={() => {}} />, { wrapper })
   await screen.findByText(ROUTE.verdict.label)
 
   expect(screen.getByText(/^вылет 11:30/)).toBeInTheDocument()
@@ -394,13 +394,13 @@ test("пока считается — показывает индикатор, �
   vi.stubGlobal("fetch", (_url: string, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
     init?.signal?.addEventListener("abort", () => reject(new DOMException("отменено", "AbortError")))
   }))
-  render(<Route points={POINTS} name={ROUTE.route.name} date={ROUTE.route.date} model="ecmwf" />, { wrapper })
+  render(<Route points={POINTS} name={ROUTE.route.name} date={ROUTE.route.date} model="ecmwf" onPickRoute={() => {}} />, { wrapper })
   expect(screen.getByRole("status", { name: "Загрузка" })).toBeInTheDocument()
 })
 
 test("на 502 показывает ошибку и кнопку повтора", async () => {
   vi.stubGlobal("fetch", () => jsonResponse({ detail: "" }, 502))
-  render(<Route points={POINTS} name={ROUTE.route.name} date={ROUTE.route.date} model="ecmwf" />, { wrapper })
+  render(<Route points={POINTS} name={ROUTE.route.name} date={ROUTE.route.date} model="ecmwf" onPickRoute={() => {}} />, { wrapper })
   expect(await screen.findByText(/open-meteo сейчас недоступна/)).toBeInTheDocument()
   expect(screen.getByRole("button", { name: "Повторить" })).toBeInTheDocument()
 })
@@ -410,7 +410,7 @@ test("на 502 показывает ошибку и кнопку повтора"
 test("меньше двух точек — понятный текст, а не запрос", () => {
   const fetchMock = vi.fn(() => jsonResponse(ROUTE))
   vi.stubGlobal("fetch", fetchMock)
-  render(<Route points={[POINTS[0]!]} name={null} date="2026-08-01" model="ecmwf" />, { wrapper })
+  render(<Route points={[POINTS[0]!]} name={null} date="2026-08-01" model="ecmwf" onPickRoute={() => {}} />, { wrapper })
 
   expect(screen.getByText("Нет маршрута")).toBeInTheDocument()
   expect(fetchMock).not.toHaveBeenCalled()
@@ -425,7 +425,7 @@ test("маршрут из двух точек не роняет экран", asy
   }
   const twoPoints: RoutePointRow[] = [POINTS[0]!, POINTS[POINTS.length - 1]!]
   vi.stubGlobal("fetch", () => jsonResponse(twoPointRoute))
-  render(<Route points={twoPoints} name={ROUTE.route.name} date={ROUTE.route.date} model="ecmwf" />, { wrapper })
+  render(<Route points={twoPoints} name={ROUTE.route.name} date={ROUTE.route.date} model="ecmwf" onPickRoute={() => {}} />, { wrapper })
 
   expect(await screen.findByText(ROUTE.verdict.label)).toBeInTheDocument()
   expect(screen.getAllByRole("button", { name: /км ·/ })).toHaveLength(2)
@@ -458,7 +458,7 @@ test("маршрут из двух точек не роняет экран", asy
 test("под строгим режимом разработки маршрут доходит до вердикта, а не виснет", async () => {
   vi.stubGlobal("fetch", () => jsonResponse(ROUTE))
   render(
-    <Route points={POINTS} name={ROUTE.route.name} date={ROUTE.route.date} model="ecmwf" />,
+    <Route points={POINTS} name={ROUTE.route.name} date={ROUTE.route.date} model="ecmwf" onPickRoute={() => {}} />,
     { wrapper: strictWrapper },
   )
   expect(await screen.findByText(ROUTE.verdict.label)).toBeInTheDocument()
@@ -470,7 +470,7 @@ test("под строгим режимом разработки открытие
     return jsonResponse(path === "/api/route/analysis" ? { text: "Разбор под строгим режимом разработки." } : ROUTE)
   })
   render(
-    <Route points={POINTS} name={ROUTE.route.name} date={ROUTE.route.date} model="ecmwf" />,
+    <Route points={POINTS} name={ROUTE.route.name} date={ROUTE.route.date} model="ecmwf" onPickRoute={() => {}} />,
     { wrapper: strictWrapper },
   )
   await screen.findByText(ROUTE.verdict.label)

@@ -1,20 +1,26 @@
 // Экран «Маршрут»: карта, вердикт, разрез рельефа, таблица точек, перебор
-// времени вылета, разбор от ИИ — раскладка ровно из renderRoute (miniapp/
-// prototype.html:1067-1194). Кнопки «Сохранённые» и «Новый маршрут» из того
-// же макета сюда не перенесены: их шторки заводит задача 13.
+// времени вылета, разбор от ИИ, кнопки «Сохранённые» и «Новый маршрут» —
+// раскладка ровно из renderRoute (miniapp/prototype.html:1067-1194, кнопки —
+// строки 1182-1186).
+//
+// Кнопки источника маршрута показываются в ЛЮБОМ состоянии экрана, а не
+// только рядом с посчитанным маршрутом: пока маршрута нет (свежий сеанс) или
+// пока он считается, это единственный способ его задать — спрятать их
+// значило бы запереть пилота на экране «Нет маршрута» навсегда.
 //
 // Карта (строки 1071-1082 макета) — ПОКАЗ уже посчитанного маршрута, а не
 // способ его задать: в макете drawMap рисует трассу и пины точек, а
 // «Точки на карте» живут в отдельной шторке «Новый маршрут» (1781-1804,
-// задача 13). Поэтому MapView здесь без onTap/onDragPoint — карта только
-// показывает (см. комментарий у Props в map/MapView.tsx).
+// sheets/NewRouteSheet.tsx). Поэтому MapView здесь без onTap/onDragPoint —
+// карта только показывает (см. комментарий у Props в map/MapView.tsx).
 //
 // Экран НЕ создаёт маршрут и не хранит его — он получает готовый список
 // точек пропом (`points`, формат [lat, lon, name] — как ответ
 // /api/route/parse и как хранит store, см. RoutePointRow в api/queries.ts) и
-// сам зовёт POST /api/route через useRoute(). Пока задача 13 не даёт способа
-// поставить точки, вызывающий код (App.tsx) передаёт пустой массив — экран
-// показывает явное «нет маршрута», а не вечную загрузку.
+// сам зовёт POST /api/route через useRoute(). Точки выбирают шторки ниже
+// («Сохранённые» и «Новый маршрут»), а хранит их App.tsx; пока выбора не
+// было, приходит пустой массив — экран показывает явное «нет маршрута», а
+// не вечную загрузку.
 //
 // ВАЖНО про пропы `points`/`name`/`date`/`model`: эффект ниже перечитывает их
 // в зависимостях и зовёт mutate() заново при любом изменении ссылки —
@@ -31,8 +37,10 @@ import { BAND, TERRAIN, colorOfCategory } from "../charts/palette"
 import { RouteProfile } from "../charts/RouteProfile"
 import { compass, fmtNum } from "../format"
 import { MapView } from "../map/MapView"
+import { NewRouteSheet } from "../sheets/NewRouteSheet"
 import { PointCardSheet, roleLabel } from "../sheets/PointCardSheet"
 import { RouteAnalysisSheet } from "../sheets/RouteAnalysisSheet"
+import { SavedRoutesSheet } from "../sheets/SavedRoutesSheet"
 import { ErrorBox } from "../ui/ErrorBox"
 import { Spinner } from "../ui/Spinner"
 
@@ -41,6 +49,9 @@ type RouteProps = {
   name: string | null
   date: string
   model: string | null
+  // Выбранный маршрут уходит наверх, а не остаётся здесь: точки хранит
+  // оболочка (App.tsx), иначе они пропадали бы при переключении вкладки.
+  onPickRoute: (points: RoutePointRow[], name: string | null) => void
 }
 
 // route.py:FEASIBILITY_RU — дословно те же четыре строки, что печатает
@@ -106,7 +117,38 @@ function RouteMap({ points, onOpenPoint }: { points: RoutePoint[]; onOpenPoint: 
   )
 }
 
-export function Route({ points, name, date, model }: RouteProps) {
+// Две кнопки источника маршрута — фрагмент, а не отдельная панель: в макете
+// они стоят в одном блоке .acts с «Разбором от ИИ» (prototype.html:
+// 1182-1186), а в состояниях без посчитанного маршрута разбирать нечего, и
+// тот же фрагмент оборачивается в собственный .acts.
+function RouteSourceButtons({ onPickRoute }: { onPickRoute: RouteProps["onPickRoute"] }) {
+  const sheets = useSheetsContext()
+  return (
+    <>
+      <button
+        type="button"
+        className="act"
+        onClick={() => sheets.push(
+          <SavedRoutesSheet onPick={(pickedName, pickedPoints) => onPickRoute(pickedPoints, pickedName)} />,
+          "Сохранённые маршруты",
+        )}
+      >
+        <b>Сохранённые</b>
+        <span>маршруты, сохранённые под именем</span>
+      </button>
+      <button
+        type="button"
+        className="act"
+        onClick={() => sheets.push(<NewRouteSheet onApply={onPickRoute} />, "Новый маршрут")}
+      >
+        <b>Новый маршрут</b>
+        <span>точки на карте, GPX или KML</span>
+      </button>
+    </>
+  )
+}
+
+export function Route({ points, name, date, model, onPickRoute }: RouteProps) {
   const sheets = useSheetsContext()
   // null — сервер сам выбирает время вылета (начало термического окна первой
   // точки, route.py:get_route). Пилот переопределяет его чипом времени вылета
@@ -122,17 +164,30 @@ export function Route({ points, name, date, model }: RouteProps) {
 
   if (points.length < 2) {
     return (
-      <div className="empty">
-        <b>Нет маршрута</b>
-        Отметьте хотя бы две точки, чтобы увидеть профиль маршрута.
-      </div>
+      <>
+        <div className="empty">
+          <b>Нет маршрута</b>
+          Отметьте хотя бы две точки, чтобы увидеть профиль маршрута.
+        </div>
+        <div className="acts"><RouteSourceButtons onPickRoute={onPickRoute} /></div>
+      </>
     )
   }
   if (route.isError) {
-    return <ErrorBox error={route.error} onRetry={() => mutate({ points, name, date, departure, model })} />
+    return (
+      <>
+        <ErrorBox error={route.error} onRetry={() => mutate({ points, name, date, departure, model })} />
+        <div className="acts"><RouteSourceButtons onPickRoute={onPickRoute} /></div>
+      </>
+    )
   }
   if (!route.isSuccess) {
-    return <Spinner />
+    return (
+      <>
+        <Spinner />
+        <div className="acts"><RouteSourceButtons onPickRoute={onPickRoute} /></div>
+      </>
+    )
   }
 
   const result = route.data
@@ -332,6 +387,7 @@ export function Route({ points, name, date, model }: RouteProps) {
           <b>Разбор от ИИ</b>
           <span>тактика по узкому месту</span>
         </button>
+        <RouteSourceButtons onPickRoute={onPickRoute} />
       </div>
 
       {result.notes.map((n, i) => <div key={`${i}-${n}`} className="attrib">{n}</div>)}

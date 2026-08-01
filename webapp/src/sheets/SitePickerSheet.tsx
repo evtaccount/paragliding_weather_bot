@@ -1,0 +1,138 @@
+// Две шторки про старты: выбор текущего старта (шапка приложения) и
+// карточка старта с его удалением (экран настроек). Раскладки — из макета:
+// openSiteSheet (miniapp/prototype.html:1632-1651) и openSiteEditor
+// (1806-1836).
+//
+// Обе живут в одном файле, потому что это один разговор с пилотом про один
+// и тот же список: выбиралка отвечает «на каком старте я сейчас», карточка —
+// «что это за старт и нужен ли он вообще». Разнести их значило бы держать
+// подпись старта (экспозиция · высота) в двух местах.
+//
+// Выбор идёт ПО ИМЕНИ, а не по индексу в списке: имя — ключ старта и в
+// store (store.find_site), и в каждом запросе (/api/forecast?site=...).
+// Индекс не переживает ни фоновую перезагрузку /api/sites, ни удаление
+// соседнего старта — ровно этот класс дефекта был Critical задачи 10 (тап
+// по дню второго старта открывал прогноз первого).
+import { useState } from "react"
+import { useDeleteSite } from "../api/queries"
+import type { Site } from "../api/types"
+import { colorOfCategory } from "../charts/palette"
+import { fmtNum } from "../format"
+import { ErrorBox } from "../ui/ErrorBox"
+import { Spinner } from "../ui/Spinner"
+
+// Подпись старта под именем — то, чем старты различаются в поле: куда
+// смотрит склон и на какой он высоте (макет, строка 1637). Экспозиция
+// бывает не размечена (Site.aspect: string | null, engine.py:1041) —
+// тогда о ней просто не говорится, а не печатается «null».
+export function siteSubtitle(site: Site): string {
+  const parts = [`${fmtNum(site.elevation_m)} м`]
+  if (site.aspect !== null) {
+    parts.unshift(site.aspect_deg === null ? site.aspect : `${site.aspect} ${fmtNum(site.aspect_deg)}°`)
+  }
+  return parts.join(" · ")
+}
+
+type PickerProps = {
+  sites: Site[]
+  current: string | null
+  onPick: (name: string) => void
+}
+
+export function SitePickerSheet({ sites, current, onPick }: PickerProps) {
+  const notes = sites.find((s) => s.name === current)?.notes ?? ""
+
+  if (sites.length === 0) {
+    return (
+      <div className="empty">
+        <b>Нет стартов</b>
+        Добавьте старт на вкладке «Настройки».
+      </div>
+    )
+  }
+
+  return (
+    <>
+      <div className="pick">
+        {sites.map((site) => (
+          <button
+            key={site.name}
+            type="button"
+            aria-pressed={site.name === current}
+            onClick={() => onPick(site.name)}
+          >
+            <b>{site.name}</b>
+            <s>{siteSubtitle(site)}</s>
+            {site.name === current && <em>✓</em>}
+          </button>
+        ))}
+      </div>
+      {/* Заметки текущего старта (макет, 1646-1649): пилот пишет туда, где
+          парковка и куда садиться — показывать их незачем, если пусто. */}
+      {notes !== "" && <p className="prose" style={{ marginTop: 12 }}><em>{notes}</em></p>}
+    </>
+  )
+}
+
+type EditorProps = {
+  site: Site
+  onOpenForecast: (name: string) => void
+  onDeleted: () => void
+}
+
+export function SiteEditorSheet({ site, onOpenForecast, onDeleted }: EditorProps) {
+  // Удаление в два шага (в макете кнопка ничего не делает — прототип
+  // статичен): старт из общей библиотеки удаляется у всех пилотов сразу
+  // (api.py:delete_site пишет в общий store), а рядом с ним в списке стоят
+  // такие же строки других стартов — промах пальцем не должен стоить чужого
+  // старта. window.confirm сюда не годится: Telegram показывает
+  // мини-приложение в своём webview, где системный диалог выглядит чужим и
+  // на части клиентов не появляется вовсе.
+  const [confirming, setConfirming] = useState(false)
+  const remove = useDeleteSite()
+
+  return (
+    <>
+      <div className="kv">
+        <div><span>Координаты</span><b>{fmtNum(site.lat, 4)}, {fmtNum(site.lon, 4)}</b></div>
+        <div><span>Высота по гриду</span><b>{fmtNum(site.elevation_m)} м</b></div>
+        <div>
+          <span>Экспозиция</span>
+          <b>{site.aspect === null ? "не размечена" : siteSubtitle(site).split(" · ")[0]}</b>
+        </div>
+      </div>
+
+      {site.notes !== "" && <p className="prose" style={{ margin: "12px 0" }}><em>{site.notes}</em></p>}
+
+      <div className="pick" style={{ marginTop: 12 }}>
+        <button type="button" onClick={() => onOpenForecast(site.name)}>
+          <b>Смотреть прогноз</b>
+        </button>
+        {!confirming && (
+          <button type="button" onClick={() => setConfirming(true)}>
+            <b style={{ color: colorOfCategory("no_fly") }}>Удалить старт</b>
+          </button>
+        )}
+        {confirming && (
+          <button
+            type="button"
+            disabled={remove.isPending}
+            onClick={() => remove.mutate(site.name, { onSuccess: () => onDeleted() })}
+          >
+            <b style={{ color: colorOfCategory("no_fly") }}>Да, удалить «{site.name}»</b>
+            {remove.isPending && <Spinner />}
+          </button>
+        )}
+        {confirming && (
+          <button type="button" onClick={() => setConfirming(false)}>
+            <b>Оставить</b>
+          </button>
+        )}
+      </div>
+
+      {remove.isError && (
+        <ErrorBox error={remove.error} onRetry={() => remove.mutate(site.name, { onSuccess: () => onDeleted() })} />
+      )}
+    </>
+  )
+}

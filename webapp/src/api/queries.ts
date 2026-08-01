@@ -169,10 +169,10 @@ export function useScan(model: string | null): UseQueryResult<Scan, ApiError> {
 // `name=None` по умолчанию), и /api/route/parse отдаёт его как есть
 // (api.py:parse_route — `[p.lat, p.lon, p.name]`). Один именованный тип на
 // все три места, где эта строка встречается ниже (ParsedRoute, RouteInput,
-// RouteSaveInput) — иначе экран задачи 13, который читает результат
-// useParseRoute и тут же отправляет его в useRoute/useSaveRoute, упёрся бы
-// в рассогласование типов между «своим» ответом парсера и «своим» же телом
-// запроса маршрута.
+// RouteSaveInput) — иначе шторка «Новый маршрут» (sheets/NewRouteSheet.tsx),
+// которая читает результат useParseRoute и тут же отправляет его в
+// useRoute/useSaveRoute, упёрлась бы в рассогласование типов между «своим»
+// ответом парсера и «своим» же телом запроса маршрута.
 export type RoutePointRow = [number, number, string | null]
 
 // Поля повторяют api.py:AnalysisIn. У мутации нет фиксированного набора

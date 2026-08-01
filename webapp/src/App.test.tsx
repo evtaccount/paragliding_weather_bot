@@ -9,6 +9,7 @@ import overview from "../test/fixtures/forecast_3d.json"
 import scan from "../test/fixtures/scan.json"
 import sites from "../test/fixtures/sites.json"
 import prefs from "../test/fixtures/prefs.json"
+import routeResult from "../test/fixtures/route.json"
 
 beforeEach(() => {
   const back = { show: vi.fn(), hide: vi.fn(), onClick: vi.fn(), offClick: vi.fn() }
@@ -26,8 +27,19 @@ beforeEach(() => {
     themeParams: { bg_color: "#101418" }, ready: vi.fn(), expand: vi.fn(),
     BackButton: back, HapticFeedback: { impactOccurred: vi.fn(), notificationOccurred: vi.fn() },
   } }
-  vi.stubGlobal("fetch", () => Promise.resolve(new Response("{}", {
-    status: 200, headers: { "content-type": "application/json" } })))
+  // Ответ по умолчанию — по КОНТРАКТУ эндпоинта, а не пустой "{}" на всё
+  // подряд: раньше вкладка настроек была заглушкой <p>Настройки</p> и
+  // подделка формы ответа никого не задевала. Теперь на ней настоящий экран
+  // (задача 13), а он читает список моделей из /api/prefs и список стартов
+  // из /api/sites — на "{}" вместо массива падал бы не он один, а всё
+  // приложение: все четыре экрана смонтированы одновременно (см. разметку
+  // вкладок ниже), поэтому исключение в скрытой вкладке уносит и видимую.
+  vi.stubGlobal("fetch", (url: string) => {
+    const path = String(url).split("?")[0]
+    const body = path === "/api/sites" ? [] : path === "/api/prefs" ? prefs : {}
+    return Promise.resolve(new Response(JSON.stringify(body), {
+      status: 200, headers: { "content-type": "application/json" } }))
+  })
 })
 
 test("видны четыре вкладки", () => {
@@ -59,8 +71,9 @@ test("без Telegram приложение объясняет, что делат
 test("шапка показывает понятный текст, а не вечную загрузку, когда список стартов пуст", async () => {
   vi.stubGlobal("fetch", (url: string) => {
     const path = url.split("?")[0]
-    const body = path === "/api/sites" ? "[]" : "{}"
-    return Promise.resolve(new Response(body, { status: 200, headers: { "content-type": "application/json" } }))
+    const body = path === "/api/sites" ? [] : path === "/api/prefs" ? prefs : {}
+    return Promise.resolve(new Response(JSON.stringify(body), {
+      status: 200, headers: { "content-type": "application/json" } }))
   })
   render(<App />)
   // Область поиска — именно шапка (role="banner" у <header>), а не весь
@@ -198,4 +211,88 @@ test("тап по дню ВТОРОГО старта в скане открыв�
   })
   const header = screen.getByRole("banner")
   expect(within(header).getByText("Казбеги")).toBeInTheDocument()
+})
+
+// Задача 13: точки маршрута живут в оболочке, а не в экране «Маршрут» —
+// иначе выбранный маршрут пропадал бы при переключении вкладки. Путь целиком
+// (кнопка на вкладке → шторка сохранённых → выбор → расчёт) не покрыт ни
+// тестами шторок (они проверяют только колбэк), ни тестами экрана (он
+// получает точки пропом). Маршрут берётся НЕ первый: подмена «всегда первый»
+// на первом элементе неотличима (разбор задачи 12).
+test("сохранённый маршрут, выбранный в шторке, уходит в расчёт маршрута", async () => {
+  const saved = [
+    { name: "Гудаури — Коби", points: [[42.47, 44.48, "старт"], [42.53, 44.51, "Коби"]], saved_at: "2026-07-25" },
+    { name: "Хребет на север", points: [[42.4, 44.4, null], [42.6, 44.4, null], [42.8, 44.4, "разворот"]], saved_at: "2026-07-26" },
+  ]
+  const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+    const path = String(url).split("?")[0]
+    const body =
+      path === "/api/sites" ? sites
+      : path === "/api/prefs" ? prefs
+      : path === "/api/routes" ? saved
+      : path === "/api/route" ? routeResult
+      : path === "/api/forecast" && url.includes("range=1d") ? facts
+      : path === "/api/forecast" ? overview
+      : {}
+    void init
+    return Promise.resolve(new Response(JSON.stringify(body), {
+      status: 200, headers: { "content-type": "application/json" } }))
+  })
+  vi.stubGlobal("fetch", fetchMock)
+
+  render(<App />)
+  await userEvent.click(screen.getByRole("tab", { name: "Маршрут" }))
+  await userEvent.click(screen.getByRole("button", { name: /Сохранённые/ }))
+  await userEvent.click(await screen.findByRole("button", { name: /Хребет на север/ }))
+
+  // Шторка закрылась сама — выбор сделан, держать её открытой не за чем.
+  expect(screen.queryByRole("dialog")).toBeNull()
+
+  await waitFor(() => {
+    const posts = fetchMock.mock.calls.filter(([u, init]) =>
+      String(u).split("?")[0] === "/api/route" && (init as RequestInit | undefined)?.method === "POST")
+    expect(posts).toHaveLength(1)
+    const sent = JSON.parse(String((posts[0]![1] as RequestInit).body)) as { points: unknown; name: unknown }
+    expect(sent.points).toEqual(saved[1]!.points)
+    expect(sent.name).toBe("Хребет на север")
+  })
+})
+
+// Задача 13: имя старта в шапке — кнопка, открывающая выбиралку. Проверка на
+// ТРЁХ стартах и НЕ на первом: выбор по индексу списка (а не по имени) даёт
+// ровно тот Critical, что нашли в задаче 10 — приложение показывает один
+// старт, а считает другой. Тест шторки этого не ловит: он проверяет только
+// колбэк, а не то, что оболочка на него отреагировала.
+test("выбор старта в шапке переключает прогноз на этот старт", async () => {
+  const threeSites = [
+    sites[0]!,
+    { ...sites[0]!, name: "Лалискури", lat: 42.51, lon: 42.32 },
+    { ...sites[0]!, name: "Казбеги", lat: 42.66, lon: 44.64 },
+  ]
+  const fetchMock = vi.fn((url: string) => {
+    const path = String(url).split("?")[0]
+    const body =
+      path === "/api/sites" ? threeSites
+      : path === "/api/prefs" ? prefs
+      : path === "/api/forecast" && url.includes("range=1d") ? facts
+      : path === "/api/forecast" ? overview
+      : {}
+    return Promise.resolve(new Response(JSON.stringify(body), {
+      status: 200, headers: { "content-type": "application/json" } }))
+  })
+  vi.stubGlobal("fetch", fetchMock)
+
+  render(<App />)
+  const header = screen.getByRole("banner")
+  await userEvent.click(await within(header).findByRole("button", { name: "Гудаури" }))
+  await userEvent.click(screen.getByRole("button", { name: /Казбеги/ }))
+
+  expect(within(header).getByText("Казбеги")).toBeInTheDocument()
+  await waitFor(() => {
+    const requested = fetchMock.mock.calls
+      .map(([u]) => new URL(String(u), "http://x").searchParams)
+      .filter((p) => p.get("range") === "1d")
+      .map((p) => p.get("site"))
+    expect(requested).toContain("Казбеги")
+  })
 })

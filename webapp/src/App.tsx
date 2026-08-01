@@ -1,6 +1,7 @@
 // Оболочка приложения: шапка с контекстом (старт · дата · чип модели),
-// четыре вкладки, стек шторок, тема Telegram. Сами экраны — заглушки,
-// их наполняют задачи 8-13 (см. task-6-brief).
+// четыре вкладки, стек шторок, тема Telegram. Сами экраны живут в
+// screens/*, шторки — в sheets/*; здесь только состояние, общее для всех
+// четырёх экранов: выбранный старт, дата, разовая модель и точки маршрута.
 //
 // К window.Telegram здесь и нигде в приложении не обращаются напрямую —
 // только через telegram.ts (initData/colorScheme/themeVars/ready/onBack),
@@ -15,6 +16,9 @@ import { fmtDate } from "./format"
 import { Forecast } from "./screens/Forecast"
 import { Overview } from "./screens/Overview"
 import { Route } from "./screens/Route"
+import { Settings } from "./screens/Settings"
+import { ModelPickerSheet } from "./sheets/ModelPickerSheet"
+import { SitePickerSheet } from "./sheets/SitePickerSheet"
 import * as telegram from "./telegram"
 import { resolveThemeVars } from "./theme"
 import { Chip } from "./ui/Chip"
@@ -24,7 +28,7 @@ import { Spinner } from "./ui/Spinner"
 // ────────────────────────────────────────────────────────────── шторки
 // Стек шторок: push кладёт шторку сверху, pop снимает верхнюю. Живёт в
 // App.tsx (здесь, в Shell) и раздаётся детям через SheetsContext — так у
-// будущих экранов (задачи 8-13) есть один общий стек, а не свой у каждого.
+// всех четырёх экранов один общий стек, а не свой у каждого.
 type SheetEntry = { id: number; title: string; node: ReactNode }
 
 type Sheets = {
@@ -127,14 +131,15 @@ const TABS: { key: TabKey; label: string; icon: ReactNode }[] = [
   },
 ]
 
-// Вкладка «Маршрут» (задача 12) читает готовый список точек, а не создаёт
-// его сама — форм ввода (карта/GPX/KML) и сохранённых маршрутов ещё нет,
-// их заводит задача 13. Пустой массив — константа МОДУЛЯ, а не литерал
-// внутри JSX: Route.tsx перечитывает проп `points` в зависимостях своего
-// эффекта и зовёт mutate() заново при смене ссылки — новый `[]` на каждый
-// рендер Shell слал бы этот эффект вхолостую на каждый чужой ре-рендер
-// (экран и так рано выходит по `points.length < 2`, но зачем создавать
-// новую ссылку без нужды).
+// Вкладка «Маршрут» читает готовый список точек, а не создаёт его сама:
+// точки приходят из шторок «Сохранённые маршруты» и «Новый маршрут» и
+// хранятся здесь, в оболочке, — иначе выбранный маршрут пропадал бы при
+// каждом переключении вкладки. Пустой массив — начальное состояние и
+// константа МОДУЛЯ, а не литерал внутри JSX: Route.tsx перечитывает проп
+// `points` в зависимостях своего эффекта и зовёт mutate() заново при смене
+// ссылки — новый `[]` на каждый рендер Shell слал бы этот эффект вхолостую
+// на каждый чужой ре-рендер (экран и так рано выходит по
+// `points.length < 2`, но зачем создавать новую ссылку без нужды).
 const NO_ROUTE_POINTS: RoutePointRow[] = []
 
 // ────────────────────────────────────────────────────────────── шапка
@@ -145,12 +150,20 @@ function siteName(sites: Site[] | undefined): string | null {
   return sites?.[0]?.name ?? null
 }
 
-function modelLabel(prefs: Prefs | undefined): string | undefined {
+// Подпись чипа модели — по ДЕЙСТВУЮЩЕЙ модели, а не по постоянной настройке:
+// разовый выбор (чип в шапке) меняет модель всех запросов текущего сеанса, и
+// чип обязан показывать именно её, иначе экран посчитан по одной модели, а
+// подписан другой.
+function modelLabel(prefs: Prefs | undefined, model: string | null): string | undefined {
   if (!prefs) return undefined
-  // `?.` на models — не по типу (Prefs.models всегда массив), а по факту:
-  // в тестах оболочки (App.test.tsx) fetch подделан пустым "{}", и без
-  // страховки .find уронил бы рендер на любом неполном ответе.
-  return prefs.models?.find((m) => m.key === prefs.model_key)?.label ?? prefs.model_key
+  const key = model ?? prefs.model_key
+  // Ключ модели как запасная подпись — на случай разовой модели, которой нет
+  // в списке (список приходит из engine.MODELS вместе с настройками, и
+  // разойтись они могут только при обновлении сервера между двумя запросами).
+  // Страховки `?.` на самом models здесь больше нет: она стояла ради подделки
+  // "{}" в тестах оболочки, а те теперь отвечают по контракту эндпоинта —
+  // экран настроек читает models без неё и на "{}" всё равно упал бы.
+  return prefs.models.find((m) => m.key === key)?.label ?? key
 }
 
 function todayIso(): string {
@@ -194,9 +207,19 @@ function ShellContent() {
   // запоминало, какой старт реально выбрали, siteName(sites.data) заново
   // брал sites.data[0] на каждом рендере). null означает "явного выбора
   // ещё не было" — тогда используется первый старт из списка (см. вычисление
-  // site ниже); задаче 13 (выбиралка старта) это же состояние понадобится
-  // для собственной кнопки выбора, не только для тапа по дню в скане.
+  // site ниже). Это же состояние меняет выбиралка старта из шапки
+  // (openSitePicker ниже) и переход «Смотреть прогноз» из карточки старта на
+  // экране настроек — не только тап по дню в скане.
   const [selectedSite, setSelectedSite] = useState<string | null>(null)
+  // Разовая модель: параметр ЗАПРОСА, а не настройка пилота (api.py:
+  // _model_for — `model=` из query побеждает store.prefs и никуда не
+  // сохраняется). Живёт в оболочке, потому что действует на все экраны
+  // сеанса разом, и обнуляется при смене постоянной модели — иначе прежний
+  // разовый выбор молча перебивал бы только что сохранённую настройку.
+  const [onceModel, setOnceModel] = useState<string | null>(null)
+  // Маршрут пилота: точки и имя, выбранные в шторках вкладки «Маршрут».
+  const [routePoints, setRoutePoints] = useState<RoutePointRow[]>(NO_ROUTE_POINTS)
+  const [routeName, setRouteName] = useState<string | null>(null)
   const sheets = useSheetsContext()
   const sites = useSites()
   const prefs = usePrefs()
@@ -252,7 +275,7 @@ function ShellContent() {
   }, [tab])
 
   const site = selectedSite ?? siteName(sites.data)
-  const model = prefs.data?.model_key ?? null
+  const model = onceModel ?? prefs.data?.model_key ?? null
 
   // Тап по дню в «Обзоре» — настоящее переключение (старт и дата ИМЕННО
   // этого дня плюс переход на вкладку «Прогноз»), а не только смена вкладки:
@@ -268,18 +291,57 @@ function ShellContent() {
     setTab("day")
   }
 
+  // Выбор старта — по имени: имя и есть ключ старта и в store, и в каждом
+  // запросе (site=...). Индекс в списке не переживает ни перезагрузку
+  // /api/sites, ни удаление соседнего старта (Critical задачи 10).
+  function pickSite(name: string): void {
+    setSelectedSite(name)
+    sheets.pop()
+  }
+
+  function openSitePicker(): void {
+    sheets.push(
+      <SitePickerSheet sites={sites.data ?? []} current={site} onPick={pickSite} />,
+      "Старт",
+    )
+  }
+
+  // Разовая модель применяется сразу и никуда не сохраняется; постоянную
+  // сохраняет сама шторка (PATCH /api/prefs), и после этого разовый выбор
+  // снимается — дальше действует новая настройка.
+  function openModelPicker(): void {
+    sheets.push(
+      <ModelPickerSheet
+        models={prefs.data?.models ?? []}
+        permanent={prefs.data?.model_key ?? null}
+        once={onceModel}
+        onPickOnce={(key) => { setOnceModel(key); sheets.pop() }}
+        onPickPermanent={() => { setOnceModel(null); sheets.pop() }}
+      />,
+      "Метеомодель",
+    )
+  }
+
   return (
     <div className="app">
       <header className="ctx">
         <div className="ctx__top">
-          <span className="site">
+          {/* Имя старта и чип модели — кнопки, как в макете (prototype.html:
+              417-423, aria-haspopup="dialog"): это два самых частых действия
+              пилота, и обоим нужен один тап из любого экрана. */}
+          <button type="button" className="site" aria-haspopup="dialog" onClick={openSitePicker}>
             {/* Список стартов пуст (не идёт запрос — прогнав isPending) — понятный
                 текст вместо спиннера, который никогда бы не пропал: пустой массив
-                success-запроса не значит, что старт вот-вот появится, задача 13
-                ещё не даёт способа его добавить. */}
+                success-запроса не значит, что старт вот-вот появится. Шторка при
+                этом всё равно открывается и отправляет за добавлением старта. */}
             <span className="site__name">{sites.isPending ? <Spinner /> : (site ?? "Нет стартов")}</span>
-          </span>
-          <Chip live>{modelLabel(prefs.data) ?? <Spinner />}</Chip>
+          </button>
+          <Chip live onClick={openModelPicker}>
+            {/* «· разово» отличает разовый выбор от постоянной настройки: без
+                пометки пилот не отличит «сегодня смотрю по GFS» от «у меня
+                теперь всегда GFS» (макет, prototype.html:423). */}
+            {modelLabel(prefs.data, model) ?? <Spinner />}{onceModel !== null ? " · разово" : ""}
+          </Chip>
         </div>
         <div className="ctx__date">
           <span className="dateline">{fmtDate(date)}</span>
@@ -294,10 +356,22 @@ function ShellContent() {
           <Overview site={site} model={model} onOpenDay={openDay} />
         </section>
         <section className="view" hidden={tab !== "route"} aria-label="Маршрут">
-          <Route points={NO_ROUTE_POINTS} name={null} date={date} model={model} />
+          <Route
+            points={routePoints}
+            name={routeName}
+            date={date}
+            model={model}
+            onPickRoute={(points, name) => { setRoutePoints(points); setRouteName(name); sheets.pop() }}
+          />
         </section>
         <section className="view" hidden={tab !== "set"} aria-label="Настройки">
-          <p>Настройки</p>
+          <Settings
+            currentSite={site}
+            onceModel={onceModel}
+            onPickOnce={(key) => { setOnceModel(key); sheets.pop() }}
+            onPickPermanent={() => { setOnceModel(null); sheets.pop() }}
+            onOpenSiteForecast={(name) => { setSelectedSite(name); setTab("day"); sheets.pop() }}
+          />
         </section>
       </main>
 

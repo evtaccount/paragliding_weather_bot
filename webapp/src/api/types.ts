@@ -88,7 +88,14 @@ export type Scan = {
   failed: string[]
 }
 
-export type SavedRoute = { name: string; points: (number | string)[][]; saved_at: string }
+// points — «строки точек» [lat, lon, name] в том виде, в каком их сохранил
+// store: api.py:save_route пишет `[[p.lat, p.lon, p.name]]`, а
+// route.py:Point.name типизирован `str | None` (route.py:330) — третий
+// элемент бывает null у трека без подписей (GPX почти всегда такой).
+// В фикстуре test/fixtures/routes.json null не встретился, поэтому раньше
+// его тут не было; здесь `| null` стоит не по памяти, а по коду домена —
+// тот же разбор, что у RoutePointRow в api/queries.ts:176.
+export type SavedRoute = { name: string; points: (number | string | null)[][]; saved_at: string }
 
 export type Elevation = { elevation_m: number }
 
@@ -374,9 +381,9 @@ export type RouteResult = {
   route: {
     // name — null у безымянного маршрута: поле запроса необязательно
     // (api.py:RouteIn — `name: str | None = None`), а домен кладёт его в
-    // ответ как есть (forecast.py:799 — `"name": name`). Экран маршрута
-    // сегодня получает именно null (App.tsx передаёт name={null}, пока
-    // задача 13 не даёт выбрать сохранённый маршрут).
+    // ответ как есть (forecast.py:799 — `"name": name`). Имя приходит
+    // непустым у сохранённого маршрута и null у собранного на карте без
+    // имени (sheets/NewRouteSheet.tsx).
     name: string | null
     date: string
     departure: string

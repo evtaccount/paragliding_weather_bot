@@ -59,8 +59,8 @@ export function Forecast({ site, date, model }: ForecastProps) {
   const sheets = useSheetsContext()
   const forecast = useForecast(site, "1d", date, model)
 
-  // Нет сохранённых стартов (свежая установка, задача 13 их ещё не
-  // заводит) — понятный текст вместо вечной загрузки: useForecast сам
+  // Нет сохранённых стартов (свежая установка — старты заводятся на
+  // вкладке «Настройки») — понятный текст вместо вечной загрузки: useForecast сам
   // никогда не завершит "загрузку", пока site === null (enabled: false в
   // queries.ts), то же рассуждение, что и для шапки в App.tsx.
   if (site === null) {
