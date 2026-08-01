@@ -59,6 +59,34 @@ const DEFAULT_ZOOM = 12
 // не липли к рамке карты и была видна трасса за ними.
 const FIT_PADDING: L.PointExpression = [24, 24]
 
+// Центр «пока смотреть больше не на что»: первая точка маршрута, иначе
+// первый старт, иначе Гудаури.
+function centerOf(points: MapPoint[], sites: Site[]): L.LatLngExpression {
+  const first = points[0] ?? sites[0]
+  return first ? [first.lat, first.lon] : FALLBACK_CENTER
+}
+
+// Область просмотра — по ВСЕМУ маршруту, а не по его первой точке. Наводка
+// на первую точку с постоянным зумом показывает окрестности старта: на
+// route.json (40 км строго на юг, широта 42,5) зум 12 — это 28 м/пиксель, то
+// есть около 10 × 7,6 км в рамке 4/3, и четыре пина из пяти оказываются за
+// краем (ре-ревью task-12, N1). Маршрута нет — остаётся наводка на точку.
+function applyInitialView(map: L.Map, points: MapPoint[], sites: Site[]): void {
+  if (points.length >= 2) {
+    map.fitBounds(L.latLngBounds(points.map((p) => [p.lat, p.lon])), { padding: FIT_PADDING })
+    return
+  }
+  map.setView(centerOf(points, sites), DEFAULT_ZOOM)
+}
+
+// Размер контейнера, каким его видит Leaflet (он берёт его из
+// clientWidth/clientHeight). Ноль — обычное состояние, а не экзотика: все
+// четыре экрана приложения смонтированы одновременно, а неактивные скрыты
+// атрибутом hidden (App.tsx + styles.css, `.view[hidden] { display: none }`).
+function hasSize(el: HTMLElement): boolean {
+  return el.clientWidth > 0 && el.clientHeight > 0
+}
+
 export function MapView({ points, sites, onTap, onDragPoint, onPointTap }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const mapRef = useRef<L.Map | null>(null)
@@ -74,33 +102,40 @@ export function MapView({ points, sites, onTap, onDragPoint, onPointTap }: Props
   onDragPointRef.current = onDragPoint
   onPointTapRef.current = onPointTap
 
+  // Поставлена ли НАСТОЯЩАЯ область просмотра (при известном размере
+  // контейнера). false означает, что карта живёт на временной наводке и
+  // подгонку ещё предстоит сделать — см. эффект отложенной подгонки ниже.
+  const viewFittedRef = useRef(false)
+
   useEffect(() => {
     const container = containerRef.current
     if (!container) return
 
-    const first = points[0] ?? sites[0]
-    const center: L.LatLngExpression = first ? [first.lat, first.lon] : FALLBACK_CENTER
-
-    const map = L.map(container)
-    // Область просмотра — по всему маршруту, а не по его первой точке.
-    // Наводка на первую точку с постоянным зумом показывает окрестности
-    // старта: на route.json (40 км строго на юг, широта 42,5) зум 12 — это
-    // 28 м/пиксель, то есть около 10 × 7,6 км в рамке 4/3, и четыре пина из
-    // пяти оказываются за краем (ре-ревью task-12, N1).
+    // Отрисовщик векторных слоёв — ОДИН на карту, опцией: Leaflet добавляет
+    // отрисовщик на карту слоем (Path.beforeAdd → map.addLayer(renderer)), а
+    // снятие пути его не снимает, поэтому свой L.SVG() у каждой трассы
+    // копился бы пустыми <svg> в overlay-слое — по одному на каждый перебор
+    // времени вылета и на каждое перетаскивание точки (ре-ревью task-12,
+    // N10: пять смен точек давали шесть <svg> при одном <path>).
     //
-    // Подгонка требует известного размера контейнера (Leaflet берёт его из
-    // clientWidth/clientHeight): при нулевом размере getBoundsZoom считает
-    // масштаб от отрицательной ширины и даёт NaN. Ноль бывает не только в
-    // jsdom: неактивная вкладка приложения скрыта через `display: none`
-    // (styles.css, `.view[hidden]`), и карта, созданная в этот момент,
-    // размера не имеет. Тогда — прежняя наводка на первую точку, а не
-    // сломанный масштаб.
-    const size = map.getSize()
-    const canFit = points.length >= 2 && size.x > 0 && size.y > 0
-    if (canFit) {
-      map.fitBounds(L.latLngBounds(points.map((p) => [p.lat, p.lon])), { padding: FIT_PADDING })
-    } else {
-      map.setView(center, DEFAULT_ZOOM)
+    // Задан явно, а не оставлен на автовыбор: фабрика L.svg() отдаёт слой
+    // только если у браузера есть createSVGRect (Browser.svg) — проверка
+    // времён VML и IE8. Там, где её нет, Leaflet возвращает null и добавление
+    // линии роняет всю карту («Cannot use 'in' operator to search for
+    // '_leaflet_id' in null») — ровно это и происходит в jsdom, где идут
+    // тесты карты. В браузере L.svg() возвращает ровно new SVG(options), так
+    // что путь остаётся тем же самым.
+    const map = L.map(container, { renderer: new L.SVG() })
+
+    // Карте нужен центр раньше слоёв (без него Leaflet не даёт их добавить),
+    // поэтому сначала — временная наводка, а настоящая область просмотра
+    // ставится только при известном размере контейнера: при нулевом размере
+    // getBoundsZoom возвращает Infinity (проверено пробником ре-ревью,
+    // task-12 N12), и fitBounds уводит карту в максимальный зум.
+    map.setView(centerOf(points, sites), DEFAULT_ZOOM)
+    if (hasSize(container)) {
+      applyInitialView(map, points, sites)
+      viewFittedRef.current = true
     }
     L.tileLayer(TILE_URL, { attribution: TILE_ATTRIBUTION, maxZoom: TILE_MAX_ZOOM }).addTo(map)
 
@@ -120,6 +155,31 @@ export function MapView({ points, sites, onTap, onDragPoint, onPointTap }: Props
     // (читается через ref).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // Отложенная подгонка: карта, созданная в скрытой вкладке, о своём размере
+  // сама не узнаёт никогда. Все четыре экрана смонтированы с первого рендера
+  // приложения, неактивные скрыты через hidden/display:none (App.tsx,
+  // styles.css `.view[hidden]`) — значит обычный путь такой: пилот стоит на
+  // «Прогнозе», маршрут посчитан, карта создана в контейнере 0×0. Leaflet
+  // кэширует размер и после показа вкладки продолжает считать его нулевым
+  // (проверено пробником ре-ревью task-12, N8: {"x":0,"y":0} и до, и после
+  // показа, правду возвращает только invalidateSize) — тайлы не запрашиваются,
+  // пины и трасса лежат в углу, и так до конца сеанса.
+  //
+  // Зависимостей у эффекта намеренно нет: слушателя размера у обёртки нет
+  // (ResizeObserver ради одного перехода — лишняя сущность), а смена вкладки
+  // и так перерисовывает дерево, и этот эффект — самый дешёвый способ
+  // заметить, что контейнер наконец получил размер. Срабатывает он ровно один
+  // раз: после подгонки viewFittedRef закрывает путь, чтобы не отменять
+  // жесты пилота (сдвиг и зум) на каждом следующем рендере.
+  useEffect(() => {
+    const map = mapRef.current
+    const container = containerRef.current
+    if (!map || !container || viewFittedRef.current || !hasSize(container)) return
+    viewFittedRef.current = true
+    map.invalidateSize()
+    applyInitialView(map, points, sites)
+  })
 
   // Маркеры стартов — справочные, неподвижные, пересобираются при смене sites.
   useEffect(() => {
@@ -150,16 +210,12 @@ export function MapView({ points, sites, onTap, onDragPoint, onPointTap }: Props
     if (!map) return
     const draggable = onDragPointRef.current !== undefined
 
-    // Отрисовщик задан явно (new L.SVG()), а не оставлен на автовыбор:
-    // фабрика L.svg() отдаёт слой только если у браузера есть
-    // createSVGRect (Browser.svg) — проверка времён VML и IE8. Там, где её
-    // нет, Leaflet возвращает null, и добавление линии роняет всю карту
-    // (`Cannot use 'in' operator to search for '_leaflet_id' in null`) —
-    // ровно это и происходит в jsdom, где идут тесты карты.
+    // Своего отрисовщика у линии нет — она рисуется общим для карты (см.
+    // опцию renderer в эффекте создания и разбор там же, почему он один).
     const track =
       points.length >= 2
         ? L.polyline(points.map((p) => [p.lat, p.lon] as L.LatLngTuple), {
-            className: "pgbot-track", interactive: false, renderer: new L.SVG(),
+            className: "pgbot-track", interactive: false,
           }).addTo(map)
         : null
 

@@ -116,6 +116,44 @@ test("под строгим режимом разработки карта не 
   expect(container.querySelectorAll(".leaflet-container").length).toBe(0)
 })
 
+// Те же координаты, что в test/fixtures/route.json: Гудаури и 40 км строго на
+// юг пятью точками.
+const ROUTE_POINTS = [
+  { lat: 42.4776, lon: 44.4787 },
+  { lat: 42.3877, lon: 44.4787 },
+  { lat: 42.2978, lon: 44.4787 },
+  { lat: 42.2079, lon: 44.4787 },
+  { lat: 42.118, lon: 44.4787 },
+]
+const VIEW_W = 360
+const VIEW_H = 270
+
+// Маршрут должен не просто ПОМЕЩАТЬСЯ в кадр, но и ЗАНИМАТЬ его: «все пины
+// внутри» одинаково верно и для настоящей подгонки, и для карты на
+// пол-Европы, где маршрут — несколько пикселей в середине (ре-ревью task-12,
+// N9: мутации «подмешать в границы точку [0,0]» и «setView(center, 3)» такую
+// проверку проходили). На настоящей подгонке пины занимают 46…223 из 270 —
+// порог в половину кадра оставляет запас на дискретность зума Leaflet.
+function expectRouteFillsFrame(container: Element): void {
+  const icons = [...container.querySelectorAll(".leaflet-marker-icon")]
+  expect(icons).toHaveLength(ROUTE_POINTS.length)
+  const xy = icons.map(markerXY)
+
+  // Допуск — половина пина (iconAnchor в pins.ts сдвигает элемент на 8 px):
+  // проверяется, что точка попала в кадр, а не пиксельная раскладка.
+  const slack = 8
+  for (const { x, y } of xy) {
+    expect(x).toBeGreaterThanOrEqual(-slack)
+    expect(x).toBeLessThanOrEqual(VIEW_W + slack)
+    expect(y).toBeGreaterThanOrEqual(-slack)
+    expect(y).toBeLessThanOrEqual(VIEW_H + slack)
+  }
+
+  const spanX = Math.max(...xy.map((p) => p.x)) - Math.min(...xy.map((p) => p.x))
+  const spanY = Math.max(...xy.map((p) => p.y)) - Math.min(...xy.map((p) => p.y))
+  expect(Math.max(spanX / VIEW_W, spanY / VIEW_H)).toBeGreaterThan(0.5)
+}
+
 // Ре-ревью task-12 (N1): карта наводилась на ПЕРВУЮ точку с постоянным зумом
 // 12, а подгонки под маршрут не было нигде. На маршруте из route.json (40 км
 // на юг) это 28 м/пиксель: в рамке 4/3 шириной 360 px видно ~10 × 7,6 км, и
@@ -124,35 +162,51 @@ test("под строгим режимом разработки карта не 
 // создаётся независимо от области просмотра), поэтому тест смотрит на их
 // ПОЛОЖЕНИЕ в пикселях контейнера.
 test("карта охватывает весь маршрут, а не окрестности первой точки", () => {
-  // Те же координаты, что в test/fixtures/route.json: Гудаури и 40 км на юг.
-  const points = [
-    { lat: 42.4776, lon: 44.4787 },
-    { lat: 42.3877, lon: 44.4787 },
-    { lat: 42.2978, lon: 44.4787 },
-    { lat: 42.2079, lon: 44.4787 },
-    { lat: 42.118, lon: 44.4787 },
-  ]
-  const width = 360
-  const height = 270
-
-  withContainerSize(width, height, () => {
+  withContainerSize(VIEW_W, VIEW_H, () => {
     const { container } = render(
-      <MapView points={points} sites={[]} onTap={() => {}} onDragPoint={() => {}} />,
+      <MapView points={ROUTE_POINTS} sites={[]} onTap={() => {}} onDragPoint={() => {}} />,
     )
-    const icons = [...container.querySelectorAll(".leaflet-marker-icon")]
-    expect(icons).toHaveLength(points.length)
-
-    // Допуск — половина пина (iconAnchor в pins.ts сдвигает элемент на 8 px):
-    // проверяется, что точка попала в кадр, а не пиксельная раскладка.
-    const slack = 8
-    for (const icon of icons) {
-      const { x, y } = markerXY(icon)
-      expect(x).toBeGreaterThanOrEqual(-slack)
-      expect(x).toBeLessThanOrEqual(width + slack)
-      expect(y).toBeGreaterThanOrEqual(-slack)
-      expect(y).toBeLessThanOrEqual(height + slack)
-    }
+    expectRouteFillsFrame(container)
+    // Трасса — здесь же, в тестах самой карты: раньше её проверял только
+    // тест экрана, и мутация «трасса не рисуется» оставляла map.test.tsx
+    // целиком зелёным (ре-ревью task-12, N12).
+    expect(container.querySelector("path.pgbot-track")).not.toBeNull()
   })
+})
+
+// Ре-ревью task-12 (N8): все четыре экрана приложения смонтированы с первого
+// рендера, а неактивные скрыты через hidden/display:none (App.tsx,
+// styles.css `.view[hidden]`). Обычный путь поэтому такой: пилот стоит на
+// «Прогнозе», маршрут уже посчитан, и карта создаётся в контейнере 0×0.
+// Leaflet кэширует размер и при показе вкладки о нём не узнаёт сам — без
+// отложенной подгонки пилот до конца сеанса видит пустую рамку.
+test("карта, созданная в скрытой вкладке, подгоняется при её показе", () => {
+  // Размер по умолчанию в jsdom — 0×0, как у скрытой вкладки.
+  const { container, rerender } = render(<MapView points={ROUTE_POINTS} sites={[]} />)
+  expect(container.querySelector(".leaflet-container")).not.toBeNull()
+
+  // Вкладку показали: контейнер получил размер, дерево перерисовалось.
+  withContainerSize(VIEW_W, VIEW_H, () => {
+    rerender(<MapView points={ROUTE_POINTS} sites={[]} />)
+    expectRouteFillsFrame(container)
+  })
+})
+
+// Ре-ревью task-12 (N10): свой L.SVG() у каждой трассы копился в DOM —
+// Leaflet добавляет отрисовщик слоем, а снятие пути его не снимает (пробник:
+// пять смен точек → шесть <svg> при одном <path>). На экране маршрута новая
+// ссылка на точки приходит с каждым перебором времени вылета, в задаче 13 —
+// с каждым перетаскиванием точки.
+test("смена точек не плодит отрисовщики в слое карты", () => {
+  const { container, rerender } = render(<MapView points={ROUTE_POINTS} sites={[]} />)
+  for (let i = 0; i < 3; i += 1) {
+    // Новая ССЫЛКА на тот же набор — именно так приходит result.points после
+    // каждого пересчёта маршрута.
+    rerender(<MapView points={[...ROUTE_POINTS]} sites={[]} />)
+  }
+
+  expect(container.querySelectorAll(".leaflet-overlay-pane svg")).toHaveLength(1)
+  expect(container.querySelectorAll("path.pgbot-track")).toHaveLength(1)
 })
 
 // Ре-ревью task-12 (N6): необязательный onDragPoint (правка круга 1) ничем не
