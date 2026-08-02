@@ -335,6 +335,9 @@ test("сохранённый маршрут, выбранный в шторке,
   vi.stubGlobal("fetch", fetchMock)
 
   render(<App />)
+  // День выбирается явно — маршруту он нужен так же, как прогнозу
+  // (api.py:RouteIn.date), и сам экран его больше не подставляет.
+  await pickDay(0)
   await userEvent.click(screen.getByRole("tab", { name: "Маршрут" }))
   await userEvent.click(screen.getByRole("button", { name: /Сохранённые/ }))
   await userEvent.click(await screen.findByRole("button", { name: /Хребет на север/ }))
@@ -619,12 +622,15 @@ test("на холодном старте маршрут считается од�
   const routePosts = (): unknown[] => fetchMock.mock.calls.filter(([u, init]) =>
     String(u).split("?")[0] === "/api/route" && (init as RequestInit | undefined)?.method === "POST")
 
+  // День выбирается до всего: список дней локальный, ответа сервера не ждёт,
+  // и тест должен упереться в ОТСУТСТВИЕ настроек, а не в невыбранный день.
+  await pickDay(0)
   await userEvent.click(screen.getByRole("tab", { name: "Маршрут" }))
   await userEvent.click(screen.getByRole("button", { name: /Сохранённые/ }))
   await userEvent.click(await screen.findByRole("button", { name: /Хребет на север/ }))
   await new Promise((resolve) => { setTimeout(resolve, 30) })
 
-  // Точки выбраны, настройки — ещё нет: расчёт не уходит.
+  // Точки и день выбраны, настройки — ещё нет: расчёт не уходит.
   expect(routePosts()).toHaveLength(0)
 
   deliverPrefs()
@@ -632,4 +638,37 @@ test("на холодном старте маршрут считается од�
   await new Promise((resolve) => { setTimeout(resolve, 30) })
 
   expect(routePosts()).toHaveLength(1)
+})
+
+// Оболочка не подставляет день и «Маршруту». Тест нужен отдельно от того, что
+// стоит в Route.test.tsx: тот проверяет сам экран при date={null}, а здесь —
+// что оболочка это null и передаёт, а не подменяет сегодняшним днём. Без него
+// возврат подстановки в App.tsx проходил незамеченным: все остальные тесты
+// выбирают день явно, и запасная ветка не исполняется ни разу.
+test("маршрут, выбранный без дня, не считается", async () => {
+  const saved = [
+    { name: "Хребет на север", points: [[42.4, 44.4, null], [42.6, 44.4, null]], saved: "2026-07-26T06:33:49+00:00" },
+  ]
+  const fetchMock = vi.fn((url: string, _init?: RequestInit) => {
+    const path = String(url).split("?")[0]
+    const body =
+      path === "/api/sites" ? sites
+      : path === "/api/prefs" ? prefs
+      : path === "/api/routes" ? saved
+      : path === "/api/route" ? routeResult
+      : {}
+    return Promise.resolve(new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } }))
+  })
+  vi.stubGlobal("fetch", fetchMock)
+
+  render(<App />)
+  await userEvent.click(screen.getByRole("tab", { name: "Маршрут" }))
+  await userEvent.click(screen.getByRole("button", { name: /Сохранённые/ }))
+  await userEvent.click(await screen.findByRole("button", { name: /Хребет на север/ }))
+  await new Promise((resolve) => { setTimeout(resolve, 30) })
+
+  const routePosts = fetchMock.mock.calls.filter(([u, init]) =>
+    String(u).split("?")[0] === "/api/route" && (init as RequestInit | undefined)?.method === "POST")
+  expect(routePosts).toHaveLength(0)
+  expect(screen.getByText("Выберите день")).toBeInTheDocument()
 })

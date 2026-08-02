@@ -48,7 +48,10 @@ import { Spinner } from "../ui/Spinner"
 type RouteProps = {
   points: RoutePointRow[]
   name: string | null
-  date: string
+  // null — день ещё не выбран. Своего «сегодня» экран не подставляет: шапка в
+  // этот момент пишет «День не выбран», и посчитанный на сегодня маршрут
+  // противоречил бы ей через одно переключение вкладки.
+  date: string | null
   model: string | null
   // Показан ли экран и известна ли действующая модель — см. подробный разбор
   // у OverviewProps.active (screens/Overview.tsx) и у `enabled` в
@@ -237,6 +240,9 @@ export function Route({ points, name, date, model, active = true, onPickRoute }:
   useEffect(() => {
     if (!active) return
     if (points.length < 2) return
+    // Дата обязательна серверу (api.py:RouteIn.date), и подставлять её за
+    // пилота нельзя — см. комментарий у RouteProps.date.
+    if (date === null) return
     const sent = sentRef.current
     if (sent !== null && sent.points === points && sent.name === name && sent.date === date
         && sent.departure === departure && sent.model === model
@@ -253,6 +259,21 @@ export function Route({ points, name, date, model, active = true, onPickRoute }:
         <div className="empty">
           <b>Нет маршрута</b>
           Отметьте хотя бы две точки, чтобы увидеть профиль маршрута.
+        </div>
+        <div className="acts"><RouteSourceButtons onPickRoute={onPickRoute} /></div>
+      </>
+    )
+  }
+  // Маршрут задан, а дня нет: та же формулировка и та же подсказка, что на
+  // «Прогнозе» (screens/Forecast.tsx) — кнопка одна и та же, и два разных
+  // текста про неё читались бы как два разных действия. Кнопки источников
+  // маршрута остаются: пилот может поменять маршрут, не выбирая дня.
+  if (date === null) {
+    return (
+      <>
+        <div className="empty">
+          <b>Выберите день</b>
+          День выбирается кнопкой в шапке.
         </div>
         <div className="acts"><RouteSourceButtons onPickRoute={onPickRoute} /></div>
       </>

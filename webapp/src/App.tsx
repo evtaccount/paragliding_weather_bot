@@ -12,7 +12,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { usePrefs, useSites } from "./api/queries"
 import type { RoutePointRow } from "./api/queries"
 import type { Prefs } from "./api/types"
-import { fmtDate, todayIso } from "./format"
+import { fmtDate } from "./format"
 import { Forecast } from "./screens/Forecast"
 import { Overview } from "./screens/Overview"
 import { Route } from "./screens/Route"
@@ -398,13 +398,7 @@ function ShellContent() {
           <Route
             points={routePoints}
             name={routeName}
-            // Единственное место, где сегодняшний день всё ещё подставляется
-            // сам. Маршрут пилот и так задаёт явно (выбирает сохранённый или
-            // ставит точки), а без даты POST /api/route отправить нельзя
-            // (api.py:RouteIn.date — обязательное поле): выбранный в шапке
-            // день маршрут уважает, а пока его нет — считается на сегодня,
-            // как и было до явного выбора дня.
-            date={date ?? todayIso()}
+            date={date}
             model={model}
             active={screenActive("route")}
             onPickRoute={(points, name) => { setRoutePoints(points); setRouteName(name); sheets.pop() }}
