@@ -21,6 +21,7 @@ import { fmtDate } from "../format"
 import overview from "../../test/fixtures/forecast_3d.json"
 import scan from "../../test/fixtures/scan.json"
 import scanMixed from "../../test/fixtures/scan_mixed.json"
+import sites from "../../test/fixtures/sites.json"
 
 function wrapper({ children }: { children: ReactNode }) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -31,15 +32,36 @@ function jsonResponse(body: unknown, status = 200): Promise<Response> {
   return Promise.resolve(new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } }))
 }
 
+// Пути ТЯЖЁЛЫХ запросов из записанных вызовов. Слот пилота на сервере занимают
+// только они (api.py:one_at_a_time); /api/sites экран спрашивает и скрытым —
+// он дешёвый, идёт по тому же ключу, что уже запросила оболочка, и нужен,
+// чтобы отличить пустую библиотеку от несделанного выбора.
+function heavy(fetchMock: { mock: { calls: unknown[][] } }): string[] {
+  return fetchMock.mock.calls
+    .map((c) => String(c[0]).split("?")[0])
+    .filter((p) => p === "/api/forecast" || p === "/api/scan")
+}
+
 // Подделка, ветвящаяся по пути запроса — /api/forecast всегда отдаёт
 // forecast_3d.json (диапазон в самом ответе бэкенд не меняет, см. комментарий
 // в Overview.tsx о том, что "date" диапазонному /api/forecast безразличен),
-// /api/scan отдаёт переданный scanBody.
+// /api/scan отдаёт переданный scanBody, /api/sites — список стартов: режим
+// «Все старты» читает его сам, чтобы не спрашивать сервер про пустую
+// библиотеку (Overview.tsx: ScanView).
 function stubByPath(scanBody: unknown = scan) {
   vi.stubGlobal("fetch", (url: string) => {
     const path = url.split("?")[0]
-    return jsonResponse(path === "/api/scan" ? scanBody : overview)
+    if (path === "/api/scan") return jsonResponse(scanBody)
+    if (path === "/api/sites") return jsonResponse(sites)
+    return jsonResponse(overview)
   })
+}
+
+// Период больше не предвыбран (бриф explicit-site-and-day): экран открывается
+// без единого нажатого сегмента и до выбора в сеть не ходит. Тестам, которым
+// нужен список дней, приходится выбрать период самим — ровно как пилоту.
+async function pickRange(label = "3 дня"): Promise<void> {
+  await userEvent.click(screen.getByRole("button", { name: label }))
 }
 
 beforeEach(() => {
@@ -50,6 +72,7 @@ beforeEach(() => {
 test("строка на каждый день диапазона", async () => {
   stubByPath()
   render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} />, { wrapper })
+  await pickRange()
   const list = await screen.findByRole("group", { name: "Дни диапазона" })
   expect(within(list).getAllByRole("button")).toHaveLength(overview.days_daytime.length)
   for (const day of overview.days_daytime) {
@@ -64,6 +87,7 @@ test("переключение диапазона меняет запрос", as
   })
   vi.stubGlobal("fetch", fetchMock)
   render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} />, { wrapper })
+  await pickRange()
   await screen.findByRole("group", { name: "Дни диапазона" })
 
   await userEvent.click(screen.getByRole("button", { name: "Неделя" }))
@@ -77,6 +101,7 @@ test("переключение диапазона меняет запрос", as
 test("в строке видна причина ограничения, а не описание погоды", async () => {
   stubByPath()
   render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} />, { wrapper })
+  await pickRange()
   const list = await screen.findByRole("group", { name: "Дни диапазона" })
 
   const day = overview.days_daytime[0]!
@@ -92,6 +117,7 @@ test("нажатие на день открывает прогноз этого 
   stubByPath()
   const onOpenDay = vi.fn()
   render(<Overview site="Гудаури" model="ecmwf" onOpenDay={onOpenDay} />, { wrapper })
+  await pickRange()
   const list = await screen.findByRole("group", { name: "Дни диапазона" })
 
   const target = overview.days_daytime[2]!
@@ -127,7 +153,6 @@ test("нажатие на день скана несёт старт ЭТОЙ с�
   // компонент молча подставлял проп site вместо s.name, тест поймал бы это
   // явно, а не совпадением значений.
   render(<Overview site="Гудаури" model="ecmwf" onOpenDay={onOpenDay} />, { wrapper })
-  await screen.findByRole("group", { name: "Дни диапазона" })
   await userEvent.click(screen.getByRole("button", { name: "Все старты" }))
 
   const kazbegiGroup = await screen.findByRole("group", { name: "Казбеги" })
@@ -139,8 +164,6 @@ test("нажатие на день скана несёт старт ЭТОЙ с�
 test("режим «Все старты» показывает старты и их дни", async () => {
   stubByPath()
   render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} />, { wrapper })
-  await screen.findByRole("group", { name: "Дни диапазона" })
-
   await userEvent.click(screen.getByRole("button", { name: "Все старты" }))
 
   const site = scan.sites[0]!
@@ -157,8 +180,6 @@ test("режим «Все старты» показывает старты и и
 test("в шапке группы стоит румб, а не градусы", async () => {
   stubByPath()
   render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} />, { wrapper })
-  await screen.findByRole("group", { name: "Дни диапазона" })
-
   await userEvent.click(screen.getByRole("button", { name: "Все старты" }))
 
   const site = scan.sites[0]!
@@ -169,27 +190,100 @@ test("в шапке группы стоит румб, а не градусы", a
 test("старты без лётных дней перечислены отдельно", async () => {
   stubByPath(scanMixed)
   render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} />, { wrapper })
-  await screen.findByRole("group", { name: "Дни диапазона" })
-
   await userEvent.click(screen.getByRole("button", { name: "Все старты" }))
 
   expect(await screen.findByText(new RegExp(scanMixed.empty[0]!))).toBeInTheDocument()
   expect(screen.getByText(new RegExp(scanMixed.failed[0]!))).toBeInTheDocument()
 })
 
+// ─────────────────────────────── явный выбор периода (бриф explicit-site-and-day)
+//
+// Экран открывался на «3 дня» и сразу считал прогноз старта, о котором пилот
+// не просил, а в одном ряду с периодами лежали «Все старты» — не период, а
+// другой вопрос: ЧТО смотрим. Домен это подтверждает: GET /api/scan
+// (forecast.scan_week) диапазона не принимает вовсе и считает только неделю.
+
+test("на обзоре изначально не нажат ни один период", async () => {
+  stubByPath()
+  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} />, { wrapper })
+
+  const periods = screen.getByRole("group", { name: "Диапазон обзора" })
+  const buttons = within(periods).getAllByRole("button")
+  expect(buttons).not.toHaveLength(0)
+  for (const button of buttons) {
+    expect(button).toHaveAttribute("aria-pressed", "false")
+  }
+  // И «Все старты» не нажат тоже — иначе «ничего не предвыбрано» держалось бы
+  // только на половине экрана.
+  expect(screen.getByRole("button", { name: "Все старты" })).toHaveAttribute("aria-pressed", "false")
+})
+
+test("«Все старты» не лежит среди периодов", () => {
+  stubByPath()
+  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} />, { wrapper })
+
+  const periods = screen.getByRole("group", { name: "Диапазон обзора" })
+  expect(within(periods).getAllByRole("button").map((b) => b.textContent)).toEqual(["3 дня", "Неделя", "2 недели"])
+  // Сам переключатель на экране есть, просто отдельно — иначе проверка выше
+  // прошла бы и на экране, где «Все старты» потеряли вовсе.
+  expect(screen.getByRole("button", { name: "Все старты" })).toBeInTheDocument()
+})
+
+test("«Все старты» считает скан и не требует периода", async () => {
+  const fetchMock = vi.fn((url: string) => {
+    const path = String(url).split("?")[0]
+    if (path === "/api/scan") return jsonResponse(scan)
+    if (path === "/api/sites") return jsonResponse(sites)
+    return jsonResponse(overview)
+  })
+  vi.stubGlobal("fetch", fetchMock)
+  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} />, { wrapper })
+
+  await userEvent.click(screen.getByRole("button", { name: "Все старты" }))
+
+  const site = scan.sites[0]!
+  const group = await screen.findByRole("group", { name: site.name })
+  expect(within(group).getAllByRole("button")).toHaveLength(site.days.length)
+  // Периода не спросили и спросить негде: селектор уступил место строке про
+  // единственный срок, который у скана есть.
+  expect(screen.queryByRole("group", { name: "Диапазон обзора" })).toBeNull()
+  expect(screen.getByText("по всем стартам — на неделю вперёд")).toBeInTheDocument()
+  // Диапазонный прогноз при этом не считался: скан — это другой запрос.
+  expect(fetchMock.mock.calls.filter(([u]) => String(u).startsWith("/api/forecast"))).toHaveLength(0)
+})
+
+test("без выбранного периода обзор не шлёт запрос", async () => {
+  const fetchMock = vi.fn((_url: string) => jsonResponse(overview))
+  vi.stubGlobal("fetch", fetchMock)
+  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} />, { wrapper })
+  await new Promise((resolve) => { setTimeout(resolve, 20) })
+
+  expect(heavy(fetchMock)).toHaveLength(0)
+  expect(screen.getByText("Выберите период")).toBeInTheDocument()
+
+  // Тот же экран с выбранным периодом запрос шлёт — без этой половины тест был
+  // бы зелёным и на экране, не работающем вовсе.
+  await pickRange()
+  await waitFor(() => {
+    expect(fetchMock.mock.calls.filter(([u]) => String(u).startsWith("/api/forecast"))).toHaveLength(1)
+  })
+})
+
 // Тесты сверх шести из брифа.
 
-test("пока грузится — показывает индикатор, а не пустоту", () => {
+test("пока грузится — показывает индикатор, а не пустоту", async () => {
   vi.stubGlobal("fetch", (_url: string, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
     init?.signal?.addEventListener("abort", () => reject(new DOMException("отменено", "AbortError")))
   }))
   render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} />, { wrapper })
+  await pickRange()
   expect(screen.getByRole("status", { name: "Загрузка" })).toBeInTheDocument()
 })
 
 test("на 502 показывает ошибку и кнопку повтора", async () => {
   vi.stubGlobal("fetch", () => jsonResponse({ detail: "" }, 502))
   render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} />, { wrapper })
+  await pickRange()
   expect(await screen.findByText(/open-meteo сейчас недоступна/)).toBeInTheDocument()
   expect(screen.getByRole("button", { name: "Повторить" })).toBeInTheDocument()
 })
@@ -197,22 +291,28 @@ test("на 502 показывает ошибку и кнопку повтора"
 test("скан на ошибку тоже показывает кнопку повтора", async () => {
   vi.stubGlobal("fetch", (url: string) => {
     const path = url.split("?")[0]
-    return path === "/api/scan" ? jsonResponse({ detail: "" }, 502) : jsonResponse(overview)
+    if (path === "/api/scan") return jsonResponse({ detail: "" }, 502)
+    // Список стартов — настоящим списком: режим «Все старты» читает его сам и
+    // без непустой библиотеки скан не запросит вовсе (Overview.tsx: ScanView).
+    if (path === "/api/sites") return jsonResponse(sites)
+    return jsonResponse(overview)
   })
   render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} />, { wrapper })
-  await screen.findByRole("group", { name: "Дни диапазона" })
   await userEvent.click(screen.getByRole("button", { name: "Все старты" }))
   expect(await screen.findByText(/open-meteo сейчас недоступна/)).toBeInTheDocument()
   expect(screen.getByRole("button", { name: "Повторить" })).toBeInTheDocument()
 })
 
-// Нет сохранённых стартов (свежая установка) — понятный текст вместо
-// вечной загрузки, тот же приём, что и в Forecast.tsx/App.tsx (useForecast
-// не запускает запрос, пока site === null).
-test("без стартов — понятный текст, а не вечная загрузка", () => {
+// Старт не выбран (в шапке приложения) — понятный текст вместо вечной
+// загрузки, тот же приём, что и в Forecast.tsx (useForecast не запускает
+// запрос, пока site === null). Проверяется на ВЫБРАННОМ периоде: иначе экран
+// сказал бы то же самое про недостающий период, и текст про старт остался бы
+// непроверенным.
+test("без выбранного старта — понятный текст, а не вечная загрузка", async () => {
   vi.stubGlobal("fetch", () => jsonResponse(overview))
   render(<Overview site={null} model="ecmwf" onOpenDay={() => {}} />, { wrapper })
-  expect(screen.getByText("Нет стартов")).toBeInTheDocument()
+  await pickRange()
+  expect(screen.getByText("Выберите старт")).toBeInTheDocument()
 })
 
 // Финальное ревью ветки, I2. Правило «лётный день» живёт в criteria.FLYABLE
@@ -234,6 +334,7 @@ test("«лётно» под баллом — по ответу сервера, �
   }
   vi.stubGlobal("fetch", () => jsonResponse(marginalFirstDay))
   render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} />, { wrapper })
+  await pickRange()
   const list = await screen.findByRole("group", { name: "Дни диапазона" })
 
   const rows = within(list).getAllByRole("button")
@@ -258,7 +359,6 @@ test("в строке «Все старты» стоит погода, а не �
   }
   stubByPath(noLimit)
   render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} />, { wrapper })
-  await screen.findByRole("group", { name: "Дни диапазона" })
   await userEvent.click(screen.getByRole("button", { name: "Все старты" }))
 
   const row = noLimit.sites[0]!.days[0]!
@@ -284,7 +384,6 @@ test("в строке «Все старты» виден дождь", async () =
   }
   stubByPath(rainy)
   render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} />, { wrapper })
-  await screen.findByRole("group", { name: "Дни диапазона" })
   await userEvent.click(screen.getByRole("button", { name: "Все старты" }))
 
   const group = await screen.findByRole("group", { name: rainy.sites[0]!.name })
@@ -298,14 +397,37 @@ test("в строке «Все старты» виден дождь", async () =
 // показывала СОВЕРШЕННО пустой экран — только переключатель сегментов, — при
 // том что соседние сегменты в том же состоянии объясняют, что делать. Заодно
 // в сеть уходил самый дорогой запрос приложения про пустую библиотеку.
+//
+// «Пусто» здесь — ответ /api/sites, а не пустой проп site: с явным выбором
+// «старт не выбран» и «стартов нет» разошлись, а скану выбранный старт не
+// нужен вовсе (forecast.scan_week ходит по ВСЕЙ библиотеке). Поэтому старт в
+// пропе есть, а библиотека пуста — состояние, которого раньше не бывало.
 test("без стартов «Все старты» объясняет это и не спрашивает сервер", async () => {
-  const fetchMock = vi.fn((_url: string) => jsonResponse(overview))
+  const fetchMock = vi.fn((url: string) => (
+    String(url).split("?")[0] === "/api/sites" ? jsonResponse([]) : jsonResponse(overview)
+  ))
   vi.stubGlobal("fetch", fetchMock)
-  render(<Overview site={null} model="ecmwf" onOpenDay={() => {}} />, { wrapper })
+  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} />, { wrapper })
   await userEvent.click(screen.getByRole("button", { name: "Все старты" }))
 
-  expect(screen.getByText("Нет стартов")).toBeInTheDocument()
+  expect(await screen.findByText("Нет стартов")).toBeInTheDocument()
   expect(fetchMock.mock.calls.filter(([u]) => String(u).startsWith("/api/scan"))).toHaveLength(0)
+})
+
+// Вторая половина того же экрана на той же пустой библиотеке. Она предлагала
+// «Выберите старт. Старт выбирается кнопкой в шапке» — там, где выбирать
+// нечего, — пока соседняя половина честно говорила «Нет стартов»: один экран
+// давал два разных ответа на один вопрос через одно нажатие (ревью ветки
+// explicit-site-and-day, M1).
+test("без стартов диапазонная половина обзора тоже говорит «Нет стартов»", async () => {
+  vi.stubGlobal("fetch", (url: string) => (
+    String(url).split("?")[0] === "/api/sites" ? jsonResponse([]) : jsonResponse(overview)
+  ))
+  render(<Overview site={null} model="ecmwf" onOpenDay={() => {}} />, { wrapper })
+
+  expect(await screen.findByText("Нет стартов")).toBeInTheDocument()
+  expect(screen.queryByText("Выберите старт и период")).toBeNull()
+  expect(screen.queryByText(/Старт выбирается кнопкой в шапке/)).toBeNull()
 })
 
 // Финальное ревью ветки, I3. Экран смонтирован всегда (все четыре живут в
@@ -320,12 +442,42 @@ test("скрытый экран в сеть не ходит, а показанн
   const { rerender } = render(
     <Overview site="Гудаури" model="ecmwf" active={false} onOpenDay={() => {}} />, { wrapper },
   )
+  await pickRange()
   await new Promise((resolve) => { setTimeout(resolve, 20) })
-  expect(fetchMock).not.toHaveBeenCalled()
+  // Считаются ТЯЖЁЛЫЕ запросы: слот пилота на сервере занимают они
+  // (api.py:one_at_a_time). Список стартов экран спрашивает и скрытым — он
+  // дешёвый, идёт по тому же ключу, что уже запросила оболочка, и нужен, чтобы
+  // отличить пустую библиотеку от несделанного выбора.
+  expect(heavy(fetchMock)).toHaveLength(0)
 
   rerender(<Overview site="Гудаури" model="ecmwf" active onOpenDay={() => {}} />)
   await screen.findByRole("group", { name: "Дни диапазона" })
-  expect(fetchMock.mock.calls.map(([u]) => String(u).split("?")[0])).toEqual(["/api/forecast"])
+  expect(heavy(fetchMock)).toEqual(["/api/forecast"])
+})
+
+// Тот же сторож, но на пути «Все старты» — он ведёт к САМОМУ дорогому запросу
+// приложения (forecast.scan_week идёт за погодой по всей библиотеке), а
+// проверялся только диапазонный путь: снятие `active` у useScan оставляло весь
+// пакет зелёным (ревью ветки explicit-site-and-day, I2). Список стартов
+// приходит и на скрытой вкладке — он дешёвый и нужен самой шапке; считается
+// только скан.
+test("скрытый экран не запускает скан по всем стартам", async () => {
+  const fetchMock = vi.fn((url: string) => {
+    const path = String(url).split("?")[0]
+    return jsonResponse(path === "/api/scan" ? scan : path === "/api/sites" ? sites : overview)
+  })
+  vi.stubGlobal("fetch", fetchMock)
+  const { rerender } = render(
+    <Overview site="Гудаури" model="ecmwf" active={false} onOpenDay={() => {}} />, { wrapper },
+  )
+  await userEvent.click(screen.getByRole("button", { name: "Все старты" }))
+  await new Promise((resolve) => { setTimeout(resolve, 20) })
+  const scans = (): string[] => fetchMock.mock.calls
+    .map(([u]) => String(u).split("?")[0]).filter((p) => p === "/api/scan")
+  expect(scans()).toHaveLength(0)
+
+  rerender(<Overview site="Гудаури" model="ecmwf" active onOpenDay={() => {}} />)
+  await waitFor(() => { expect(scans()).toHaveLength(1) })
 })
 
 // scan_mixed.json несёт непустые sites[].days ВМЕСТЕ с непустыми empty/failed
@@ -334,7 +486,6 @@ test("скрытый экран в сеть не ходит, а показанн
 test("скан со стартами и без лётных дней одновременно не теряет ни одного старта", async () => {
   stubByPath(scanMixed)
   render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} />, { wrapper })
-  await screen.findByRole("group", { name: "Дни диапазона" })
   await userEvent.click(screen.getByRole("button", { name: "Все старты" }))
 
   const site = scanMixed.sites[0]!
@@ -355,6 +506,7 @@ test("скан со стартами и без лётных дней однов�
 test("пропавшая сеть объясняется словами, а не пустой рамкой", async () => {
   vi.stubGlobal("fetch", () => Promise.reject(new TypeError("Failed to fetch")))
   render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} />, { wrapper })
+  await pickRange()
 
   expect(await screen.findByText(/Нет связи/)).toBeInTheDocument()
   expect(screen.getByRole("button", { name: "Повторить" })).toBeInTheDocument()

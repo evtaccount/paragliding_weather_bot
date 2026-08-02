@@ -4,6 +4,11 @@ import { beforeEach, expect, test, vi } from "vitest"
 import { StrictMode } from "react"
 import { App } from "./App"
 import { fmtDate } from "./format"
+// Приложение больше ничего не выбирает за пилота (просьба владельца, бриф
+// explicit-site-and-day): старт и день — два нажатия в шапке, каждое со своей
+// шторкой. Тесты, которым нужен посчитанный прогноз, проходят этот путь
+// целиком, как пилот, а не подставляют состояние в обход.
+import { pickDay, pickSite } from "../test/header"
 import facts from "../test/fixtures/facts_1d.json"
 import overview from "../test/fixtures/forecast_3d.json"
 import scan from "../test/fixtures/scan.json"
@@ -77,13 +82,103 @@ test("шапка показывает понятный текст, а не ве�
   })
   render(<App />)
   // Область поиска — именно шапка (role="banner" у <header>), а не весь
-  // документ: вкладка «Прогноз» при том же пустом списке стартов показывает
-  // собственный текст "Нет стартов" (Forecast.tsx) — без сужения тест был
-  // бы зелёным и на старой ошибке (спиннер в шапке навсегда), просто найдя
-  // чужую надпись.
+  // документ: без сужения тест был бы зелёным и на старой ошибке (спиннер в
+  // шапке навсегда), просто найдя надпись соседнего экрана.
   const header = screen.getByRole("banner")
+  expect(within(header).getByRole("button", { name: "Старт не выбран" })).toBeInTheDocument()
+
+  // Про ПУСТУЮ библиотеку (а не просто «выбора не было») говорит сама шторка,
+  // куда ведёт эта кнопка, — и говорит, что делать дальше. Шапке второй такой
+  // подписи не нужно: выбор старта живёт в шторке, туда пилот и идёт.
+  await userEvent.click(within(header).getByRole("button", { name: "Старт не выбран" }))
+  // Ищем ВНУТРИ шторки: «Нет стартов» теперь говорит и «Обзор» — он
+  // смонтирован всегда и на пустой библиотеке показывает то же самое (иначе
+  // одна его половина предлагала бы выбрать старт там, где выбирать нечего).
+  const sheet = await screen.findByRole("dialog")
+  expect(within(sheet).getByText("Нет стартов")).toBeInTheDocument()
+  expect(within(sheet).getByText(/Добавьте старт на вкладке/)).toBeInTheDocument()
+})
+
+// Просьба владельца (бриф explicit-site-and-day): приложение открывалось
+// готовым прогнозом какого-то старта на сегодня — старт брался первым из
+// /api/sites, день подставлялся сам. Теперь ни один тяжёлый запрос не уходит,
+// пока пилот не назвал ОБА. Проверяются оба гвоздя по отдельности: подписи в
+// шапке ловят возврат предвыбора (любого из двух), а половина выбора ловит
+// «хватит и старта».
+test("на холодном старте прогноз не считается, пока не выбраны старт и день", async () => {
+  const fetchMock = vi.fn((url: string) => {
+    const path = String(url).split("?")[0]
+    const body =
+      path === "/api/sites" ? sites
+      : path === "/api/prefs" ? prefs
+      : path === "/api/forecast" && url.includes("range=1d") ? facts
+      : path === "/api/forecast" ? overview
+      : {}
+    return Promise.resolve(new Response(JSON.stringify(body), {
+      status: 200, headers: { "content-type": "application/json" } }))
+  })
+  vi.stubGlobal("fetch", fetchMock)
+
+  render(<App />)
+  const header = screen.getByRole("banner")
+  // Ждём не паузы, а признака полной готовности: подпись модели появляется
+  // только после ответа /api/prefs, то есть и старты, и настройки уже
+  // применены — будь у приложения предвыбор, запрос ушёл бы к этой минуте
+  // (условие screenActive перестало держать его ещё раньше).
+  await within(header).findByText(/ECMWF/)
+
+  const forecasts = (): string[] => fetchMock.mock.calls
+    .map(([u]) => String(u)).filter((u) => u.startsWith("/api/forecast"))
+  expect(forecasts()).toHaveLength(0)
+  expect(within(header).getByText("Старт не выбран")).toBeInTheDocument()
+  expect(within(header).getByText("День не выбран")).toBeInTheDocument()
+  // Экран не молчит и не крутит спиннер, а называет оба недостающих выбора.
+  expect(screen.getByText("Выберите старт и день")).toBeInTheDocument()
+
+  // Половина выбора — ещё не выбор: старт назван, дня нет, в сеть по-прежнему
+  // никто не ходит, и экран говорит, чего именно не хватает теперь.
+  await pickSite("Гудаури")
+  await new Promise((resolve) => { setTimeout(resolve, 30) })
+  expect(forecasts()).toHaveLength(0)
+  expect(screen.getByText("Выберите день")).toBeInTheDocument()
+})
+
+// Вторая половина того же правила: сделанный выбор обязан доехать до запроса
+// и до вердикта. Старт берётся НЕ первый и день НЕ сегодняшний — выбор по
+// номеру в списке (а не по имени и дате) на первых элементах неотличим от
+// правильного, ровно этот класс дефекта был Critical задачи 10.
+test("выбор старта и дня в шапке доводит прогноз до вердикта", async () => {
+  const threeSites = [
+    sites[0]!,
+    { ...sites[0]!, name: "Лалискури", lat: 42.51, lon: 42.32 },
+    { ...sites[0]!, name: "Казбеги", lat: 42.66, lon: 44.64 },
+  ]
+  const fetchMock = vi.fn((url: string) => {
+    const path = String(url).split("?")[0]
+    const body =
+      path === "/api/sites" ? threeSites
+      : path === "/api/prefs" ? prefs
+      : path === "/api/forecast" && url.includes("range=1d") ? facts
+      : path === "/api/forecast" ? overview
+      : {}
+    return Promise.resolve(new Response(JSON.stringify(body), {
+      status: 200, headers: { "content-type": "application/json" } }))
+  })
+  vi.stubGlobal("fetch", fetchMock)
+
+  render(<App />)
+  await pickSite("Казбеги")
+  const picked = await pickDay(2)
+
+  expect(await screen.findByText(facts.assessment.label_ru)).toBeInTheDocument()
   await waitFor(() => {
-    expect(within(header).getByText("Нет стартов")).toBeInTheDocument()
+    const asked = fetchMock.mock.calls
+      .map(([u]) => new URL(String(u), "http://x").searchParams)
+      .filter((p) => p.get("range") === "1d")
+      .map((p) => `${p.get("site")} · ${p.get("date")}`)
+    // Ровно один запрос и ровно за тем, что выбрали: ни старт первого в
+    // списке, ни сегодняшний день сюда попасть не должны.
+    expect(asked).toEqual([`Казбеги · ${picked}`])
   })
 })
 
@@ -119,6 +214,8 @@ test("под строгим режимом разработки открытие
     return Promise.resolve(new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } }))
   })
   render(<StrictMode><App /></StrictMode>)
+  await pickSite("Гудаури")
+  await pickDay(0)
   await screen.findByText(facts.assessment.label_ru)
   await userEvent.click(screen.getByRole("button", { name: /Разбор от ИИ/ }))
   expect(await screen.findByText("Разбор под строгим режимом разработки.")).toBeInTheDocument()
@@ -144,7 +241,11 @@ test("тап по дню в «Обзоре» переключает вкладк
   vi.stubGlobal("fetch", fetchMock)
 
   render(<App />)
+  // Старт и период — руками: «Обзор» без них ничего не считает (Overview.tsx:
+  // NeedsChoice), а тап по дню проверяется на посчитанном списке.
+  await pickSite("Гудаури")
   await userEvent.click(screen.getByRole("tab", { name: "Обзор" }))
+  await userEvent.click(screen.getByRole("button", { name: "3 дня" }))
   const target = overview.days_daytime[2]!
   await userEvent.click(await screen.findByRole("button", { name: new RegExp(fmtDate(target.date)) }))
 
@@ -197,12 +298,9 @@ test("тап по дню ВТОРОГО старта в скане открыв�
 
   expect(screen.getByRole("tab", { name: "Прогноз" })).toHaveAttribute("aria-selected", "true")
   await waitFor(() => {
-    // Ищем запрос ИМЕННО за днём, по которому кликнули (date=kazbegiDate),
-    // а не любой request с range=1d — при монтировании приложение и так
-    // один раз запрашивает "Прогноз" для старта по умолчанию (Гудаури,
-    // сегодняшняя дата), и это законный, отдельный запрос, а не повторение
-    // бага: смешивать его с запросом после клика значило бы проверять
-    // не то, что упало у ревьюера.
+    // Ищем запрос ИМЕННО за днём, по которому кликнули (date=kazbegiDate), а
+    // не любой запрос с range=1d: проверяется, что тап донёс до «Прогноза»
+    // старт И дату СВОЕЙ строки, а не какие-нибудь ещё.
     const requestsForClickedDay = fetchMock.mock.calls
       .map(([u]) => new URL(String(u), "http://x").searchParams)
       .filter((params) => params.get("range") === "1d" && params.get("date") === kazbegiDate)
@@ -241,6 +339,9 @@ test("сохранённый маршрут, выбранный в шторке,
   vi.stubGlobal("fetch", fetchMock)
 
   render(<App />)
+  // День выбирается явно — маршруту он нужен так же, как прогнозу
+  // (api.py:RouteIn.date), и сам экран его больше не подставляет.
+  await pickDay(0)
   await userEvent.click(screen.getByRole("tab", { name: "Маршрут" }))
   await userEvent.click(screen.getByRole("button", { name: /Сохранённые/ }))
   await userEvent.click(await screen.findByRole("button", { name: /Хребет на север/ }))
@@ -284,8 +385,11 @@ test("выбор старта в шапке переключает прогно�
 
   render(<App />)
   const header = screen.getByRole("banner")
-  await userEvent.click(await within(header).findByRole("button", { name: "Гудаури" }))
-  await userEvent.click(screen.getByRole("button", { name: /Казбеги/ }))
+  await pickSite("Казбеги")
+  // День нужен тоже — без него прогноз не считается вовсе (бриф
+  // explicit-site-and-day); сегодняшний берётся как самый обычный выбор
+  // пилота, проверяется здесь СТАРТ.
+  await pickDay(0)
 
   expect(within(header).getByText("Казбеги")).toBeInTheDocument()
   await waitFor(() => {
@@ -330,8 +434,7 @@ test("удалённый старт перестаёт быть текущим",
   const header = screen.getByRole("banner")
 
   // Пилот выбрал «Казбеги» в шапке...
-  await userEvent.click(await within(header).findByRole("button", { name: "Гудаури" }))
-  await userEvent.click(await screen.findByRole("button", { name: /Казбеги/ }))
+  await pickSite("Казбеги")
   expect(within(header).getByText("Казбеги")).toBeInTheDocument()
 
   // ...и удалил его же на вкладке «Настройки».
@@ -341,11 +444,13 @@ test("удалённый старт перестаёт быть текущим",
   await userEvent.click(within(sheet).getByRole("button", { name: /Удалить старт/ }))
   await userEvent.click(within(sheet).getByRole("button", { name: /Да, удалить/ }))
 
-  // Шапка возвращается к запасному старту, а не показывает удалённый.
+  // Шапка возвращается к «старт не выбран», а не показывает удалённый:
+  // запасного старта в приложении больше нет, и подставить вместо удалённого
+  // соседний значило бы выбрать за пилота.
   await waitFor(() => {
     expect(within(header).queryByText("Казбеги")).toBeNull()
   })
-  expect(within(header).getByText("Гудаури")).toBeInTheDocument()
+  expect(within(header).getByText("Старт не выбран")).toBeInTheDocument()
 })
 
 // Финальное ревью ветки, I3. Все четыре экрана смонтированы разом (на этом
@@ -370,6 +475,8 @@ test("скрытые вкладки не ходят в сеть, а открыт
   vi.stubGlobal("fetch", fetchMock)
 
   render(<App />)
+  await pickSite("Гудаури")
+  await pickDay(0)
   await screen.findByText(facts.assessment.label_ru)
 
   const heavy = (): string[] => fetchMock.mock.calls
@@ -379,8 +486,9 @@ test("скрытые вкладки не ходят в сеть, а открыт
   expect(heavy().filter((u) => u.includes("range=3d"))).toHaveLength(0)
   expect(heavy().filter((u) => u.includes("range=1d"))).toHaveLength(1)
 
-  // Открыл «Обзор» — теперь его запрос законен.
+  // Открыл «Обзор» и выбрал период — теперь его запрос законен.
   await userEvent.click(screen.getByRole("tab", { name: "Обзор" }))
+  await userEvent.click(screen.getByRole("button", { name: "3 дня" }))
   await waitFor(() => {
     expect(heavy().filter((u) => u.includes("range=3d"))).toHaveLength(1)
   })
@@ -416,17 +524,18 @@ test("на холодном старте прогноз считается од�
   const forecasts = (): string[] => fetchMock.mock.calls
     .map(([u]) => String(u)).filter((u) => u.startsWith("/api/forecast"))
 
-  // Ждать надо не ВЫЗОВА /api/sites, а того, что список УЖЕ применён:
-  // имя старта в шапке — единственный признак этого, видимый снаружи. По
-  // одному лишь вызову проверка была бы пустой — ответы стартов и настроек
-  // прикладываются одним пакетом, и гонка, ради которой написан тест, не
-  // воспроизводится вовсе (проверено мутацией: она оставалась зелёной).
-  const header = screen.getByRole("banner")
-  await within(header).findByText("Гудаури")
+  // Выбор старта и дня — руками, и он же служит ожиданием: строку старта
+  // шторка показывает только по ПРИШЕДШЕМУ /api/sites, то есть к этому месту
+  // список не просто запрошен, а применён. По одному лишь вызову fetch
+  // проверка была бы пустой — ответы стартов и настроек прикладываются одним
+  // пакетом, и гонка, ради которой написан тест, не воспроизводится вовсе
+  // (проверено мутацией: она оставалась зелёной).
+  await pickSite("Гудаури")
+  await pickDay(0)
 
-  // Старты пришли, настройки — ещё нет. Запрос без model= не уходит: сервер
-  // посчитал бы его по сохранённой настройке, и тот же ответ пришлось бы
-  // считать заново под другим ключом кэша.
+  // Выбор сделан целиком, настройки — ещё в пути. Запрос без model= не
+  // уходит: сервер посчитал бы его по сохранённой настройке, и тот же ответ
+  // пришлось бы считать заново под другим ключом кэша.
   expect(forecasts()).toHaveLength(0)
 
   deliverPrefs()
@@ -466,12 +575,12 @@ test("на холодном старте обзор считается один 
   const ranges = (): string[] => fetchMock.mock.calls
     .map(([u]) => String(u)).filter((u) => u.startsWith("/api/forecast") && u.includes("range=3d"))
 
-  const header = screen.getByRole("banner")
-  await within(header).findByText("Гудаури")
+  await pickSite("Гудаури")
   await userEvent.click(screen.getByRole("tab", { name: "Обзор" }))
+  await userEvent.click(screen.getByRole("button", { name: "3 дня" }))
   await new Promise((resolve) => { setTimeout(resolve, 30) })
 
-  // Старты пришли, настройки — ещё нет: запрос без model= не уходит.
+  // Старт и период выбраны, настройки — ещё нет: запрос без model= не уходит.
   expect(ranges()).toHaveLength(0)
 
   deliverPrefs()
@@ -517,12 +626,15 @@ test("на холодном старте маршрут считается од�
   const routePosts = (): unknown[] => fetchMock.mock.calls.filter(([u, init]) =>
     String(u).split("?")[0] === "/api/route" && (init as RequestInit | undefined)?.method === "POST")
 
+  // День выбирается до всего: список дней локальный, ответа сервера не ждёт,
+  // и тест должен упереться в ОТСУТСТВИЕ настроек, а не в невыбранный день.
+  await pickDay(0)
   await userEvent.click(screen.getByRole("tab", { name: "Маршрут" }))
   await userEvent.click(screen.getByRole("button", { name: /Сохранённые/ }))
   await userEvent.click(await screen.findByRole("button", { name: /Хребет на север/ }))
   await new Promise((resolve) => { setTimeout(resolve, 30) })
 
-  // Точки выбраны, настройки — ещё нет: расчёт не уходит.
+  // Точки и день выбраны, настройки — ещё нет: расчёт не уходит.
   expect(routePosts()).toHaveLength(0)
 
   deliverPrefs()
@@ -530,4 +642,37 @@ test("на холодном старте маршрут считается од�
   await new Promise((resolve) => { setTimeout(resolve, 30) })
 
   expect(routePosts()).toHaveLength(1)
+})
+
+// Оболочка не подставляет день и «Маршруту». Тест нужен отдельно от того, что
+// стоит в Route.test.tsx: тот проверяет сам экран при date={null}, а здесь —
+// что оболочка это null и передаёт, а не подменяет сегодняшним днём. Без него
+// возврат подстановки в App.tsx проходил незамеченным: все остальные тесты
+// выбирают день явно, и запасная ветка не исполняется ни разу.
+test("маршрут, выбранный без дня, не считается", async () => {
+  const saved = [
+    { name: "Хребет на север", points: [[42.4, 44.4, null], [42.6, 44.4, null]], saved: "2026-07-26T06:33:49+00:00" },
+  ]
+  const fetchMock = vi.fn((url: string, _init?: RequestInit) => {
+    const path = String(url).split("?")[0]
+    const body =
+      path === "/api/sites" ? sites
+      : path === "/api/prefs" ? prefs
+      : path === "/api/routes" ? saved
+      : path === "/api/route" ? routeResult
+      : {}
+    return Promise.resolve(new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } }))
+  })
+  vi.stubGlobal("fetch", fetchMock)
+
+  render(<App />)
+  await userEvent.click(screen.getByRole("tab", { name: "Маршрут" }))
+  await userEvent.click(screen.getByRole("button", { name: /Сохранённые/ }))
+  await userEvent.click(await screen.findByRole("button", { name: /Хребет на север/ }))
+  await new Promise((resolve) => { setTimeout(resolve, 30) })
+
+  const routePosts = fetchMock.mock.calls.filter(([u, init]) =>
+    String(u).split("?")[0] === "/api/route" && (init as RequestInit | undefined)?.method === "POST")
+  expect(routePosts).toHaveLength(0)
+  expect(screen.getByText("Выберите день")).toBeInTheDocument()
 })

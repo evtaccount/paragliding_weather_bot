@@ -709,3 +709,26 @@ test("правка настроек пересчитывает показанн�
   })
   await waitFor(() => { expect(routePosts(fetchMock)).toHaveLength(3) })
 })
+
+// Просьба владельца (бриф explicit-site-and-day): приложение не должно
+// показывать ничего, о чём его не просили. Старт и день теперь выбираются
+// явно, и «Маршрут» — последнее место, где сегодняшний день ещё подставлялся
+// сам: шапка писала «День не выбран», а маршрут считался на сегодня, то есть
+// экран противоречил шапке через одно переключение вкладки.
+test("без выбранного дня маршрут не считается, а объясняет чего не хватает", async () => {
+  const fetchMock = vi.fn((_url: string, _init?: RequestInit) => jsonResponse(ROUTE))
+  vi.stubGlobal("fetch", fetchMock)
+  render(
+    <Route points={POINTS} name={ROUTE.route.name} date={null} model="ecmwf"
+           active onPickRoute={() => {}} />,
+    { wrapper },
+  )
+  // Пауза внутри act: за эти 20 мс приходит ответ /api/prefs (экран подписан
+  // на настройки, см. Route.tsx), и React обновляет состояние.
+  await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 20) }) })
+
+  expect(routePosts(fetchMock)).toHaveLength(0)
+  expect(screen.getByText("Выберите день")).toBeInTheDocument()
+  // Куда нажимать — та же подсказка, что у «Прогноза»: кнопка одна и та же.
+  expect(screen.getByText(/День выбирается кнопкой в шапке/)).toBeInTheDocument()
+})

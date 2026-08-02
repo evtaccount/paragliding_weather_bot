@@ -17,9 +17,9 @@ import { Forecast } from "./screens/Forecast"
 import { Overview } from "./screens/Overview"
 import { Route } from "./screens/Route"
 import { Settings } from "./screens/Settings"
+import { DayPickerSheet } from "./sheets/DayPickerSheet"
 import { ModelPickerSheet } from "./sheets/ModelPickerSheet"
 import { SitePickerSheet } from "./sheets/SitePickerSheet"
-import { defaultSiteName } from "./sites"
 import * as telegram from "./telegram"
 import { resolveThemeVars } from "./theme"
 import { Chip } from "./ui/Chip"
@@ -160,13 +160,6 @@ function modelLabel(prefs: Prefs | undefined, model: string | null): string | un
   return prefs.models.find((m) => m.key === key)?.label ?? key
 }
 
-function todayIso(): string {
-  const now = new Date()
-  const month = String(now.getMonth() + 1).padStart(2, "0")
-  const day = String(now.getDate()).padStart(2, "0")
-  return `${now.getFullYear()}-${month}-${day}`
-}
-
 const queryClient = new QueryClient()
 
 // Сброс для тестов — тот же класс проблемы, что и resetQueueForTests()
@@ -189,21 +182,21 @@ export function resetAppQueryClientForTests(): void {
 
 function ShellContent() {
   const [tab, setTab] = useState<TabKey>("day")
-  // Дата «Прогноза» — состояние, а не константа: экран «Обзор» (задача 10)
-  // переключает на конкретный день по тапу, и это должно быть настоящим
-  // переключением (см. task-10-brief), а не сбросом на сегодня при каждом
-  // рендере. Начальное значение — todayIso(), как и раньше, пока пилот ни
-  // разу не тапнул по дню в обзоре.
-  const [date, setDate] = useState(todayIso())
-  // Текущий старт — тоже состояние, а не всегда первый элемент /api/sites
-  // (было так до ревью этой задачи, Critical: клик по дню ВТОРОГО старта в
-  // скане «Все старты» открывал прогноз ПЕРВОГО — приложение никак не
-  // запоминало, какой старт реально выбрали, defaultSiteName(sites.data) заново
-  // брал sites.data[0] на каждом рендере). null означает "явного выбора
-  // ещё не было" — тогда используется первый старт из списка (см. вычисление
-  // site ниже). Это же состояние меняет выбиралка старта из шапки
-  // (openSitePicker ниже) и переход «Смотреть прогноз» из карточки старта на
-  // экране настроек — не только тап по дню в скане.
+  // День и старт «Прогноза» — состояние оболочки, и оба начинаются с null,
+  // то есть «пилот ещё не выбирал». Раньше здесь стояли сегодняшний день и
+  // первый старт из /api/sites: приложение открывалось готовым прогнозом
+  // какого-то старта на сегодня, о котором пилот не просил, — просьба
+  // владельца (.superpowers/briefs/explicit-site-and-day.md). Пока выбор не
+  // сделан, экраны показывают, чего им не хватает, и в сеть не ходят
+  // (Forecast.tsx, Overview.tsx).
+  //
+  // Меняют этот выбор четверо: выбиралки старта и дня из шапки (openSitePicker
+  // и openDayPicker ниже), тап по дню в «Обзоре» (openDay — он задаёт сразу
+  // оба) и переход «Смотреть прогноз» из карточки старта на экране настроек.
+  // Хранится ИМЯ старта, а не его номер в списке: номер не переживает ни
+  // перезагрузку /api/sites, ни удаление соседнего старта (Critical задачи 10
+  // — тап по дню второго старта открывал прогноз первого).
+  const [date, setDate] = useState<string | null>(null)
   const [selectedSite, setSelectedSite] = useState<string | null>(null)
   // Разовая модель: параметр ЗАПРОСА, а не настройка пилота (api.py:
   // _model_for — `model=` из query побеждает store.prefs и никуда не
@@ -256,10 +249,10 @@ function ShellContent() {
 
   // Выбранный старт действует, только пока он есть в библиотеке. Удалили его
   // (здесь на вкладке «Настройки», в чате командой /delsite или с другого
-  // устройства) — приложение возвращается к запасному варианту, а не показывает
-  // призрак: запрос по исчезнувшему старту получает 404 (api.py:_site_or_404),
-  // а пока в кэше TanStack лежит его прогноз (staleTime 5 минут) — пилот
-  // смотрел бы прогноз старта, которого нет. Найдено ревью задачи 13 (N5).
+  // устройства) — выбор снимается, а не показывает призрак: запрос по
+  // исчезнувшему старту получает 404 (api.py:_site_or_404), а пока в кэше
+  // TanStack лежит его прогноз (staleTime 5 минут) — пилот смотрел бы прогноз
+  // старта, которого нет. Найдено ревью задачи 13 (N5).
   //
   // Проверка ТОЛЬКО по загруженному списку: пока sites.data не пришёл,
   // «старта нет в списке» ничего не значит, и сбрасывать выбор нельзя —
@@ -267,7 +260,7 @@ function ShellContent() {
   // ре-рендер до ответа сервера.
   const selectionAlive =
     selectedSite !== null && (sites.data === undefined || sites.data.some((s) => s.name === selectedSite))
-  const site = selectionAlive ? selectedSite : defaultSiteName(sites.data)
+  const site = selectionAlive ? selectedSite : null
   const model = onceModel ?? prefs.data?.model_key ?? null
 
   // Кому из экранов сейчас можно ходить в сеть. Условий два, и оба про
@@ -316,6 +309,14 @@ function ShellContent() {
     sheets.pop()
   }
 
+  // Выбор дня — по самой дате (`YYYY-MM-DD`), а не по номеру дня в списке:
+  // список строится от «сегодня» и на следующий день значит уже другие дни,
+  // а дата и есть то, что уходит в запрос (`date=` у /api/forecast).
+  function pickDate(picked: string): void {
+    setDate(picked)
+    sheets.pop()
+  }
+
   // Данные шторкам НЕ передаются: sheets.push кладёт в стек готовый элемент,
   // и его пропы застывают на момент нажатия (SheetsProvider отдаёт тот же
   // объект элемента на каждом рендере). Шторка, открытая до ответа сервера,
@@ -326,10 +327,18 @@ function ShellContent() {
   //
   // Через проп идёт только `selected` — сырой выбор пилота, а не вычисленный
   // `site`: измениться, пока шторка открыта, он не может (все три места, где
-  // он меняется, эту шторку закрывают или живут на другом экране), а запасной
-  // старт шторка выберет по тому же defaultSiteName() из живого списка.
+  // он меняется, эту шторку закрывают или живут на другом экране).
   function openSitePicker(): void {
     sheets.push(<SitePickerSheet selected={selectedSite} onPick={pickSite} />, "Старт")
+  }
+
+  // Тот же приём, что и у выбиралки старта, по той же причине: через проп идёт
+  // только `selected` — выбор, изменить который, пока шторка открыта, некому
+  // (выбор дня её же и закрывает). Сам список дней шторка строит сама, из
+  // часов устройства и глубины прогноза домена, — данных с сервера ей не
+  // нужно вовсе.
+  function openDayPicker(): void {
+    sheets.push(<DayPickerSheet selected={date} onPick={pickDate} />, "День")
   }
 
   // Разовая модель применяется сразу и никуда не сохраняется; постоянную
@@ -354,11 +363,12 @@ function ShellContent() {
               417-423, aria-haspopup="dialog"): это два самых частых действия
               пилота, и обоим нужен один тап из любого экрана. */}
           <button type="button" className="site" aria-haspopup="dialog" onClick={openSitePicker}>
-            {/* Список стартов пуст (не идёт запрос — прогнав isPending) — понятный
-                текст вместо спиннера, который никогда бы не пропал: пустой массив
-                success-запроса не значит, что старт вот-вот появится. Шторка при
-                этом всё равно открывается и отправляет за добавлением старта. */}
-            <span className="site__name">{sites.isPending ? <Spinner /> : (site ?? "Нет стартов")}</span>
+            {/* Пока старт не выбран, кнопка так и написана — и ждать тут нечего,
+                поэтому спиннера на месте имени больше нет: выбор не выводится из
+                ответа /api/sites, он бывает только явным. Пустая библиотека
+                объясняется в самой шторке («Нет стартов. Добавьте старт на
+                вкладке „Настройки“») — она открывается и при пустом списке. */}
+            <span className="site__name">{site ?? "Старт не выбран"}</span>
           </button>
           <Chip live onClick={openModelPicker}>
             {/* «· разово» отличает разовый выбор от постоянной настройки: без
@@ -368,7 +378,12 @@ function ShellContent() {
           </Chip>
         </div>
         <div className="ctx__date">
-          <span className="dateline">{fmtDate(date)}</span>
+          {/* Дата — такая же кнопка со шторкой, как имя старта рядом: это
+              второй из двух выборов, без которых прогноз не считается, и он
+              обязан быть доступен с любого экрана в один тап. */}
+          <button type="button" className="dateline" aria-haspopup="dialog" onClick={openDayPicker}>
+            {date === null ? "День не выбран" : fmtDate(date)}
+          </button>
         </div>
       </header>
 

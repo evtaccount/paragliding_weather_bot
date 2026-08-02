@@ -12,11 +12,17 @@ import userEvent from "@testing-library/user-event"
 import { beforeEach, expect, test, vi } from "vitest"
 import { StrictMode } from "react"
 import type { ReactNode } from "react"
+import { DayPickerSheet } from "./DayPickerSheet"
 import { NewRouteSheet } from "./NewRouteSheet"
 import { SavedRoutesSheet } from "./SavedRoutesSheet"
 import { SitePickerSheet } from "./SitePickerSheet"
+import { App } from "../App"
 import type { RoutePointRow } from "../api/queries"
 import type { SavedRoute, Site } from "../api/types"
+import { RANGE_DAYS_2WEEKS } from "../domain"
+import { fmtDate } from "../format"
+import { isoInDays } from "../../test/days"
+import prefsFixture from "../../test/fixtures/prefs.json"
 import sitesFixture from "../../test/fixtures/sites.json"
 
 const SITE = (sitesFixture as Site[])[0]!
@@ -66,6 +72,10 @@ function defaultReply(url: string): Response {
   const path = url.split("?")[0]
   if (path === "/api/sites") return json(THREE_SITES)
   if (path === "/api/routes") return json([])
+  // Настройки — по контракту эндпоинта, а не "{}": последний тест файла
+  // рендерит всё приложение целиком, а его шапка читает список моделей
+  // (App.tsx:modelLabel), и на объекте без `models` упал бы весь экран.
+  if (path === "/api/prefs") return json(prefsFixture)
   return json({})
 }
 
@@ -84,8 +94,16 @@ function wrapper({ children }: { children: ReactNode }) {
 
 beforeEach(() => {
   calls.length = 0
-  // @ts-expect-error — подделка глобального объекта
-  window.Telegram = { WebApp: { initData: "auth_date=1&hash=abc" } }
+  // Объект подделывается ЦЕЛИКОМ (как в App.test.tsx), а не одной подписью:
+  // последний тест файла рендерит всё приложение, а оболочка при монтировании
+  // зовёт telegram.ready() → WebApp.ready()/expand() и вешает обработчик
+  // кнопки «назад» — на огрызке из одной initData она падает.
+  window.Telegram = { WebApp: {
+    initData: "auth_date=1&hash=abc", colorScheme: "light",
+    themeParams: {}, ready: vi.fn(), expand: vi.fn(),
+    BackButton: { show: vi.fn(), hide: vi.fn(), onClick: vi.fn(), offClick: vi.fn() },
+    HapticFeedback: { impactOccurred: vi.fn(), notificationOccurred: vi.fn() },
+  } }
   stubFetch(defaultReply)
 })
 
@@ -388,8 +406,69 @@ test("выбиралка старта, открытая до ответа сер
   deliverSites()
 
   expect(await screen.findByRole("button", { name: /Казбеги/ })).toBeInTheDocument()
-  // Отметка «текущий» тоже считается по пришедшему списку: явного выбора не
-  // было (selected=null), значит отмечен первый старт — тот же, что показывает
-  // оболочка (sites.ts:defaultSiteName).
-  expect(screen.getByRole("button", { name: /Гудаури/ })).toHaveAttribute("aria-pressed", "true")
+  // Явного выбора не было (selected=null) — не отмечен НИ ОДИН старт: шапка в
+  // этом состоянии пишет «Старт не выбран», и галочка у первого старта
+  // обещала бы выбор, которого пилот не делал.
+  for (const name of ["Гудаури", "Лалискури", "Казбеги"]) {
+    expect(screen.getByRole("button", { name: new RegExp(name) })).toHaveAttribute("aria-pressed", "false")
+  }
+})
+
+// ------------------------------------------------------------------ Выбор дня
+
+test("выбиралка дня показывает сегодня, завтра и дальше по датам", () => {
+  const { rerender } = render(<DayPickerSheet selected={null} onPick={vi.fn()} />, { wrapper })
+
+  const days = screen.getAllByRole("button")
+  // Дней ровно столько, сколько считает домен: engine.RANGE_DAYS["2weeks"]
+  // (копия — webapp/src/domain.ts под сверкой tests/test_webapp_sync.py).
+  // Своего числа у шторки нет и быть не может: короче — пилот не доберётся до
+  // дня, который бот показывает ему же на «2 недели»; длиннее — выберет день,
+  // на который прогноза не существует.
+  expect(days).toHaveLength(RANGE_DAYS_2WEEKS)
+
+  // Первые два дня названы словами, дальше — только дата: «послезавтра» и
+  // «через три дня» пилот в уме не считает, а дату видит.
+  expect(days[0]).toHaveTextContent(`сегодня, ${fmtDate(isoInDays(0))}`)
+  expect(days[1]).toHaveTextContent(`завтра, ${fmtDate(isoInDays(1))}`)
+  expect(days[2]).toHaveTextContent(fmtDate(isoInDays(2)))
+  expect(days[2]).not.toHaveTextContent(/сегодня|завтра/)
+  // Последний день списка — самый дальний, на который домен считает прогноз.
+  // Проверяется именно он, а не только длина: список правильной длины,
+  // начатый не с того дня, эту проверку не прошёл бы.
+  expect(days[RANGE_DAYS_2WEEKS - 1]).toHaveTextContent(fmtDate(isoInDays(RANGE_DAYS_2WEEKS - 1)))
+
+  // Пока день не выбран, не отмечен ни один — как и в шапке («День не
+  // выбран»), иначе галочка обещала бы выбор, которого не было.
+  for (const day of days) {
+    expect(day).toHaveAttribute("aria-pressed", "false")
+  }
+
+  // Выбранный день отмечен — и НЕ первый: отметка «всегда первый» на первом
+  // элементе неотличима от правильной (разбор задачи 12).
+  rerender(<DayPickerSheet selected={isoInDays(3)} onPick={vi.fn()} />)
+  const marked = screen.getAllByRole("button")
+  expect(marked[3]).toHaveAttribute("aria-pressed", "true")
+  expect(marked[0]).toHaveAttribute("aria-pressed", "false")
+})
+
+// Проверяется на ВСЁМ приложении, а не на одной шторке: шторка отдаёт выбор
+// колбэком, а закрывает её и подписывает шапку оболочка (App.tsx), и раньше
+// именно на стыке «шторка → оболочка» терялся выбор (Critical задачи 10 —
+// колбэк без имени старта). День берётся третий по счёту: выбор по индексу
+// «всегда первый» на первом элементе неотличим от правильного.
+test("выбор дня закрывает шторку и меняет подпись в шапке", async () => {
+  render(<StrictMode><App /></StrictMode>)
+
+  const header = screen.getByRole("banner")
+  await userEvent.click(within(header).getByRole("button", { name: "День не выбран" }))
+
+  const picked = isoInDays(2)
+  await userEvent.click(await screen.findByRole("button", { name: new RegExp(fmtDate(picked)) }))
+
+  // Шторка закрылась сама — выбор сделан, держать её открытой не за чем (тот
+  // же порядок, что и у выбиралки старта).
+  expect(screen.queryByRole("dialog")).toBeNull()
+  expect(within(header).getByText(fmtDate(picked))).toBeInTheDocument()
+  expect(within(header).queryByText("День не выбран")).toBeNull()
 })

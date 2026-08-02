@@ -23,6 +23,7 @@ import { beforeEach, expect, test, vi } from "vitest"
 import { StrictMode } from "react"
 import type { ReactNode } from "react"
 import { App, SheetsProvider } from "../App"
+import { pickDay, pickSite } from "../../test/header"
 import { Settings } from "./Settings"
 import type { Prefs, Site } from "../api/types"
 import facts from "../../test/fixtures/facts_1d.json"
@@ -245,6 +246,12 @@ test("смена постоянной модели уходит в PATCH /api/pr
 
 test("разовая модель не пишется в настройки", async () => {
   render(<StrictMode><App /></StrictMode>)
+
+  // Старт и день — руками: без них прогноз не считается вовсе (бриф
+  // explicit-site-and-day), а проверяется здесь именно то, что разовая модель
+  // доезжает до его запроса.
+  await pickSite("Гудаури")
+  await pickDay(0)
 
   await userEvent.click(await screen.findByRole("button", { name: "ECMWF" }))
   const once = screen.getByRole("group", { name: /Разово/ })

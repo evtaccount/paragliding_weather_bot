@@ -39,13 +39,28 @@ export function fmtDate(iso: string): string {
   return `${weekday}, ${date.getDate()} ${month}`
 }
 
+// Дата в том виде, в каком её принимает сервер (`date=YYYY-MM-DD`,
+// api.py:forecast) — по МЕСТНОМУ поясу устройства, а не по UTC: пилот
+// выбирает «сегодня» глазами на свои часы, и toISOString() вечером в
+// восточном поясе отдал бы вчерашний день.
+//
+// Живёт здесь, а не в App.tsx: дата нужна выбиралке дня
+// (sheets/DayPickerSheet.tsx) и подписи сохранённого маршрута ниже, а импорт
+// шторки из App.tsx дал бы круг App → шторка → App ради чистой функции над
+// Date — тот же случай, что был у запасного старта (ревью задачи 13, круг 2).
+export function isoDate(when: Date): string {
+  const month = String(when.getMonth() + 1).padStart(2, "0")
+  const day = String(when.getDate()).padStart(2, "0")
+  return `${when.getFullYear()}-${month}-${day}`
+}
+
 // Дата сохранения маршрута из значения поля SavedRoute.saved — полного
 // ISO-таймстампа в UTC (store.py:88-89 пишет `2026-07-25T06:33:49+00:00`).
 // Перевод в местный пояс обязателен и делается ровно там же, где его делает
 // чат (bot.py:1058 _local_date): store пишет UTC — однозначно и сортируемо, —
 // а пилот живёт в поясе старта, и вечером после сохранения UTC-дата это ещё
 // «вчера». Пояс берётся с устройства (new Date(...) без указания зоны) — тот
-// же источник, что у «сегодня» в шапке приложения (App.tsx: todayIso).
+// же источник, что у списка дней в выбиралке (isoDate выше).
 //
 // Запасной путь на неразобранной строке — как в боте: показать то, что
 // пришло, до "T", а не «Invalid Date». Старая запись чужого формата у пилота
@@ -53,9 +68,7 @@ export function fmtDate(iso: string): string {
 export function fmtSavedDate(iso: string): string {
   const at = new Date(iso)
   if (Number.isNaN(at.getTime())) return iso.split("T")[0] ?? iso
-  const month = String(at.getMonth() + 1).padStart(2, "0")
-  const day = String(at.getDate()).padStart(2, "0")
-  return `${at.getFullYear()}-${month}-${day}`
+  return isoDate(at)
 }
 
 // м/с с одним знаком после запятой — то же соглашение, что в макете для
