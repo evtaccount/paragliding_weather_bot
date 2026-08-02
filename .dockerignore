@@ -13,9 +13,11 @@ webapp/node_modules
 webapp/dist
 # В образе не исполняется ничто из перечисленного: процесс запускает app.py.
 # .superpowers — это ~2,3 МБ рабочих материалов разработки, попадавших в слой
-# вместе с `COPY . .`.
+# вместе с `COPY . .`. scripts/ — инструменты разработчика, и один из них
+# (dump_api_fixtures.py) всё равно читает tests/, которых в образе уже нет.
 .superpowers
 .pytest_cache
 .vscode
 tests
 docs
+scripts

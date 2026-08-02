@@ -16,14 +16,6 @@ if ! fc-list 2>/dev/null | grep -qi dejavu; then
   echo "   sudo apt-get install -y fonts-dejavu-core     # Debian/Ubuntu"
 fi
 
-echo "==> checking the mini app build (needed for the Web App button)"
-if [ ! -f webapp/dist/index.html ]; then
-  echo "!! webapp is not built. The bot chat works, /api/health answers 200, but"
-  echo "   the Web App button returns 500 on every open (api.py serves webapp/dist,"
-  echo "   which is a build artefact and is not in git). Build it:"
-  echo "   make webapp-install && make webapp-build     # needs Node 22+"
-fi
-
 if [ ! -f .env ]; then
   cp .env.example .env
   echo "==> created .env — set BOT_TOKEN in it before starting"
@@ -43,3 +35,23 @@ Done. Next steps:
   3. sudo systemctl daemon-reload && sudo systemctl enable --now pgbot
   4. journalctl -u pgbot -f       # follow logs
 EOF
+
+# Предупреждение печатается ПОСЛЕ «Next steps» намеренно: всё, сказанное
+# раньше, уезжает за край экрана на выводе pip install — там же теряется и
+# проверка шрифтов выше. Отказ, о котором речь, оператору иначе не виден
+# вовсе: чат и /api/health работают, 500 достаётся одному пилоту, нажавшему
+# кнопку Web App.
+#
+# Границы ниже — не украшение: по ним tests/test_deploy_config.py вырезает
+# блок и ИСПОЛНЯЕТ его в двух состояниях каталога (со сборкой и без). Блок
+# самодостаточен, от остального скрипта ему ничего не нужно; форма записи
+# внутри границ любая, тест смотрит только на вывод.
+# >>> webapp-build check
+if [ ! -f webapp/dist/index.html ]; then
+  echo ""
+  echo "!! The mini app is NOT built: the Web App button will answer 500 on every"
+  echo "   open (api.py serves webapp/dist, a build artefact that is not in git)."
+  echo "   The chat and /api/health keep working regardless. Build it:"
+  echo "     make webapp-install && make webapp-build     # needs Node 22+"
+fi
+# <<< webapp-build check

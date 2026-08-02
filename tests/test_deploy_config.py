@@ -7,6 +7,7 @@ healthcheck существует и упомянут в обоих файлах,
 переменной, а не трёх независимых копий.
 """
 import pathlib
+import subprocess
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
@@ -35,10 +36,23 @@ def _dockerfile_instructions() -> list[str]:
     return out
 
 
-def _script_lines(name: str) -> list[str]:
-    """Исполняемые строки шелл-скрипта — без комментариев и пустых."""
-    return [line.strip() for line in _read(name).splitlines()
-            if line.strip() and not line.strip().startswith("#")]
+def _marked_block(name: str, marker: str) -> str:
+    """Кусок шелл-скрипта между строками `# >>> marker` и `# <<< marker`.
+
+    Скрипт целиком в тестах не запустить (создаёт venv и ставит зависимости),
+    но отдельная проверка внутри него исполняется за миллисекунды и ничего от
+    окружения не требует — её и вырезаем, чтобы проверять ПОВЕДЕНИЕ, а не
+    форму записи.
+
+    Границы заданы явными маркерами, а не «от `if` до `fi`»: вырезание по
+    ключевым словам снова привязало бы тест к форме — переписывание проверки
+    на `[ -f … ] || echo …` роняло бы его при полностью сохранном поведении.
+    """
+    lines = _read(name).splitlines()
+    start = next(i for i, line in enumerate(lines) if line.strip() == f"# >>> {marker}")
+    end = next(i for i in range(start, len(lines))
+               if lines[i].strip() == f"# <<< {marker}")
+    return "\n".join(lines[start + 1:end]) + "\n"
 
 
 def test_caddyfile_comment_matches_the_directive_it_uses():
@@ -165,15 +179,19 @@ def test_image_builds_the_webapp():
     assert any(i.startswith("RUN ") and "npm ci" in i for i in instructions), instructions
     assert any(i.startswith("RUN ") and "npm run build" in i
                for i in instructions), instructions
+    # источник проверяется наравне с назначением: `COPY --from=webapp /build`
+    # вместо `/build/dist` собирает образ без единой ошибки, но index.html
+    # уезжает уровнем глубже — каталог на месте, healthcheck 200, / → 404.
     copied = [i for i in instructions
-              if i.startswith("COPY --from=webapp") and i.endswith("./webapp/dist")]
+              if i.split()[:2] == ["COPY", "--from=webapp"]
+              and i.split()[2:] == ["/build/dist", "./webapp/dist"]]
     assert copied, instructions
     # копирование должно попасть в ФИНАЛЬНЫЙ этап: строка выше последнего FROM
     # собрала бы приложение внутрь самого сборочного этапа и наружу не вынесла.
     assert instructions.index(copied[0]) > instructions.index(stages[-1]), instructions
 
 
-def test_deploy_script_points_at_the_webapp_build():
+def test_deploy_script_warns_exactly_when_the_webapp_is_not_built(tmp_path):
     """`deploy.sh` (раскатка без Docker) обязан сказать про `make webapp-build`.
 
     webapp/dist — артефакт сборки, в git его нет, а npm скрипт не запускает.
@@ -183,16 +201,29 @@ def test_deploy_script_points_at_the_webapp_build():
     единого намёка, что не хватает сборки. В Docker-раскатке этого отказа нет:
     там сборку делает сам Dockerfile.
 
-    Проверяются исполняемые строки, а не текст файла целиком (подсказка в
-    комментарии оператору не покажется), и отдельно — что скрипт реально
-    СМОТРИТ на каталог, а не только упоминает его в тексте подсказки: мутация,
-    подменившая условие на другой файл, оставалась зелёной, пока проверка
-    искала подстроку `webapp/dist` где угодно среди исполняемых строк — слово
-    есть и внутри echo."""
-    lines = _script_lines("deploy.sh")
-    assert any(line.startswith("if ") and "webapp/dist" in line
-               for line in lines), lines
-    assert any("webapp-build" in line for line in lines), lines
+    Блок ВЫПОЛНЯЕТСЯ в двух состояниях каталога, а не разбирается как текст.
+    Проверки формы записи здесь мало: они одновременно краснеют на безобидном
+    переписывании (`[ -f … ] || echo …` вместо `if`) и молчат на потере
+    одного символа `!`, которая переворачивает смысл — предупреждение начинает
+    печататься ровно тогда, когда сборка есть, а нужному оператору не
+    достаётся ничего."""
+    block = tmp_path / "block.sh"
+    block.write_text(_marked_block("deploy.sh", "webapp-build check"),
+                     encoding="utf-8")
+    workdir = tmp_path / "checkout"
+    workdir.mkdir()
+
+    def run() -> str:
+        done = subprocess.run(["bash", str(block)], cwd=workdir,
+                              capture_output=True, text=True, check=True)
+        return done.stdout
+
+    not_built = run()
+    assert "make webapp-build" in not_built, not_built
+
+    (workdir / "webapp" / "dist").mkdir(parents=True)
+    (workdir / "webapp" / "dist" / "index.html").write_text("<html>", encoding="utf-8")
+    assert run().strip() == "", run()
 
 
 def test_compose_no_longer_mounts_static_into_caddy():
