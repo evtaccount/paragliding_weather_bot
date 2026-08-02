@@ -1,5 +1,6 @@
 import { defineConfig } from "vite"
 import react from "@vitejs/plugin-react"
+import { configDefaults } from "vitest/config"
 
 // Куда уходят запросы приложения, не адресованные статике. Один и тот же
 // набор нужен обоим серверам Vite (dev и preview), поэтому он вынесен в
@@ -25,11 +26,18 @@ export default defineConfig({
     environment: "jsdom",
     setupFiles: ["./test/setup.ts"],
     css: false,
-    // Только тесты в jsdom. Умолчание vitest ловит и `*.spec.ts`, то есть
-    // сквозные сценарии из e2e/: они написаны на Playwright, и в vitest его
-    // test() падает («Playwright Test did not expect test() to be called
-    // here») — `make test` краснел бы двумя файлами при 148 зелёных тестах.
-    // Сквозные сценарии запускает `make e2e`: им нужны браузер и сеть.
-    include: ["src/**/*.test.{ts,tsx}"],
+    // Из умолчания vitest вычитается ровно один каталог — e2e/. Его сценарии
+    // написаны на Playwright, и в vitest их test() падает («Playwright Test
+    // did not expect test() to be called here»): `make test` краснел бы
+    // двумя файлами при 148 зелёных тестах. Запускает их `make e2e` — им
+    // нужны браузер и сеть.
+    //
+    // Именно ВЫЧИТАНИЕ, а не суженный include ("src/**/*.test.{ts,tsx}"):
+    // тот сужал набор и по каталогу, и по суффиксу, и новый тест в test/ или
+    // с именем *.spec.ts просто не запускался бы — прогон отчитывался бы
+    // «148 passed», exit 0, ни слова о пропуске. Проверено двумя заведомо
+    // падающими пробниками (test/…test.ts и src/api/…spec.ts): при суженном
+    // include оба молча не поднялись, при вычитании — оба покраснели.
+    exclude: [...configDefaults.exclude, "e2e/**"],
   },
 })

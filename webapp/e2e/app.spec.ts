@@ -10,7 +10,17 @@
 import { expect, test } from "./fixtures"
 
 test("приложение открывается и показывает вкладки", async ({ page }) => {
+  // Страница обязана ЗАПРОСИТЬ SDK Telegram. Сам ответ сценарии глушат
+  // (fixtures.ts: blockTelegramSdk — иначе настоящий скрипт затирает
+  // подставленный window.Telegram), но глушение не должно прикрывать пропажу
+  // самого тега <script> из index.html: сквозной прогон — единственное место
+  // в проекте, где index.html грузится целиком, в jsdom его нет вовсе.
+  // Убери тег — в настоящем Telegram window.Telegram не создаст никто, и
+  // КАЖДЫЙ пилот получит «Не Telegram» на всех экранах, а весь набор при
+  // этом остался бы зелёным.
+  const sdkRequested = page.waitForRequest(/telegram-web-app\.js$/, { timeout: 15_000 })
   await page.goto("/")
+  await sdkRequested
 
   const tabs = page.getByRole("tab")
   await expect(tabs).toHaveText(["Прогноз", "Обзор", "Маршрут", "Настройки"])
