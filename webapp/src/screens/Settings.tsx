@@ -46,21 +46,44 @@ export function Settings({
   const sheets = useSheetsContext()
   const prefs = usePrefs()
   const sites = useSites()
-  const update = useUpdatePrefs()
+  // У скорости и тумблера СВОЙ наблюдатель мутации на каждый, а не один общий.
+  // MutationObserver.mutate() (@tanstack/query-core, mutationObserver.js)
+  // начинается с `this.#currentMutation?.removeObserver(this)`: новый вызов
+  // ОТВЯЗЫВАЕТ наблюдателя от предыдущей мутации, а Mutation.#dispatch
+  // рассылает только привязанным — значит колбэки прошлого вызова не
+  // срабатывают вовсе, и его состояние (isError/error) наблюдателем больше не
+  // показывается.
+  //
+  // Для двух шагов одной настройки это безвредно (второй шаг всё равно
+  // отменяет смысл первого), а для ДВУХ РАЗНЫХ настроек — нет: пилот жмёт «+»
+  // на скорости 45 (store.SPEED_MAX), не дожидаясь ответа трогает тумблер, и
+  // отказ сервера по скорости пропадает — на экране остаётся отвергнутое
+  // значение 46, объяснения нет, а следующее «+» считает от него и снова
+  // уезжает за потолок (ревью задачи 13, круг 3, N14).
+  //
+  // Порядок запросов от этого не страдает: очередь живёт в кэше мутаций и
+  // общая для всех, у кого одинаковый scope.id (api/queries.ts:useUpdatePrefs),
+  // а не в наблюдателе.
+  const speedUpdate = useUpdatePrefs()
+  const windUpdate = useUpdatePrefs()
   // Черновики скорости и тумблера — только на время, пока PATCH в пути: до
   // ответа сервера в кэше лежит прежнее значение, и без черновика нажатие не
   // отражалось бы на экране вовсе, а следующее считало бы от старого числа.
   //
   // Снимаются в onSettled, и это безопасно в обе стороны. Ответ PATCH сразу
   // становится содержимым кэша (api/queries.ts: useUpdatePrefs →
-  // setQueryData), поэтому в момент снятия там УЖЕ свежее значение — окна, в
-  // котором экран показывает прежнее, нет (ревью задачи 13, круг 2, N11).
-  // А ответ на ПРОШЛОЕ нажатие черновик нового не сотрёт: колбэки, переданные
-  // в mutate(), в TanStack Query v5 живут на наблюдателе, а не на мутации, и
-  // следующий mutate() их заменяет — срабатывают только колбэки последнего
-  // вызова. Проверено мутацией: со сторожем «снимать, только если черновик
-  // всё ещё мой» и без него сценарий двух быстрых шагов ведёт себя одинаково,
-  // поэтому сторожа здесь нет — он был бы кодом, который ничего не меняет.
+  // setQueryData), причём СТРОГО РАНЬШЕ снятия черновика: Mutation.execute
+  // зовёт onSuccess самой мутации до #dispatch("success"), а onSettled из
+  // mutate() — уже в #notify, после. Окна, в котором экран показывает
+  // прежнее значение, нет по построению, а не по удачному таймингу (ревью
+  // задачи 13, круг 2, N11).
+  //
+  // А ответ на ПРОШЛОЕ нажатие той же настройки черновик нового не сотрёт —
+  // по той же отвязке наблюдателя, что описана выше: колбэки прошлого вызова
+  // не срабатывают. Проверено мутацией: со сторожем «снимать, только если
+  // черновик всё ещё мой» и без него сценарий двух быстрых шагов ведёт себя
+  // одинаково, поэтому сторожа здесь нет — он был бы кодом, который ничего
+  // не меняет.
   const [speedDraft, setSpeedDraft] = useState<number | null>(null)
   const [windDraft, setWindDraft] = useState<boolean | null>(null)
 
@@ -81,13 +104,13 @@ export function Settings({
   function stepSpeed(delta: number): void {
     const next = speed + delta
     setSpeedDraft(next)
-    update.mutate({ avg_route_speed_kmh: next }, { onSettled: () => setSpeedDraft(null) })
+    speedUpdate.mutate({ avg_route_speed_kmh: next }, { onSettled: () => setSpeedDraft(null) })
   }
 
   function toggleWind(): void {
     const next = !windOn
     setWindDraft(next)
-    update.mutate({ wind_correction_enabled: next }, { onSettled: () => setWindDraft(null) })
+    windUpdate.mutate({ wind_correction_enabled: next }, { onSettled: () => setWindDraft(null) })
   }
 
   function openModelSheet(): void {
@@ -151,10 +174,20 @@ export function Settings({
           <span className="sw" aria-hidden="true" />
         </button>
       </div>
-      {update.isError && (
+      {/* Отказ показывается ОТДЕЛЬНО по каждой настройке: сервер отвергает их
+          по разным причинам (скорость — store.set_speed вне диапазона, модель —
+          неизвестный ключ), и «Повторить» обязана повторить именно ту правку,
+          которая не прошла. */}
+      {speedUpdate.isError && (
         <ErrorBox
-          error={update.error}
-          onRetry={() => { if (update.variables) update.mutate(update.variables) }}
+          error={speedUpdate.error}
+          onRetry={() => { if (speedUpdate.variables) speedUpdate.mutate(speedUpdate.variables) }}
+        />
+      )}
+      {windUpdate.isError && (
+        <ErrorBox
+          error={windUpdate.error}
+          onRetry={() => { if (windUpdate.variables) windUpdate.mutate(windUpdate.variables) }}
         />
       )}
 

@@ -38,6 +38,27 @@ async def test_patch_speed(client):
     assert r.json()["avg_route_speed_kmh"] == 32.0, "ответ должен нести новое значение"
 
 
+async def test_patch_answers_with_the_same_shape_as_get(client):
+    """Ответ PATCH — это ПОЛНЫЕ настройки, как у GET, а не эхо присланного поля.
+
+    Мини-приложение кладёт тело ответа PATCH прямо в свой кэш настроек
+    (webapp/src/api/queries.ts: useUpdatePrefs → setQueryData) и не
+    перезапрашивает их отдельным GET — так закрыто окно, в котором экран
+    показывал прежнее значение, а нажатие, попавшее в это окно, отправляло его
+    повторно. Цена решения: неполный ответ ляжет в кэш молча, и экран настроек
+    упадёт на отсутствующем ключе (models), забрав с собой всё приложение —
+    все четыре вкладки смонтированы одновременно. Контракт «PATCH отвечает тем
+    же набором ключей, что и GET» до этого теста не проверял никто.
+    """
+    get_body = (await client.get("/api/prefs", headers=header(uid=1))).json()
+    patch_body = (await client.patch("/api/prefs", json={"wind_correction_enabled": False},
+                                     headers=header(uid=1))).json()
+    assert patch_body.keys() == get_body.keys()
+    # Список моделей — не просто ключ, а то, по чему приложение подписывает
+    # выбранную модель: пустой или урезанный он так же ломает экран.
+    assert patch_body["models"] == get_body["models"]
+
+
 async def test_patch_wind_correction(client):
     await client.patch("/api/prefs", json={"wind_correction_enabled": False},
                        headers=header(uid=1))

@@ -382,8 +382,13 @@ test("тумблер не отскакивает назад, пока свежи
   await userEvent.click(toggle)
 
   await waitFor(() => { expect(callsTo("/api/prefs", "PATCH")).toHaveLength(1) })
-  // Ответ PATCH уже пришёл (в нём — свежие настройки целиком), поэтому
-  // положение тумблера остаётся выключенным и без отдельного GET.
+  // Положение тумблера держит сначала черновик (пока PATCH в пути), потом
+  // кэш (как только пришёл ответ) — и передача из рук в руки происходит без
+  // зазора, а не благодаря удачному таймингу мока: Mutation.execute зовёт
+  // onSuccess самой мутации (setQueryData, api/queries.ts) ДО
+  // #dispatch("success"), а onSettled из mutate(), который снимает черновик,
+  // выполняется уже в #notify — то есть после. Проверка ниже поэтому верна в
+  // любой момент после нажатия, а не только в том, в который её застал тест.
   expect(screen.getByRole("switch", { name: /Учитывать ветер/ })).toHaveAttribute("aria-checked", "false")
 
   // И следующее нажатие ВКЛЮЧАЕТ поправку обратно, а не выключает второй раз.
@@ -440,6 +445,49 @@ test("шаги отправляются по одному и по порядку
   // Ответ на ПЕРВЫЙ шаг (26) пришёл, второй ещё в пути — на экране обязано
   // остаться 27: пилот нажал дважды, и число не откатывается к промежуточному.
   expect(screen.getByText("27 км/ч")).toBeInTheDocument()
+})
+
+// Ре-ревью задачи 13 (N14): у скорости и тумблера был ОДИН наблюдатель
+// мутации на двоих. MutationObserver.mutate() начинается с
+// `this.#currentMutation?.removeObserver(this)`, а Mutation.#dispatch
+// рассылает только привязанным наблюдателям — значит нажатие по второй
+// настройке отвязывает наблюдателя от первой мутации, и её результат не
+// доходит никуда: черновик не снимается, отказ сервера не показывается.
+//
+// Сценарий взят из ревью и опирается на настоящий предел домена: на
+// store.SPEED_MAX шаг «+» законно получает 400 от store.set_speed.
+test("отказ по скорости виден, даже если пилот успел тронуть тумблер", async () => {
+  const serverText = "средняя маршрутная скорость должна быть от 10 до 45 км/ч. Это средняя по маршруту с учётом наборов в термиках, а не скорость крыла."
+  prefsState = { ...prefsState, avg_route_speed_kmh: 45 }
+  let rejectSpeed = (): void => { throw new Error("PATCH скорости не был вызван") }
+  stubFetch((url, init) => {
+    const path = url.split("?")[0]
+    if (path === "/api/prefs" && init?.method === "PATCH") {
+      const patch = JSON.parse(String(init.body)) as Partial<Prefs>
+      // Скорость сервер отвергает (за потолком), тумблер принимает.
+      if (patch.avg_route_speed_kmh !== undefined) {
+        return new Promise<Response>((resolve) => { rejectSpeed = () => { resolve(json({ detail: serverText }, 400)) } })
+      }
+      prefsState = { ...prefsState, ...patch }
+      return json(prefsState)
+    }
+    return defaultReply(url, init)
+  })
+  renderSettings()
+
+  expect(await screen.findByText("45 км/ч")).toBeInTheDocument()
+  await userEvent.click(screen.getByRole("button", { name: "Увеличить маршрутную скорость" }))
+  expect(screen.getByText("46 км/ч")).toBeInTheDocument()
+
+  // Не дожидаясь ответа, пилот трогает вторую настройку.
+  await userEvent.click(screen.getByRole("switch", { name: /Учитывать ветер/ }))
+  rejectSpeed()
+
+  // Отказ по скорости объяснён словами сервера...
+  expect(await screen.findByText(serverText)).toBeInTheDocument()
+  // ...и экран вернулся к тому, что реально лежит в store: иначе следующее
+  // «+» посчитало бы от застрявших 46 и снова уехало за потолок.
+  expect(screen.getByText("45 км/ч")).toBeInTheDocument()
 })
 
 // Тумблер поправки на ветер иначе не покрыт ничем: он меняет расчёт времени
