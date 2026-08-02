@@ -2,11 +2,16 @@
 
 WhitelistMiddleware — only Telegram user IDs from ALLOWED_USER_IDS may use the
 bot; strangers get one polite refusal (with their ID, so they can ask the owner
-to add them). If ALLOWED_USER_IDS is empty/unset the chat stays open, with a
-loud warning in the log — the mini app, on the same empty list, refuses every
-request instead (api.current_user; to reach the chat one has to know the bot's
-name in Telegram, while the app's domain becomes public on its own through
-Certificate Transparency).
+to add them). An empty/unset ALLOWED_USER_IDS refuses EVERYONE, owner included,
+with a loud warning in the log — the same rule the mini app already applied
+(api.current_user), so the two surfaces no longer differ.
+
+The chat used to stay open on an empty list, on the reasoning that reaching it
+required knowing the bot's name in Telegram. That reasoning stopped holding
+once the app existed: the two share one library of sites, and a stranger let
+into the chat could read, add and delete the pilot's launch sites there just as
+well. Refusing by default also fails in the safe direction — a locked-out owner
+edits .env and restarts, an open bot is discovered by someone else first.
 
 ThrottleMiddleware — applies only to handlers flagged `forecast` (the ones that
 hit open-meteo/Gemini). Two guards:
@@ -39,7 +44,7 @@ def allowed_ids() -> frozenset[int]:
     Публичная: зовут три модуля (middleware, bootstrap хранилища, HTTP-слой),
     и подчёркивание в чужом импорте означало бы, что граница проведена не там.
 
-    Предупреждение об открытом режиме печатается один раз за процесс: HTTP-слой
+    Предупреждение о пустом списке печатается один раз за процесс: HTTP-слой
     зовёт эту функцию на каждый запрос, и построчный вой в логе утопил бы всё
     остальное.
     """
@@ -48,8 +53,8 @@ def allowed_ids() -> frozenset[int]:
     ids = frozenset(int(p) for p in raw.replace(";", ",").split(",") if p.strip())
     if not ids and not _warned_open:
         _warned_open = True
-        log.warning("ALLOWED_USER_IDS не задан — чат открыт для ВСЕХ пользователей, "
-                    "мини-приложение при этом закрыто целиком")
+        log.warning("ALLOWED_USER_IDS не задан — закрыты и чат, и мини-приложение: "
+                    "впишите свой Telegram user ID в .env и перезапустите")
     return ids
 
 
@@ -59,7 +64,11 @@ class WhitelistMiddleware(BaseMiddleware):
         self._refused_at: dict[int, float] = {}
 
     async def __call__(self, handler, event, data):
-        if not self.allowed or (event.from_user and event.from_user.id in self.allowed):
+        # Пустой список — отказ, а не пропуск: он значит «владелец ещё не
+        # заполнил .env», и в этот момент бот и приложение делят одну библиотеку
+        # стартов. Прежнее `not self.allowed or …` пускало в чат кого угодно
+        # (см. модульный докстринг).
+        if event.from_user and event.from_user.id in self.allowed:
             return await handler(event, data)
         uid = event.from_user.id if event.from_user else 0
         now = time.monotonic()
