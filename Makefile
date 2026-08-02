@@ -17,7 +17,7 @@ RSYNC_EXCL   = --exclude .git --exclude .venv --exclude .env --exclude __pycache
         deploy deploy-restart deploy-logs
 
 help:               ## show this help
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
+	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
 	  | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
 
 # --- local dev ---
@@ -47,7 +47,15 @@ test:               ## run python + webapp test suites
 # Порт продублирован из webapp/playwright.config.ts (PREVIEW_PORT).
 # lsof на машине может не оказаться — тогда проверка молча пропускается и
 # остаётся прежнее поведение, то есть сообщение самого Playwright.
-E2E_PORT ?= 4173
+#
+# `override`, а не `?=` и даже не `=`: вызов `make e2e E2E_PORT=9999` при
+# занятом 4173 отправлял сторожа смотреть на свободный порт, тот пропускал
+# запуск, и человек получал ровно то сообщение Playwright, ради вытеснения
+# которого сторож и заведён. Переменная из командной строки бьёт обычное
+# присваивание в файле — остановить её может только `override`. Переопределять
+# порт снаружи всё равно бессмысленно: настоящий порт задан вторым числом, в
+# webapp/playwright.config.ts, и от этой переменной не зависит.
+override E2E_PORT = 4173
 
 e2e:                ## run end-to-end tests (needs a running app.py and DEV_INIT_DATA)
 	@if lsof -ti tcp:$(E2E_PORT) >/dev/null 2>&1; then \
