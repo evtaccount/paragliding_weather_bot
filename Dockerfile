@@ -1,3 +1,16 @@
+# webapp/dist в git не лежит (.gitignore) — его собирают. Отдельный этап на
+# Node нужен, чтобы node_modules и тулчейн сборки не ехали в финальный образ:
+# приложение отдаёт pgbot (api.py монтирует webapp/dist на "/"), а из всей
+# сборки ему нужен только результат.
+FROM node:22-slim AS webapp
+WORKDIR /build
+# package*.json отдельным слоем: npm ci переустанавливается только когда
+# меняются зависимости, а не на каждую правку в webapp/src.
+COPY webapp/package.json webapp/package-lock.json ./
+RUN npm ci
+COPY webapp/ ./
+RUN npm run build
+
 FROM python:3.12-slim
 
 # fonts-dejavu-core → Cyrillic glyphs for the Pillow charts; tzdata → correct local date
@@ -11,6 +24,11 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
+
+# Результат этапа webapp. Строка стоит выше chown ниже намеренно: иначе
+# собранное приложение осталось бы за пользователем root, а процесс работает
+# из-под app.
+COPY --from=webapp /build/dist ./webapp/dist
 
 # run as non-root; /app/data holds the writable SQLite database (a named volume
 # mounts here and inherits this ownership, so the app user can persist sites,

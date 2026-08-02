@@ -121,6 +121,32 @@ def test_compose_sets_api_host_to_all_interfaces_for_pgbot():
     assert "API_HOST=0.0.0.0" in pgbot_block
 
 
+def test_image_builds_the_webapp():
+    """Собранное приложение попадает в образ отдельным этапом на Node. Без
+    этого контейнер поднимется и будет отдавать 404 на корне — молча."""
+    text = _read("Dockerfile")
+    assert "node:22" in text
+    assert "npm ci" in text
+    assert "webapp/dist" in text
+
+
+def test_compose_no_longer_mounts_static_into_caddy():
+    """Статику отдаёт pgbot: смонтированный в caddy каталог был вторым путём к
+    тому же месту и расходился бы с образом при первой же пересборке."""
+    assert "/srv/www" not in _read("docker-compose.yml")
+
+
+def test_caddy_sends_everything_but_tiles_to_pgbot():
+    """Собранное приложение лежит внутри образа pgbot (Dockerfile, этап
+    webapp), и отдаёт его сам pgbot — api.py монтирует webapp/dist на "/".
+    Оставленная в Caddy отдача файлов означала бы том с тем же каталогом:
+    второй путь к тому же артефакту, показывающий старую сборку после первой
+    же пересборки образа."""
+    text = _read("Caddyfile")
+    assert "file_server" not in text
+    assert text.count("reverse_proxy pgbot:") >= 1
+
+
 def test_tiles_are_proxied_through_our_own_domain():
     """Клиент ходит за тайлами только к своему домену: прямые запросы к
     tile.openstreetmap.org показали бы чужому сервису адрес каждого пилота и

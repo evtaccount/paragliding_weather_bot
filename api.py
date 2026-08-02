@@ -30,7 +30,23 @@ log = logging.getLogger("pgbot.api")
 app = FastAPI(title="pgbot mini app", docs_url=None, redoc_url=None, openapi_url=None)
 router = APIRouter(prefix="/api")
 
-STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+# Результат `npm run build` (Makefile: webapp-build; в образе — этап webapp из
+# Dockerfile). Каталог собирается, а не хранится в git, поэтому его может не
+# быть — см. _static_files ниже.
+STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "webapp", "dist")
+
+
+def _static_files(directory: str) -> StaticFiles:
+    """Отдача собранного приложения, переживающая отсутствие сборки.
+
+    check_dir=False именно ради этого: по умолчанию StaticFiles проверяет
+    каталог прямо в конструкторе и бросает RuntimeError. Монтируется он на
+    импорте модуля, а импортирует api ещё и app.py (единый процесс чата и
+    HTTP) — на свежем клоне без `make webapp-build` это уронило бы вместе с
+    приложением и чат по polling. С флагом отказ остаётся на одном URL.
+    """
+    return StaticFiles(directory=directory, html=True, check_dir=False)
 
 
 async def current_user(authorization: str = Header(default="")) -> webauth.TelegramUser:
@@ -471,4 +487,4 @@ app.include_router(router)
 
 # Монтируется ПОСЛЕ роутера: StaticFiles на "/" перехватывает всё, до чего
 # доходит, и повешенный первым съел бы /api/*.
-app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
+app.mount("/", _static_files(STATIC_DIR), name="static")
