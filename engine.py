@@ -770,6 +770,23 @@ def blue_thermals(H, tmax_i, has_blh):
             and lcl_agl_at(H, tmax_i) > H["boundary_layer_height"][tmax_i])
 
 
+# Совет «пересними за 1–2 суток» осмыслен, только если эти сутки ещё есть.
+# Порог — двое суток: на дне через два дня совет выполним (переснять завтра), на
+# завтрашнем и сегодняшнем выполнять уже нечего, и пилот читает предложение
+# вернуться в прошлое. Оговорка про высоту по гриду от срока не зависит и
+# остаётся всегда — это свойство данных, а не давности.
+REFRESH_HINT_MIN_LEAD_DAYS = 2
+
+
+def _far_ahead(data, day) -> bool:
+    """Далеко ли до дня, о котором карточка. Пустой день — считаем, что далеко:
+    оговорка лишней не бывает, а её пропажа выглядела бы как забытая строка."""
+    if not day:
+        return True
+    target = dt.date.fromisoformat(data["hourly"]["time"][day[0]][:10])
+    return (target - dt.date.today()).days >= REFRESH_HINT_MIN_LEAD_DAYS
+
+
 def day_caveats(data, site, frame):
     """Оговорки под карточкой. Возвращает список строк — их же кладут в факты."""
     H = data["hourly"]
@@ -797,7 +814,9 @@ def day_caveats(data, site, frame):
     if no_route_top:
         cav.append("вершины маршрута у старта не заданы (route_top_m) — вето «база ниже вершин» "
                    "не проверяется, запас считается только над стартом")
-    cav.append(f"высота старта по гриду ({elev} м); прогноз далеко вперёд — пересними за 1–2 суток")
+    grid = f"высота старта по гриду ({elev} м)"
+    cav.append(f"{grid}; прогноз далеко вперёд — пересними за 1–2 суток"
+               if _far_ahead(data, day) else grid)
     return cav
 
 

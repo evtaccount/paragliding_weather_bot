@@ -1,5 +1,6 @@
 """facts_1day: the LLM payload must include upper-level (600/500 hPa) wind direction,
 now that H_1D fetches wind_direction_600hPa / _500hPa."""
+import datetime as dt
 import re
 
 import engine
@@ -70,6 +71,32 @@ def test_facts_carry_caveats():
     assert isinstance(facts["caveats"], list)
     # старт из fixtures.site() без route_top_m — вето «база ниже вершин» не проверяется
     assert any("route_top_m" in c for c in facts["caveats"])
+
+
+# ------------------------------------------- «пересними за 1–2 суток» по сроку
+#
+# Совет переснять прогноз за 1–2 суток до вылета печатался ВСЕГДА — в том числе
+# на сегодняшнем дне, где выполнить его уже нельзя: пилот читает прогноз на
+# сегодня и получает совет вернуться позавчера. Оговорка про высоту по гриду
+# при этом верна на любом сроке и остаётся.
+
+def _caveats_for(days_ahead: int) -> list[str]:
+    day = dt.date.today() + dt.timedelta(days=days_ahead)
+    return engine.facts_1day(_full_1d(date=day.isoformat()), _site())["caveats"]
+
+
+def test_the_refresh_hint_is_gone_when_the_day_is_already_within_the_lead_time():
+    for days_ahead in (0, 1):
+        cav = _caveats_for(days_ahead)
+        assert not any("пересними" in c for c in cav), (days_ahead, cav)
+        # высота по гриду — свойство данных, а не срока: она остаётся всегда
+        assert any("по гриду" in c for c in cav), (days_ahead, cav)
+
+
+def test_the_refresh_hint_stays_while_the_day_is_far_enough_ahead():
+    for days_ahead in (2, 5, 13):
+        cav = _caveats_for(days_ahead)
+        assert any("пересними" in c for c in cav), (days_ahead, cav)
 
 
 # ------------------------------------------------- «голубой» день, одна формула
