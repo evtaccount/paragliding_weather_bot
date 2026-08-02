@@ -5,6 +5,7 @@
 резолв личных настроек, вызов forecast и перевод исключений в коды.
 """
 import dataclasses
+import json
 import logging
 import os
 import sqlite3
@@ -49,6 +50,122 @@ def _static_files(directory: str) -> StaticFiles:
     return StaticFiles(directory=directory, html=True, check_dir=False)
 
 
+# ------------------------------------------------------------- тело запроса
+# Потолок: MAX_GPX_BYTES (1 МиБ — единственное большое, что приложение шлёт
+# законно, см. route.py) плюс запас на обвязку multipart и текстовые поля
+# рядом с файлом. Меньше — и законная загрузка трека начнёт обрываться.
+MAX_BODY_BYTES = 2 * route.MAX_GPX_BYTES
+
+
+class _BodyTooLarge(BaseException):
+    """Сигнал из обёртки receive наружу от неё же. В ответ не уходит.
+
+    Наследник BaseException, а не Exception, намеренно: FastAPI читает тело
+    внутри `try: ... except Exception` и переводит ЛЮБУЮ ошибку чтения в 400
+    «There was an error parsing the body» (fastapi/routing.py,
+    get_request_handler). Обычное исключение отсюда до middleware не долетало
+    бы вовсе — проверено: chunked-тело сверх потолка отвечало 400 вместо 413,
+    то есть обрыв выглядел как ошибка клиента в разборе JSON.
+    """
+
+
+def _too_large_response() -> tuple[dict, dict]:
+    """Сообщения ASGI для 413. Собраны руками, потому что отвечать приходится
+    из middleware, где обработчиков исключений FastAPI ещё нет."""
+    body = json.dumps({"detail": "Запрос слишком большой."},
+                      ensure_ascii=False).encode()
+    return ({"type": "http.response.start", "status": 413,
+             "headers": [(b"content-type", b"application/json; charset=utf-8"),
+                         (b"content-length", str(len(body)).encode())]},
+            {"type": "http.response.body", "body": body})
+
+
+class LimitBodySize:
+    """Тело больше потолка не доезжает до приложения.
+
+    Зачем вообще: FastAPI решает Depends(current_user) уже ПОСЛЕ того, как
+    получил тело целиком — `get_request_handler` зовёт `await request.body()`
+    / `await request.form()` раньше зависимостей. Значит, за неавторизованный
+    POST платит память процесса, и только потом уходит 401. Замерено на живом
+    сервере (финальное ревью ветки, безопасность, I1): 800 МБ JSON БЕЗ
+    заголовка Authorization подняли RSS с 38 до 635 МБ; multipart на 600 МБ
+    вырастил временный файл Starlette до 594 МБ (SpooledTemporaryFile потолка
+    не имеет — max_part_size сторожит только нефайловые поля). Проверка
+    MAX_GPX_BYTES в parse_route стоит уже после приёма файла и от этого не
+    спасает. Процесс один на чат и HTTP (app.py), поэтому OOM уносит вместе с
+    приложением и бота в чате.
+
+    Именно ASGI-обёртка, а не BaseHTTPMiddleware: тот сам собирает тело в
+    памяти, то есть платит ровно ту цену, которую здесь надо не платить.
+
+    Проверок две, и нужны обе. Content-Length отвечает 413, не прочитав ни
+    байта, — так шлют curl, httpx и браузер. Счётчик в обёртке receive ловит
+    chunked-тело, у которого Content-Length нет вовсе, и обрывает его на
+    первом же байте сверх потолка, а не после приёма целиком.
+
+    В Caddy на том же потолке стоит `request_body max_size` — не дубль, а
+    вторая граница на другом пути. Замерено на живом caddy:2-alpine: сверх
+    потолка до бэкенда доезжает не больше max_size (с Content-Length) или не
+    доезжает ничего (chunked). Эта же обёртка закрывает bare-metal раскатку
+    (deploy.sh) и любой запуск api.app без Caddy впереди — там перед процессом
+    нет никого.
+    """
+
+    def __init__(self, app, max_bytes: int = MAX_BODY_BYTES):
+        self.app = app
+        self.max_bytes = max_bytes
+
+    def _declared(self, scope) -> int:
+        for name, value in scope.get("headers") or ():
+            if name == b"content-length":
+                try:
+                    return int(value)
+                except ValueError:
+                    return 0
+        return 0
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        if self._declared(scope) > self.max_bytes:
+            for message in _too_large_response():
+                await send(message)
+            return
+
+        received = 0
+        started = False
+
+        async def counting_receive():
+            nonlocal received
+            message = await receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if received > self.max_bytes:
+                    raise _BodyTooLarge
+            return message
+
+        async def watching_send(message):
+            nonlocal started
+            if message["type"] == "http.response.start":
+                started = True
+            await send(message)
+
+        try:
+            await self.app(scope, counting_receive, watching_send)
+        except _BodyTooLarge:
+            # Ответить можно, только пока приложение ничего не отправило:
+            # второй http.response.start — нарушение протокола ASGI. Если
+            # ответ уже начался, пусть падает как обычная ошибка сервера.
+            if started:
+                raise
+            for message in _too_large_response():
+                await send(message)
+
+
+app.add_middleware(LimitBodySize)
+
+
 async def current_user(authorization: str = Header(default="")) -> webauth.TelegramUser:
     """Пилот за этим запросом. Каждый запрос проверяется заново — сессий нет.
 
@@ -65,7 +182,25 @@ async def current_user(authorization: str = Header(default="")) -> webauth.Teleg
         raise HTTPException(401, "initData не прошла проверку") from None
 
     allowed = guards.allowed_ids()
-    if allowed and user.id not in allowed:
+    if not allowed:
+        # Здесь HTTP строже чата намеренно, и это единственное место, где они
+        # расходятся. В чате пустой список означает «кто нашёл моего бота»:
+        # чтобы дойти до бота, надо знать его имя в Telegram. У HTTP то же
+        # умолчание означает «кто нашёл мой сайт», а домен становится
+        # публично известен сам собой — Let's Encrypt публикует каждое имя в
+        # Certificate Transparency, и оно ищется на crt.sh. Воспроизведено на
+        # сервере с умолчанием из .env.example (финальное ревью ветки,
+        # безопасность, I2): подпись постороннего id получала 200 на
+        # GET /api/sites с точными координатами и заметками, 201 на
+        # POST /api/sites и 204 на DELETE чужого старта — библиотека общая.
+        # Отказ закрытый: приложение не работает, пока владелец не назовёт
+        # хотя бы один id. Чат при этом продолжает работать как работал.
+        log.info("отказ %s: ALLOWED_USER_IDS пуст", user.id)
+        raise HTTPException(
+            403, "Приложение закрыто: владелец не задал список доступа. "
+                 "Впишите Telegram ID в ALLOWED_USER_IDS в .env и перезапустите — "
+                 "бот в чате при этом работает.")
+    if user.id not in allowed:
         # Мирроринг guards.WhitelistMiddleware: там такой же отказ пишет
         # log.info("refused user %s (...)"). Здесь подпись ВАЛИДНА — значит,
         # это не шум сканера, а живой чужой Telegram-аккаунт, и на новой
@@ -199,10 +334,10 @@ class Coords(BaseModel):
 
 
 def _public_site(site: dict) -> dict:
-    """Старт без added_by: Telegram id того, кто его завёл, клиенту не нужен,
-    а при пустом ALLOWED_USER_IDS (открытый режим, см.
-    test_empty_allowlist_lets_everyone_in) отдавался бы кому угодно в
-    интернете. В базе поле остаётся — там ему и место."""
+    """Старт без added_by: Telegram id того, кто его завёл, клиенту не нужен.
+
+    Список допущенных пилотов — тоже не его дело: приложение открывают друзья
+    владельца, а не один человек. В базе поле остаётся — там ему и место."""
     return {k: v for k, v in site.items() if k != "added_by"}
 
 
@@ -229,6 +364,12 @@ async def create_site(body: SiteIn, user: webauth.TelegramUser = Depends(current
     if bad:
         raise HTTPException(400, bad)
     bad = store.coords_error(site["lat"], site["lon"])
+    if bad:
+        raise HTTPException(400, bad)
+    # Остальные поля: из чата они недостижимы (bot.cmd_add задаёт только имя,
+    # координаты и экспозицию), а здесь приезжают из тела запроса — см.
+    # store.details_error.
+    bad = store.details_error(site)
     if bad:
         raise HTTPException(400, bad)
     if store.find_site(site["name"]) is not None:

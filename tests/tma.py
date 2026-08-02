@@ -12,6 +12,14 @@ import urllib.parse
 
 TOKEN = "42:TEST"  # тот же, что conftest кладёт в BOT_TOKEN
 
+# Кого пускает HTTP-поверхность в тестах. Пустой ALLOWED_USER_IDS её ЗАКРЫВАЕТ
+# целиком (api.current_user, см. test_empty_allowlist_closes_the_http_surface),
+# поэтому фикстура client задаёт список явно — иначе каждый тест эндпоинта
+# проверял бы отказ вместо эндпоинта. Перечислены id, которыми подписываются
+# тесты; новому id достаётся 403, ровно как чужому пилоту в проде, и добавить
+# его сюда — та же работа, что для владельца вписать пилота в .env.
+ALLOWED_IN_TESTS = "1,2,7,77,99,555"
+
 
 def sign(fields: dict, token: str = TOKEN) -> str:
     """Собрать initData с корректным hash.

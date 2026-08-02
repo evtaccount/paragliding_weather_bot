@@ -190,6 +190,74 @@ def coords_error(lat: float, lon: float) -> str | None:
     return None
 
 
+# Потолки остальных полей старта. Числа взяты с запасом от того, что бывает
+# на Земле и в интерфейсе: заметка — абзац под карточкой старта
+# (webapp/src/sheets/SitePickerSheet.tsx), псевдонимов у старта единицы
+# (sites.json: один-два), высоты — от Мёртвого моря до Эвереста.
+NOTES_MAX_CHARS = 500
+MAX_ALIASES = 10
+MIN_ELEVATION_M = -500
+MAX_ELEVATION_M = 9000
+# Румб пишется меткой из 1–3 букв (engine.card по 16-румбовой таблице; то же
+# в webapp/src/format.ts). Ограничение здесь по РАЗМЕРУ, а не по словарю:
+# третья копия таблицы румбов разъехалась бы с теми двумя.
+ASPECT_LABEL_MAX_CHARS = 8
+
+
+def details_error(site: dict) -> str | None:
+    """Почему остальные поля старта не годятся, или None если годятся.
+
+    Третья функция того же ряда, что name_error и coords_error, и по той же
+    причине: библиотека стартов ОБЩАЯ и целиком уезжает КАЖДОМУ пилоту при
+    КАЖДОМ открытии приложения (api.list_sites → GET /api/sites).
+
+    Из чата эти поля недостижимы вовсе: bot.cmd_add (bot.py:566-588) собирает
+    старт из имени, координат и экспозиции, а notes и aliases не задаёт, и
+    всё, что он принимает, ограничено длиной сообщения Telegram. Через HTTP
+    их не смотрел никто: один запрос с notes на 5 000 000 символов и 20 000
+    псевдонимов проходил с 201, после чего GET /api/sites весил 10 269 330
+    байт вместо 293 (финальное ревью ветки, безопасность, I3) — и эти десять
+    мегабайт качал бы каждый пилот с мобильного интернета в горах, ради чего
+    приложение и делалось.
+
+    Псевдоним проверяется тем же name_error: find_site ищет по имени И по
+    псевдониму, то есть псевдоним — это второе имя старта, и ограничения у
+    него ровно те же.
+
+    Сравнения диапазонов заодно отсекают NaN и Infinity: любое сравнение с
+    NaN ложно, а bool(inf <= 9000) — False. Отдельной проверки на них не
+    нужно, как и в coords_error.
+    """
+    notes = site.get("notes") or ""
+    if len(notes) > NOTES_MAX_CHARS:
+        return (f"Заметка длиннее {NOTES_MAX_CHARS} символов ({len(notes)}) — "
+                "её видит каждый пилот, сократи.")
+
+    aliases = site.get("aliases") or []
+    if len(aliases) > MAX_ALIASES:
+        return f"Слишком много псевдонимов: {len(aliases)}, потолок {MAX_ALIASES}."
+    for alias in aliases:
+        bad = name_error(alias) if isinstance(alias, str) else "Псевдоним должен быть строкой."
+        if bad:
+            return f"Псевдоним «{alias}»: {bad}"
+
+    aspect = site.get("aspect")
+    if isinstance(aspect, str) and len(aspect) > ASPECT_LABEL_MAX_CHARS:
+        return (f"Экспозиция пишется румбом (Ю, ЮЗ, ЮЮЗ), а не текстом длиннее "
+                f"{ASPECT_LABEL_MAX_CHARS} символов.")
+
+    for field, low, high in (("elevation_m", MIN_ELEVATION_M, MAX_ELEVATION_M),
+                             ("route_top_m", MIN_ELEVATION_M, MAX_ELEVATION_M),
+                             ("aspect_deg", 0, 360),
+                             ("slope_deg", 0, 90)):
+        value = site.get(field)
+        if value is None:
+            continue
+        if not low <= value <= high:
+            return f"{field}: допустимо от {low} до {high}, получено {value}"
+    return None
+
+
 def add_site(site: dict, added_by: int | None = None) -> None:
     """Добавить старт. ValueError, если имя занято именем ИЛИ псевдонимом другого:
     find_site матчит и то и другое, и затенённый старт стал бы недостижим."""

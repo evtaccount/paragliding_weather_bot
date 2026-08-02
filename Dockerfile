@@ -36,6 +36,15 @@ COPY --from=webapp /build/dist ./webapp/dist
 # run as non-root; /app/data holds the writable SQLite database (a named volume
 # mounts here and inherits this ownership, so the app user can persist sites,
 # routes, settings and the model choice)
+#
+# Следствие одного `chown -R`: код в /app процессу тоже доступен на запись
+# (проверено дозаписью в /app/api.py от uid 10001). Оставлено сознательно —
+# сузить владение до /app/data значило бы разбить единственный проход chown на
+# два и вернуть тот самый второй слой с метаданными, ради отсутствия которого
+# `COPY --from=webapp` стоит выше. Цена известна и мала: примитива записи в
+# проекте нет (в ревью его искали и не нашли), а без него разница только между
+# «ошибка позволила записать файл» и «ошибка позволила пережить рестарт»
+# (финальное ревью ветки, безопасность, m6).
 RUN mkdir -p /app/data && useradd -m -u 10001 app && chown -R app /app
 USER app
 

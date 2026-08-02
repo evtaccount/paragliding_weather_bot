@@ -2,12 +2,10 @@ import { defineConfig } from "vite"
 import react from "@vitejs/plugin-react"
 import { configDefaults } from "vitest/config"
 
-// Куда уходят запросы приложения, не адресованные статике. Один и тот же
-// набор нужен обоим серверам Vite (dev и preview), поэтому он вынесен в
-// константу: разъехавшись, они дали бы `vite dev` работающим, а `vite preview`
-// (на нём стоят сквозные сценарии, см. webapp/playwright.config.ts) —
-// возвращающим index.html вместо JSON на каждый /api/*.
-const API_PROXY = { "/api": "http://127.0.0.1:8080", "/tiles": "http://127.0.0.1:8080" }
+// Куда уходят запросы приложения, не адресованные статике — вместе с
+// объяснением, почему адреса /api и /tiles разные, лежит в dev-proxy.ts:
+// оттуда его читает тест, исполняющий rewrite (webapp/test/proxy.test.ts).
+import { API_PROXY } from "./dev-proxy"
 
 export default defineConfig({
   plugins: [react()],

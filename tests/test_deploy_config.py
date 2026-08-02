@@ -6,7 +6,10 @@ Caddyfile/Dockerfile/docker-compose.yml/Makefile никто не исполня�
 healthcheck существует и упомянут в обоих файлах, порт driven из одной
 переменной, а не трёх независимых копий.
 """
+import os
 import pathlib
+import re
+import stat
 import subprocess
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -255,6 +258,145 @@ def test_caddy_sends_everything_but_tiles_to_pgbot():
     text = _read("Caddyfile")
     assert "file_server" not in text
     assert text.count("reverse_proxy pgbot:") >= 1
+
+
+def _tiles_block() -> str:
+    """Кусок Caddyfile от `handle /tiles/*` до общего безматчерного handle."""
+    return _read("Caddyfile").split("handle /tiles/*")[1].split("\n\thandle {")[0]
+
+
+def _caddy_bytes(size: str) -> int:
+    """«2MiB» → 2097152. У Caddy MB — это 1 000 000, а MiB — 1 048 576
+    (go-humanize), и перепутанная единица тихо разъезжается с питоновским
+    потолком на 97 152 байта."""
+    units = {"B": 1, "KB": 10**3, "MB": 10**6, "KiB": 1024, "MiB": 1024**2}
+    number, unit = re.fullmatch(r"(\d+)\s*([A-Za-z]+)", size).groups()
+    return int(number) * units[unit]
+
+
+def test_caddy_caps_the_request_body_at_the_same_size_as_the_api():
+    """Тело запроса читается раньше проверки подписи (FastAPI решает Depends
+    уже после `await request.body()`), поэтому неавторизованный POST стоит
+    процессу ровно столько, сколько прислали: 800 МБ подняли RSS с 38 до
+    635 МБ, и только потом ушёл 401 (финальное ревью ветки, безопасность, I1).
+    Процесс один на чат и HTTP, так что это уносит и бота.
+
+    Потолков два, и оба нужны: Caddy закрывает путь снаружи, api.py — bare
+    metal, где Caddy впереди нет. Разъехавшись, они дают либо 413 от Caddy на
+    законной загрузке, либо тихий приём того, что бэкенд всё равно отвергнет.
+    """
+    import api
+    # Строка целиком, а не подстрока: слова max_size есть и в комментарии над
+    # директивой — он объясняет, что именно замерено на живом Caddy.
+    size = re.search(r"^\s*max_size\s+(\S+)\s*$", _read("Caddyfile"), re.M).group(1)
+    assert _caddy_bytes(size) == api.MAX_BODY_BYTES, size
+
+
+def test_the_tile_matcher_accepts_the_url_the_client_actually_builds():
+    """Рамка вокруг тайлов проверяется ТЕМ ЖЕ адресом, который строит Leaflet
+    по шаблону из MapView: регулярное выражение, не совпавшее с ним, гасит
+    карту у пилота целиком, а `caddy adapt` и все остальные тесты остаются
+    зелёными.
+
+    Мусор в списке ниже — воспроизведённые пробы: `POST /tiles/anything` с
+    телом доезжал до апстрима как `POST /anything`, с нашим User-Agent
+    (финальное ревью ветки, безопасность, m3).
+    """
+    pattern = re.search(r"path_regexp\s+(\S+)", _tiles_block()).group(1)
+    template = re.search(r'TILE_URL = "([^"]+)"',
+                         _read("webapp/src/map/MapView.tsx")).group(1)
+    url = template.replace("{z}", "10").replace("{x}", "637").replace("{y}", "380")
+    assert re.match(pattern, url), (pattern, url)
+    for junk in ("/tiles/anything", "/tiles/10/637/380.jpg", "/tiles/999/1/1.png",
+                 "/tiles/", "/tiles/10/637/380.png/../secret"):
+        assert not re.match(pattern, junk), junk
+
+
+def test_only_get_and_head_reach_the_tile_upstream():
+    """Ретранслятор на чужой сервер для любого метода — это чужой трафик под
+    нашим именем: правила OpenStreetMap банят по User-Agent, а он захардкожен
+    именно как наш, и карта погасла бы у пилота."""
+    assert "method GET HEAD" in _tiles_block()
+
+
+def test_the_tile_proxy_hides_the_pilot_from_the_upstream():
+    """Ради этого прокси и заведён (комментарий в Caddyfile: «прямой запрос с
+    устройства пилота отдал бы чужому серверу и адрес устройства»). Caddy
+    добавляет X-Forwarded-For сам, и на живом Caddy апстрим видел в нём адрес
+    устройства — то есть прямой запрос к tile.openstreetmap.org был заменён на
+    такой же, но с лишним посредником (финальное ревью ветки, безопасность,
+    m1)."""
+    block = _tiles_block()
+    for header in ("X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "Via"):
+        assert f"header_up -{header}" in block, header
+
+
+def test_the_tile_proxy_carries_no_cookies_either_way():
+    """Клиентские Cookie и Authorization доезжали до апстрима дословно, а его
+    Set-Cookie возвращался в браузер на НАШ домен (m2). Сегодня кук на домене
+    нет — стрельнёт в день, когда заведут первую."""
+    block = _tiles_block()
+    assert "header_up -Cookie" in block
+    assert "header_up -Authorization" in block
+    assert "header_down -Set-Cookie" in block
+
+
+def test_the_deploy_script_locks_down_the_env_file(tmp_path):
+    """`.env` держит BOT_TOKEN, а его достаточно, чтобы выпустить себе initData
+    на ЛЮБОЙ Telegram id: подпись считается тем же токеном локально
+    (webauth._secret_key), и api.current_user сверяет только число — список
+    допуска после этого не значит ничего. `make secrets` ставил 0600, а
+    deploy.sh оставлял то, что даст umask, то есть обычно 0644 (финальное
+    ревью ветки, безопасность, m4).
+
+    Блок ИСПОЛНЯЕТСЯ, как и проверка сборки ниже: права — это результат работы
+    скрипта, а не слово в его тексте.
+    """
+    block = tmp_path / "block.sh"
+    block.write_text("set -euo pipefail\n" + _marked_block("deploy.sh", "env file"),
+                     encoding="utf-8")
+    workdir = tmp_path / "checkout"
+    workdir.mkdir()
+    (workdir / ".env.example").write_text("BOT_TOKEN=\n", encoding="utf-8")
+    subprocess.run(["bash", str(block)], cwd=workdir, capture_output=True,
+                   text=True, check=True)
+    mode = stat.S_IMODE(os.stat(workdir / ".env").st_mode)
+    assert mode == 0o600, oct(mode)
+
+    # Второй прогон по уже существующему файлу: .env мог остаться от прежней
+    # раскатки, когда этой строки в скрипте ещё не было, и тогда `cp` не
+    # выполняется вовсе — а права всё равно обязаны стать 0600.
+    os.chmod(workdir / ".env", 0o644)
+    subprocess.run(["bash", str(block)], cwd=workdir, capture_output=True,
+                   text=True, check=True)
+    assert stat.S_IMODE(os.stat(workdir / ".env").st_mode) == 0o600
+
+
+def test_the_database_directory_is_ignored_by_git():
+    """data/pgbot.db — Telegram id каждого допущенного пилота, его маршруты и
+    координаты стартов. Bare-metal раскатка кладёт базу именно туда
+    (store.DB_PATH), и первый же `git add -A` унёс бы её в историю.
+
+    Проверяет САМ git своим матчером, а не тест — чтением .gitignore: `data`
+    без слэша, `/data/` и `data/**` ведут себя по-разному, и глазами это не
+    отличить."""
+    done = subprocess.run(["git", "check-ignore", "-q", "data/pgbot.db"],
+                          cwd=ROOT, capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+
+
+def test_the_database_directory_is_ignored_by_docker():
+    """Тот же файл, второй путь: оператор, переехавший с systemd на
+    рекомендованный README `docker compose up -d --build`, унёс бы базу слоем
+    в образ — а образ уезжает в реестр или в `docker save` «посмотри, почему
+    не работает». Воспроизведено: база из контекста сборки читалась обратно из
+    готового образа (финальное ревью ветки, безопасность, m5).
+
+    Здесь проверяется только наличие строки: матчера .dockerignore без самого
+    docker не запустить, а сборка образа в прогон тестов не входит.
+    """
+    lines = [line.strip() for line in _read(".dockerignore").splitlines()]
+    assert "data" in lines or "data/" in lines, lines
 
 
 def test_tiles_are_proxied_through_our_own_domain():

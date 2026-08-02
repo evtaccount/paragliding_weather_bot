@@ -1,6 +1,12 @@
 # secrets
 .env
 
+# база: Telegram id каждого допущенного пилота, его маршруты и координаты
+# стартов. Сюда её кладёт bare-metal раскатка (store.DB_PATH по умолчанию —
+# <репозиторий>/data/pgbot.db), и без этой строки первый же `git add -A`
+# унёс бы её в историю. В Docker БД живёт в томе pgbot-data.
+data/
+
 # python
 __pycache__/
 *.py[cod]
