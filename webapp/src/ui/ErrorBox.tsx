@@ -1,5 +1,5 @@
-// Показ ошибки API — текст для пилота (ApiError.userMessage), короткое вибро
-// и кнопка повтора, когда повторять есть смысл.
+// Показ ошибки API — текст для пилота (ApiError.userMessage из client.ts),
+// короткое вибро и кнопка повтора, когда повторять есть смысл.
 //
 // Кнопка повтора отделяет «сервер НЕ СМОГ» от «сервер НЕ ПРИНЯЛ». Повтор
 // осмыслен там, где тот же запрос может пройти сам собой: 429 (слот пилота
@@ -18,11 +18,28 @@
 // вибро в нём не приходится повторять на каждом экране. Вне Telegram обёртка
 // молча ничего не делает (telegram.ts).
 import { useEffect } from "react"
-import type { ApiError } from "../api/client"
 import { haptic } from "../telegram"
 
+// Не `ApiError`, хотя типы вызывающих хуков обещают именно его: до ErrorBox
+// доезжает и отказ, до ответа сервера не дошедший вовсе — пропала сеть, и
+// fetch отклонился с TypeError, у которого нет ни status, ни userMessage
+// (client.ts строит ApiError только по ответу). Тип, обещавший строку там, где
+// приходит undefined, и оставлял рамку с пустым объяснением. ApiError под это
+// описание подходит структурно, поэтому вызывающий код не меняется.
+type ShownError = {
+  status?: number
+  userMessage?: string
+}
+
+// Пилот смотрит прогноз, теряет сеть, переключается на «Обзор» — и видит
+// «Не получилось», сразу «Повторить», а между ними пусто: молчащая рамка
+// читается как поломка приложения (финальное ревью ветки, круг 2, I4). Это
+// единственный отказ, где повтор осмыслен, поэтому сказать, что повторять,
+// нужно словами.
+const NO_RESPONSE_RU = "Нет связи — проверьте интернет и повторите."
+
 type ErrorBoxProps = {
-  error: ApiError
+  error: ShownError
   onRetry: () => void
 }
 
@@ -36,7 +53,8 @@ type ErrorBoxProps = {
 // 429 — исключение среди 4xx: это не «сервер не принял», а «слот пилота
 // сейчас занят» (api.py:one_at_a_time), и тот же запрос пройдёт, как только
 // сервер досчитает предыдущий.
-function canRetryStatus(status: number): boolean {
+function canRetryStatus(status: number | undefined): boolean {
+  if (status === undefined) return true
   if (status === 429) return true
   return !(status >= 400 && status < 500)
 }
@@ -50,7 +68,10 @@ export function ErrorBox({ error, onRetry }: ErrorBoxProps) {
   return (
     <div className="empty">
       <b>Не получилось</b>
-      {error.userMessage}
+      {/* `??`, а не `||`: пустой текст сервера — это его решение промолчать
+          (см. 403 в client.ts), а отсутствующий значит, что отвечать было
+          некому. */}
+      {error.userMessage ?? NO_RESPONSE_RU}
       {canRetry && (
         <div>
           <button type="button" onClick={onRetry}>Повторить</button>

@@ -13,6 +13,7 @@ import sqlite3
 import httpx
 from fastapi import (APIRouter, Depends, FastAPI, File, Form, Header,
                      HTTPException, UploadFile)
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -241,6 +242,34 @@ async def _forecast_error(_request, exc: forecast.ForecastError):
 @app.exception_handler(route.RouteError)
 async def _route_error(_request, exc: route.RouteError):
     return JSONResponse({"detail": str(exc)}, status_code=400)
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_error(_request, exc: RequestValidationError):
+    """400 с именами полей — и без ЭХА отвергнутого значения.
+
+    Штатный обработчик FastAPI кладёт отвергнутое значение обратно в тело
+    ответа (ключ `input` в каждой ошибке), и на нечисловом float это роняет сам
+    ответ: `elevation_m: NaN` (а также Infinity и -Infinity) pydantic честно
+    отвергает, после чего JSONResponse собирает тело через
+    `json.dumps(allow_nan=False)` и падает уже на сериализации. Пилот получал
+    «Internal Server Error» вместо «проверьте высоту», а в лог на каждую
+    попытку ложилась двухэкранная трасса — при `json-file 10m × 3` цикл
+    повторов вытесняет из лога настоящую историю, включая строки `refused user`
+    (финальное ревью ветки, круг 2, I5). Достижимо без злого умысла: высоту в
+    форму подставляет POST /api/elevation.
+
+    Наружу уходят только имена полей: значение вернулось бы отправителю как
+    есть — тем же способом, каким большие поля уже раздували ответы
+    (store.details_error). Разбор для разработчика — в лог, одной строкой.
+    """
+    fields = sorted({".".join(str(p) for p in e["loc"][1:]) or "тело"
+                     for e in exc.errors()})
+    log.info("запрос не прошёл разбор: %s",
+             [(e["loc"], e["msg"]) for e in exc.errors()])
+    return JSONResponse({"detail": "Запрос не принят, проверьте поля: "
+                                   + ", ".join(fields) + "."},
+                        status_code=400)
 
 
 @app.exception_handler(httpx.HTTPError)

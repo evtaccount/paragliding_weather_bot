@@ -55,10 +55,20 @@ test("при 429 повтор остаётся: слот освободится 
 // Отказ БЕЗ кода — сеть пропала, и fetch отклонился, не дойдя до ответа
 // (client.ts строит ApiError только по ответу сервера). Повтор здесь —
 // единственное осмысленное действие.
-test("у отказа без кода повтор остаётся", () => {
-  const noStatus = new ApiError(undefined as unknown as number, "Сеть недоступна.")
-  render(<ErrorBox error={noStatus} onRetry={() => {}} />)
+//
+// Объект — настоящий TypeError, а не ApiError без кода: именно его бросает
+// отказавший fetch, и у него нет ни status, ни userMessage. Раньше здесь
+// стоял `new ApiError(undefined, "Сеть недоступна.")` — текст, которого в
+// этом сценарии взяться неоткуда, и рамка проверялась с объяснением, которого
+// пилот на самом деле не видел: между «Не получилось» и «Повторить» было
+// пусто (финальное ревью ветки, круг 2, I4).
+test("у отказа без кода остаётся и повтор, и объяснение", () => {
+  const noResponse = new TypeError("Failed to fetch") as unknown as ApiError
+  render(<ErrorBox error={noResponse} onRetry={() => {}} />)
   expect(screen.getByRole("button", { name: "Повторить" })).toBeInTheDocument()
+  expect(screen.getByText(/Нет связи/)).toBeInTheDocument()
+  // Английский текст браузера («Failed to fetch») пилоту не показывается.
+  expect(screen.queryByText(/Failed to fetch/)).not.toBeInTheDocument()
 })
 
 // Вибро на отказе — то самое, ради чего в обёртке telegram.ts живёт haptic()

@@ -98,6 +98,54 @@ def test_api_port_is_driven_from_a_single_source():
     assert "{$API_PORT" in caddyfile
 
 
+def test_vite_config_takes_the_dev_proxy_from_one_place():
+    """Оба сервера Vite берут набор прокси из webapp/dev-proxy.ts, а своего
+    литерала не держат.
+
+    Исполнением набор уже проверен (webapp/test/proxy.test.ts зовёт rewrite),
+    но исполняется там МОДУЛЬ, а серверы разработки читают конфигурацию.
+    Мутация «импорт API_PROXY заменён прежним литералом с `/tiles →
+    127.0.0.1:8080`» оставляла оба прогона зелёными и tsc чистым, а подложка
+    карты снова пропадала — то самое состояние, которое уже чинили (финальное
+    ревью ветки, круг 2, I6).
+
+    Проверка питоновская, хотя файл лежит в webapp: vitest прочитал бы его
+    через node:fs (см. шапку tests/test_webapp_sync.py), но `webapp/tsconfig.json`
+    перечисляет типы поимённо и @types/node среди них нет — импорт node:fs не
+    проходит `tsc --noEmit`, то есть `npm run build`.
+
+    Условий три, и нужны все. Набор приезжает из одного места; его берут ОБА
+    сервера (у `preview` своя секция — настройки `server` он не читает вовсе,
+    и разъехавшись они дали бы работающий `npm run dev` при сломанных сквозных
+    сценариях); своих адресов в конфигурации не осталось — иначе рядом с
+    `proxy: API_PROXY` мог бы лежать второй, настоящий набор.
+    """
+    text = _read("webapp/vite.config.ts")
+    assert 'import { API_PROXY } from "./dev-proxy"' in text
+    assert text.count("proxy: API_PROXY") == 2, text.count("proxy: API_PROXY")
+    assert "127.0.0.1" not in text
+    assert "openstreetmap" not in text
+
+
+def test_dev_proxy_targets_the_port_the_app_listens_on():
+    """Прокси разработки (webapp/dev-proxy.ts) шлёт /api туда, где app.py
+    действительно слушает.
+
+    Третья копия того же числа: у compose и Caddyfile она уже сведена к
+    ${API_PORT:-8080} (тест выше), а у прокси разработки осталась литералом —
+    он просто переехал из webapp/vite.config.ts в dev-proxy.ts (финальное ревью
+    ветки, круг 2, I6). Разъехавшись с умолчанием app.py, оба сервера Vite
+    отдают index.html вместо JSON на каждый /api/* — и вместе с `npm run dev`
+    это ломает `vite preview`, на котором стоят все восемь сквозных сценариев.
+    Само число проверять нечем, кроме текста: TypeScript питоновскую константу
+    не импортирует.
+    """
+    default = re.search(r'API_PORT = int\(os\.environ\.get\("API_PORT", "(\d+)"\)\)',
+                        _read("app.py"))
+    assert default, "в app.py не нашлось умолчания API_PORT — проверьте разбор"
+    assert f'"/api": "http://127.0.0.1:{default.group(1)}"' in _read("webapp/dev-proxy.ts")
+
+
 def test_caddyfile_default_port_syntax_has_no_hyphen():
     """Docker Compose пишет умолчания как ${VAR:-default} (с дефисом), у Caddy
     свой синтаксис — {$VAR:default}, БЕЗ дефиса: плейсхолдер режется по

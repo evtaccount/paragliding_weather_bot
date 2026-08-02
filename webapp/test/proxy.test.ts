@@ -1,5 +1,10 @@
 // Прокси разработки исполняется, а не читается глазами: rewrite — обычная
 // функция, и её ответ на настоящий адрес тайла виден прямо здесь.
+//
+// Проверяется ЭТОТ набор, а не конфигурация, которую читают серверы Vite: то,
+// что vite.config.ts берёт набор отсюда, а не держит свой литерал, сторожит
+// tests/test_deploy_config.py (разбор — там же, в
+// test_vite_config_takes_the_dev_proxy_from_one_place).
 import { describe, expect, it } from "vitest"
 
 import { API_PROXY } from "../dev-proxy"

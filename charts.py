@@ -5,6 +5,14 @@ import os
 from PIL import Image, ImageDraw, ImageFont
 
 import criteria as _criteria
+# Роза румбов и правило округления — знание домена, и здесь его копии нет.
+# Круговым импортом это не грозит: engine не импортирует charts вовсе, а
+# forecast делает это лениво, внутри функций (forecast.py:424, 851).
+# Третья копия розы жила ниже, в _card, и не сторожилась ничем: перестановка
+# «СВ» и «ЮВ» в ней оставляла весь прогон зелёным, а пилот получал PNG, где
+# стрелка подписана «ЮВ», при том что текст того же сообщения и приложение
+# говорят «СВ» (финальное ревью ветки, круг 2, I7).
+import engine as _engine
 
 SS = 2  # supersampling for anti-aliasing
 
@@ -77,8 +85,7 @@ def S(v): return v * SS
 def _hour(iso): return int(iso[11:13])
 def _ang(a, b):
     d = abs((a - b) % 360); return min(d, 360 - d)
-def _card(deg):
-    return ["С","ССВ","СВ","ВСВ","В","ВЮВ","ЮВ","ЮЮВ","Ю","ЮЮЗ","ЮЗ","ЗЮЗ","З","ЗСЗ","СЗ","ССЗ"][round((deg%360)/22.5)%16]
+def _card(deg): return _engine.card(deg)
 
 def _wind_arrow(d, cx, cy, from_deg, r, color):
     """Arrow pointing where the wind BLOWS TO, map-oriented (N up, E right).

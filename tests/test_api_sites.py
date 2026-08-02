@@ -190,6 +190,45 @@ async def test_impossible_numbers_are_400(client, field, value):
     assert store.find_site("Казбеги") is None
 
 
+@pytest.mark.parametrize("literal", ["NaN", "Infinity", "-Infinity"])
+async def test_non_finite_numbers_are_400_and_never_come_back(client, literal):
+    """Числа, которых нет: json их разбирает, pydantic отвергает, а штатный
+    обработчик FastAPI клал отвергнутое значение обратно в ответ — и на
+    сериализации ответа падал сам (json.dumps(allow_nan=False)).
+
+    Воспроизведено на всех трёх литералах: было 500 и двухэкранная трасса в
+    логе на каждую попытку, при том что три остальных числовых поля отвечали
+    чистым 400 (финальное ревью ветки, круг 2, I5). Достижимо без злого
+    умысла — высоту в форму подставляет POST /api/elevation.
+
+    Тело собирается строкой: httpx сериализует `json=` через json.dumps с
+    allow_nan=False и упал бы раньше сервера, не отправив запрос.
+    """
+    raw = ('{"name": "Казбеги", "lat": 42.66, "lon": 44.64, "elevation_m": %s}'
+           % literal)
+    r = await client.post("/api/sites", content=raw,
+                          headers={**header(), "content-type": "application/json"})
+    assert r.status_code == 400, r.text
+    assert "elevation_m" in r.json()["detail"]
+    # Отвергнутое значение не возвращается отправителю ни в каком виде.
+    assert "nan" not in r.text.lower() and "infinity" not in r.text.lower(), r.text
+    assert store.find_site("Казбеги") is None
+
+
+async def test_a_refused_body_does_not_echo_what_was_sent(client):
+    """Тот же обработчик, обычный отказ разбора: наружу уходят имена полей, а
+    не присланные значения. Штатный обработчик отвечал 422 и возвращал `input`
+    целиком — то есть отправитель мог получить обратно ровно столько байт,
+    сколько прислал (см. store.details_error про ту же цену)."""
+    raw = ('{"name": "Казбеги", "lat": 42.66, "lon": 44.64, '
+           '"elevation_m": "%s"}' % ("высоко" * 1000))
+    r = await client.post("/api/sites", content=raw,
+                          headers={**header(), "content-type": "application/json"})
+    assert r.status_code == 400, r.text
+    assert "высоко" not in r.text
+    assert len(r.text) < 200, len(r.text)
+
+
 async def test_a_wordy_aspect_is_400(client):
     """Румб — метка из 1–3 букв (engine.card, webapp/src/format.ts). Живой
     сервер принимал aspect = «не сторона света»."""

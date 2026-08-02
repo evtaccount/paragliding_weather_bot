@@ -7,10 +7,10 @@
     "aspect": "Ю",
     "aspect_deg": 180.0,
     "slope_deg": 25.0,
-    "route_top_m": 3000.0,
+    "route_top_m": 3000,
+    "notes": "",
     "aliases": [
       "gudauri"
-    ],
-    "notes": ""
+    ]
   }
 ]

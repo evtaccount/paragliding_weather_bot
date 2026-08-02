@@ -29,7 +29,7 @@
 // будет слать запрос на каждый чужой ре-рендер родителя. App.tsx хранит
 // пустой маршрут константой вне компонента ровно по этой причине.
 import { useEffect, useMemo, useRef, useState } from "react"
-import { useRoute } from "../api/queries"
+import { usePrefs, useRoute } from "../api/queries"
 import type { RouteInput, RoutePointRow } from "../api/queries"
 import type { RoutePoint, Site } from "../api/types"
 import { useSheetsContext } from "../App"
@@ -200,26 +200,52 @@ export function Route({ points, name, date, model, active = true, onPickRoute }:
   const route = useRoute()
   const { mutate } = route
 
+  // Маршрутная скорость и поправка на ветер в теле запроса НЕ едут: сервер
+  // берёт их из настроек пилота сам (forecast.py:_evaluate — cfg.
+  // avg_route_speed_kmh задаёт route.fixed_eta/march, cfg.wind_correction_enabled
+  // выбирает между ними). Но ответ от них зависит целиком — времена прилёта,
+  // запас окна, перебор вылета, — поэтому экран обязан знать их значения, иначе
+  // не поймёт, что показанный маршрут устарел. Пилот жал «+» в «Настройках»
+  // (25 → 28 км/ч), возвращался на «Маршрут» и видел ТЕ ЖЕ числа, посчитанные
+  // на 25 (финальное ревью ветки, круг 2, I3).
+  //
+  // Своего запроса это не стоит: ключ ["prefs"] тот же, что уже запросила
+  // оболочка (App.tsx), то есть подписка на общий кэш TanStack. Свежие
+  // настройки попадают в него сразу после PATCH — их кладёт туда сам ответ
+  // сервера (useUpdatePrefs.onSuccess, api/queries.ts).
+  //
+  // `?? null`, а не ожидание настроек: без ответа /api/prefs сервер возьмёт
+  // сохранённую настройку сам, и лишний раз считать маршрут не из-за чего.
+  // Второго расчёта на приходе настроек не случается по той же причине, по
+  // которой его нет у модели: пока /api/prefs не ответил, `active` ложно
+  // (App.tsx: modelSettled).
+  const prefs = usePrefs()
+  const speed = prefs.data?.avg_route_speed_kmh ?? null
+  const windCorrection = prefs.data?.wind_correction_enabled ?? null
+
   // Что уже отправлено: расчёт маршрута — мутация, а не запрос-подписка, и
   // своего ключа у него нет, поэтому «этот ввод уже посчитан» приходится
   // помнить самому. Нужно это ровно из-за `active`: без памяти каждое
   // возвращение на вкладку слало бы ПОВТОРНЫЙ расчёт того же маршрута — тот
   // самый лишний тяжёлый запрос, ради устранения которых эффект и гасится.
   // Сравнение по тем же правилам, что и зависимости эффекта (ссылка на
-  // points, остальное по значению).
-  const sentRef = useRef<RouteInput | null>(null)
+  // points, остальное по значению). Настройки лежат тут рядом с телом
+  // запроса, хотя в него и не входят: «уже посчитано» — это про ответ, а
+  // ответ считан и по ним тоже.
+  const sentRef = useRef<(RouteInput & { speed: number | null; windCorrection: boolean | null }) | null>(null)
 
   useEffect(() => {
     if (!active) return
     if (points.length < 2) return
     const sent = sentRef.current
     if (sent !== null && sent.points === points && sent.name === name && sent.date === date
-        && sent.departure === departure && sent.model === model) {
+        && sent.departure === departure && sent.model === model
+        && sent.speed === speed && sent.windCorrection === windCorrection) {
       return
     }
-    sentRef.current = { points, name, date, departure, model }
+    sentRef.current = { points, name, date, departure, model, speed, windCorrection }
     mutate({ points, name, date, departure, model })
-  }, [active, points, name, date, departure, model, mutate])
+  }, [active, points, name, date, departure, model, speed, windCorrection, mutate])
 
   if (points.length < 2) {
     return (

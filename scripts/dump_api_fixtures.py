@@ -20,10 +20,20 @@ engine.overview_rows, forecast.scan_week, api.list_routes), а не собира
 весь остальной путь — кэш, разбор, оценка, сборка ответа — оставался
 настоящим.
 
-    python scripts/dump_api_fixtures.py
+    python scripts/dump_api_fixtures.py            # переснять фикстуры на месте
+    python scripts/dump_api_fixtures.py --out DIR  # снять в сторону, ничего не трогая
+
+Ключ --out нужен сторожу свежести (tests/test_api_fixtures_fresh.py): он
+снимает фикстуры во временный каталог и сравнивает с рабочим деревом. Без
+ключа сторож был обязан звать скрипт БЕЗ каталога, тот переписывал фикстуры
+на диске, и второй прогон подряд зеленел без единой правки — сторож лечил то,
+что проверяет, и разоружал себя после первого же срабатывания (финальное
+ревью ветки, круг 2, I1).
 """
+import argparse
 import asyncio
 import datetime as dt
+import functools
 import json
 import os
 import pathlib
@@ -203,6 +213,27 @@ async def _prefs() -> dict:
     return await api.read_prefs(user=FIXTURE_USER)
 
 
+async def _sites() -> list:
+    """Настоящий GET /api/sites: api.list_sites поверх настоящего store.
+
+    Последняя фикстура, которая собиралась литералом (`write("sites", [SITE])`),
+    — и ровно тем же способом, каким разошлись scan и routes (см. docstring
+    скрипта). Форму ответа задают store.load_sites (порядок и состав колонок,
+    store._SITE_COLUMNS плюс aliases) и api._public_site (он снимает added_by);
+    записанная здесь второй копией, она расходилась с ними молча. Проверено
+    мутацией: `_public_site` перестал отдавать `aspect` — весь прогон остался
+    зелёным, а Site.aspect в типах приложения продолжал обещать поле, которого
+    в ответе больше нет. Это не мелочь: `aspect` — запасная подпись старта там,
+    где `aspect_deg` пуст (webapp/src/sheets/SitePickerSheet.tsx).
+
+    Старт кладётся настоящим store.add_site — так же, как его кладёт
+    POST /api/sites и /addsite в чате.
+    """
+    store.init()
+    store.add_site(SITE, added_by=FIXTURE_USER.id)
+    return await api.list_sites(_user=FIXTURE_USER)
+
+
 async def _routes() -> list:
     """Настоящий GET /api/routes: api.list_routes поверх настоящего store.
 
@@ -217,14 +248,15 @@ async def _routes() -> list:
     return await api.list_routes(user=FIXTURE_USER)
 
 
-def write(name: str, payload) -> None:
-    path = OUT / f"{name}.json"
+def _write(out: pathlib.Path, name: str, payload) -> None:
+    path = out / f"{name}.json"
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    print(path.relative_to(ROOT))
+    print(path.relative_to(ROOT) if path.is_relative_to(ROOT) else path)
 
 
-def main() -> None:
-    OUT.mkdir(parents=True, exist_ok=True)
+def main(out: pathlib.Path = OUT) -> None:
+    out.mkdir(parents=True, exist_ok=True)
+    write = functools.partial(_write, out)
     day = fx.om_1day()
     week = fx.om_overview(WEEK_DATES)
 
@@ -240,7 +272,7 @@ def main() -> None:
     write("forecast_3d", engine.facts_overview(week, SITE, "3d"))
     write("wind_grid", engine.wind_grid(day, SITE))
     write("overview_3d", engine.overview_rows(week, SITE))
-    write("sites", [SITE])
+    write("sites", asyncio.run(_sites()))
     write("prefs", asyncio.run(_prefs()))
     write("scan", asyncio.run(_scan([SITE], {SITE["lat"]: week})))
     # Скан со стартом без лётных дней и стартом, который упал ошибкой — иначе
@@ -253,4 +285,9 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(
+        description="Снять фикстуры фронтенда вызовом домена, без сети.")
+    parser.add_argument(
+        "--out", type=pathlib.Path, default=OUT, metavar="DIR",
+        help=f"куда писать (по умолчанию {OUT.relative_to(ROOT)})")
+    main(parser.parse_args().out)

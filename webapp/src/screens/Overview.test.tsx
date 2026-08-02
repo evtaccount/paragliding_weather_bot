@@ -343,3 +343,19 @@ test("скан со стартами и без лётных дней однов�
   expect(screen.getByText(new RegExp(scanMixed.empty[0]!))).toBeInTheDocument()
   expect(screen.getByText(new RegExp(scanMixed.failed[0]!))).toBeInTheDocument()
 })
+
+// Пропавшая сеть — сценарий пилота, а не выдумка теста: он смотрит прогноз,
+// теряет связь и переключается на «Обзор». Отказавший fetch отклоняется
+// TypeError-ом, а не ApiError (client.ts строит ApiError только по ответу
+// сервера), и TanStack отдаёт его экрану как есть — то есть в ErrorBox
+// доезжает объект без userMessage. Пилот видел «Не получилось», сразу
+// «Повторить», а между ними пусто (финальное ревью ветки, круг 2, I4).
+// Проверяется на экране, а не только на ErrorBox: типы хуков обещают ApiError,
+// и именно это обещание расходилось с тем, что до экрана доезжает.
+test("пропавшая сеть объясняется словами, а не пустой рамкой", async () => {
+  vi.stubGlobal("fetch", () => Promise.reject(new TypeError("Failed to fetch")))
+  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} />, { wrapper })
+
+  expect(await screen.findByText(/Нет связи/)).toBeInTheDocument()
+  expect(screen.getByRole("button", { name: "Повторить" })).toBeInTheDocument()
+})

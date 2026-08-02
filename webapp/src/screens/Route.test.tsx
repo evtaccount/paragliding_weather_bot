@@ -12,7 +12,7 @@
 // route_no_terrain.json — тот же маршрут, но Elevation API не ответил
 // (terrain: null) — экран обязан это пережить (см. task-12-brief.md).
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
-import { render, screen, waitFor, within } from "@testing-library/react"
+import { act, render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { beforeEach, expect, test, vi } from "vitest"
 import { StrictMode, useState } from "react"
@@ -26,9 +26,14 @@ import type { RoutePointRow } from "../api/queries"
 import type { RouteResult } from "../api/types"
 import routeFixture from "../../test/fixtures/route.json"
 import routeNoTerrainFixture from "../../test/fixtures/route_no_terrain.json"
+import prefsFixture from "../../test/fixtures/prefs.json"
 
 const ROUTE = routeFixture as unknown as RouteResult
 const ROUTE_NO_TERRAIN = routeNoTerrainFixture as unknown as RouteResult
+// Настоящий ответ GET /api/prefs (см. scripts/dump_api_fixtures.py): экран
+// подписан на него ради маршрутной скорости и поправки на ветер — сервер
+// считает маршрут по ним, а в теле запроса их нет.
+const PREFS = prefsFixture
 
 // Формат [lat, lon, name] — как принимает проп `points` экрана (тот же
 // формат, в котором маршруты хранит store и отдаёт /api/route/parse).
@@ -56,6 +61,19 @@ function wrapper({ children }: { children: ReactNode }) {
       <SheetsProvider>{children}</SheetsProvider>
     </QueryClientProvider>
   )
+}
+
+// Обёртка с ЗАДАННЫМ клиентом: нужна там, где тест сам кладёт свежий ответ в
+// кэш — так же, как это делает PATCH настроек (useUpdatePrefs.onSuccess).
+// Обычный `wrapper` создаёт клиент внутри себя, и дотянуться до него неоткуда.
+function clientWrapper(client: QueryClient) {
+  return function Wrapper({ children }: { children: ReactNode }) {
+    return (
+      <QueryClientProvider client={client}>
+        <SheetsProvider>{children}</SheetsProvider>
+      </QueryClientProvider>
+    )
+  }
 }
 
 // Обёртка для тестов «под строгим режимом разработки»: <StrictMode> обязан
@@ -88,9 +106,18 @@ function jsonResponse(body: unknown, status = 200): Promise<Response> {
 // верно всегда — первый запрос уходит без времени по определению.
 type RouteRequestBody = { name?: string | null; date?: string; departure?: string | null }
 
-function lastRouteBody(fetchMock: { mock: { calls: [string, (RequestInit | undefined)?][] } }): RouteRequestBody {
-  const posts = fetchMock.mock.calls
+type FetchMock = { mock: { calls: [string, (RequestInit | undefined)?][] } }
+
+// Только расчёты маршрута: экран ходит ещё и за настройками пилота
+// (usePrefs — лёгкий запрос к тому же кэшу, что и у оболочки), а считать
+// «сколько всего было запросов» значит считать не то.
+function routePosts(fetchMock: FetchMock): [string, (RequestInit | undefined)?][] {
+  return fetchMock.mock.calls
     .filter(([url, init]) => String(url).split("?")[0] === "/api/route" && init?.method === "POST")
+}
+
+function lastRouteBody(fetchMock: FetchMock): RouteRequestBody {
+  const posts = routePosts(fetchMock)
   const last = posts[posts.length - 1]
   if (!last) throw new Error("расчёт маршрута ни разу не запрашивался")
   return JSON.parse(String(last[1]!.body)) as RouteRequestBody
@@ -493,12 +520,12 @@ test("на 502 показывает ошибку и кнопку повтора"
 // route.py:MIN_POINTS = 2 — меньше точек сервер бы просто отклонил; экран
 // не должен уходить в сеть впустую на заведомо неполном маршруте.
 test("меньше двух точек — понятный текст, а не запрос", () => {
-  const fetchMock = vi.fn(() => jsonResponse(ROUTE))
+  const fetchMock = vi.fn((_url: string, _init?: RequestInit) => jsonResponse(ROUTE))
   vi.stubGlobal("fetch", fetchMock)
   render(<Route points={[POINTS[0]!]} name={null} date="2026-08-01" model="ecmwf" onPickRoute={() => {}} />, { wrapper })
 
   expect(screen.getByText("Нет маршрута")).toBeInTheDocument()
-  expect(fetchMock).not.toHaveBeenCalled()
+  expect(routePosts(fetchMock)).toHaveLength(0)
 })
 
 // Маршрут из двух точек (минимум по route.py:MIN_POINTS) — граничный случай,
@@ -609,8 +636,13 @@ test("скрытый экран маршрута не считает маршр�
            active={false} onPickRoute={() => {}} />,
     { wrapper },
   )
-  await new Promise((resolve) => { setTimeout(resolve, 20) })
-  expect(fetchMock).not.toHaveBeenCalled()
+  // Пауза внутри act: за эти 20 мс приходит ответ /api/prefs (экран подписан
+  // на настройки, см. Route.tsx), и React обновляет состояние — снаружи act
+  // это законный повод для предупреждения в stderr.
+  await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 20) }) })
+  // Считается ТЯЖЁЛЫЙ запрос: слот пилота на сервере занимает расчёт маршрута
+  // (api.py:one_at_a_time), а не подписка на настройки.
+  expect(routePosts(fetchMock)).toHaveLength(0)
 
   rerender(
     <Route points={POINTS} name={ROUTE.route.name} date={ROUTE.route.date} model="ecmwf"
@@ -629,12 +661,51 @@ test("возвращение на вкладку не пересчитывает
   const props = { points: POINTS, name: ROUTE.route.name, date: ROUTE.route.date, model: "ecmwf", onPickRoute: () => {} }
   const { rerender } = render(<Route {...props} active />, { wrapper })
   await screen.findByText(ROUTE.verdict.label)
-  const posts = (): unknown[] => fetchMock.mock.calls.filter(([u]) => String(u).split("?")[0] === "/api/route")
-  expect(posts()).toHaveLength(1)
+  expect(routePosts(fetchMock)).toHaveLength(1)
 
   rerender(<Route {...props} active={false} />)
   rerender(<Route {...props} active />)
-  await new Promise((resolve) => { setTimeout(resolve, 20) })
+  // Пауза внутри act: за эти 20 мс приходит ответ /api/prefs (экран подписан
+  // на настройки, см. Route.tsx), и React обновляет состояние — снаружи act
+  // это законный повод для предупреждения в stderr.
+  await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 20) }) })
 
-  expect(posts()).toHaveLength(1)
+  expect(routePosts(fetchMock)).toHaveLength(1)
+})
+
+// Финальное ревью ветки, круг 2 (I3). Маршрутная скорость и поправка на ветер
+// в тело POST /api/route не едут — сервер берёт их из настроек пилота сам
+// (forecast.py:_evaluate), — и показанный маршрут оставался посчитанным по
+// прежним: пилот считал маршрут, шёл в «Настройки», трижды жал «+» (25 → 28
+// км/ч), возвращался и видел ТЕ ЖЕ времена прилёта и тот же запас окна, а
+// запросов после возвращения не было ни одного.
+//
+// Свежие настройки кладутся в кэш ровно так, как это делает сам PATCH
+// (useUpdatePrefs.onSuccess: client.setQueryData(["prefs"], ответ сервера)) —
+// это и есть то событие, которое экран обязан заметить. Проверяется ЧИСЛО
+// расчётов, а не тело запроса: настроек в теле нет и быть не должно.
+test("правка настроек пересчитывает показанный маршрут", async () => {
+  const fetchMock = vi.fn((url: string, _init?: RequestInit) =>
+    jsonResponse(String(url).split("?")[0] === "/api/prefs" ? PREFS : ROUTE))
+  vi.stubGlobal("fetch", fetchMock)
+  const client = makeClient()
+  // Настройки уже в кэше — так и бывает в настоящем дереве: пока /api/prefs не
+  // ответил, вкладка «Маршрут» неактивна и эффект не работает вовсе (App.tsx:
+  // modelSettled). Без этой строки тест ловил бы не пересчёт по правке, а
+  // приход настроек на пустом кэше — два расчёта на одном монтировании.
+  client.setQueryData(["prefs"], PREFS)
+  const props = { points: POINTS, name: ROUTE.route.name, date: ROUTE.route.date, model: "ecmwf", onPickRoute: () => {} }
+  render(<Route {...props} />, { wrapper: clientWrapper(client) })
+  await screen.findByText(ROUTE.verdict.label)
+  await waitFor(() => { expect(routePosts(fetchMock)).toHaveLength(1) })
+
+  act(() => { client.setQueryData(["prefs"], { ...PREFS, avg_route_speed_kmh: 28 }) })
+  await waitFor(() => { expect(routePosts(fetchMock)).toHaveLength(2) })
+
+  // Тумблер поправки на ветер — вторая настройка того же расчёта
+  // (forecast.py:_evaluate выбирает по ней route.march или ровную скорость).
+  act(() => {
+    client.setQueryData(["prefs"], { ...PREFS, avg_route_speed_kmh: 28, wind_correction_enabled: false })
+  })
+  await waitFor(() => { expect(routePosts(fetchMock)).toHaveLength(3) })
 })
