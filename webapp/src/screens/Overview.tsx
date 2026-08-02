@@ -27,7 +27,7 @@
 // отдельная, более просторная строка (miniapp/prototype.html:972).
 import { useState } from "react"
 import type { ForecastRange } from "../api/queries"
-import { useForecast, useScan } from "../api/queries"
+import { useForecast, useScan, useSites } from "../api/queries"
 import type { ForecastOverview, OverviewRow } from "../api/types"
 import { colorOfCategory } from "../charts/palette"
 import { RAIN_DAY_MM } from "../domain"
@@ -62,14 +62,18 @@ type OverviewProps = {
   onOpenDay: (site: string, date: string) => void
 }
 
-type RangeKey = Exclude<ForecastRange, "1d"> | "scan"
+type RangeKey = Exclude<ForecastRange, "1d">
 
-// Подписи и порядок — дословно из миниapp/prototype.html:948.
+// Подписи и порядок — из миниapp/prototype.html:948, но БЕЗ четвёртой кнопки
+// «Все старты»: это не период. Домен подтверждает — GET /api/scan
+// (forecast.scan_week) параметра диапазона не имеет вовсе и считает только
+// неделю, тогда как три ключа ниже — те самые, что понимает /api/forecast
+// (engine.RANGE_DAYS). Пилот выбирал «Все старты» в ряду сроков и получал
+// ответ на другой вопрос (просьба владельца, бриф explicit-site-and-day).
 const RANGE_TABS: { key: RangeKey; label: string }[] = [
   { key: "3d", label: "3 дня" },
   { key: "week", label: "Неделя" },
   { key: "2weeks", label: "2 недели" },
-  { key: "scan", label: "Все старты" },
 ]
 
 // «Лётно / не лётно» — по assessment.flyable, то есть по criteria.FLYABLE
@@ -134,24 +138,36 @@ function NoSites() {
   )
 }
 
+// Чего не хватает, чтобы считать диапазонный обзор. Пока выбор не полон,
+// экран называет недостающее и в сеть не ходит — та же просьба владельца, по
+// которой не считается «Прогноз» (бриф explicit-site-and-day). Спиннер здесь
+// не годится: ждать нечего, оба выбора бывают только явными.
+function NeedsChoice({ site, range }: { site: string | null; range: RangeKey | null }) {
+  const noSite = site === null
+  const noRange = range === null
+  return (
+    <div className="empty">
+      <b>{noSite && noRange ? "Выберите старт и период" : noSite ? "Выберите старт" : "Выберите период"}</b>
+      {/* Куда нажимать: старт — общий для всех экранов и живёт в шапке,
+          период — только у этого экрана и стоит прямо над списком. */}
+      {noSite && noRange ? "Старт выбирается кнопкой в шапке, период — кнопками выше."
+        : noSite ? "Старт выбирается кнопкой в шапке."
+        : "Период выбирается кнопками выше."}
+    </div>
+  )
+}
+
 function RangeView({ site, range, model, active, onOpenDay }: {
-  site: string | null
-  range: Exclude<RangeKey, "scan">
+  // Здесь уже не `string | null`: неполный выбор разбирает сам экран
+  // (NeedsChoice выше), и до этого места доходит только выбранный старт.
+  site: string
+  range: RangeKey
   model: string | null
   active: boolean
   onOpenDay: (site: string, date: string) => void
 }) {
   const forecast = useForecast(site, range, null, model, active)
 
-  if (site === null) {
-    return <NoSites />
-  }
-  // Отдельное имя (не "site") для узкого string ниже — строки дня зовут
-  // onOpenDay(activeSite, day.date) этим именем, а не параметром site,
-  // чтобы не полагаться на то, что сужение до string переживёт замыкание
-  // внутри .map(): дешёвая подстраховка на месте, где однажды уже перепутали
-  // "какой старт" с "какая дата" (Critical, ревью этой задачи).
-  const activeSite = site
   if (forecast.isPending) {
     return <Spinner />
   }
@@ -206,7 +222,7 @@ function RangeView({ site, range, model, active, onOpenDay }: {
 
       <div className="days" role="group" aria-label="Дни диапазона">
         {days.map((day) => (
-          <button key={day.date} type="button" className="day" onClick={() => onOpenDay(activeSite, day.date)}>
+          <button key={day.date} type="button" className="day" onClick={() => onOpenDay(site, day.date)}>
             <div className="day__d">{fmtDate(day.date)}</div>
             <div className="day__m">
               <div
@@ -227,22 +243,38 @@ function RangeView({ site, range, model, active, onOpenDay }: {
   )
 }
 
-function ScanView({ site, model, active, onOpenDay }: {
-  site: string | null
+function ScanView({ model, active, onOpenDay }: {
   model: string | null
   active: boolean
   onOpenDay: (site: string, date: string) => void
 }) {
-  // `site === null` означает «в библиотеке нет ни одного старта» — то же
-  // условие, по которому соседние сегменты показывают «Нет стартов» (см.
-  // RangeView выше: site считается в оболочке через defaultSiteName(sites)).
-  // Без этой ветки свежая установка получала на вкладке «Все старты»
-  // совершенно пустой экран — только переключатель сегментов и под ним
-  // ничего, — и вдобавок в сеть уходил самый дорогой запрос приложения про
-  // пустую библиотеку (финальное ревью ветки, Minor 6).
-  const scan = useScan(model, active && site !== null)
+  // Выбранный в шапке старт этому режиму не нужен вовсе: скан ходит по ВСЕЙ
+  // библиотеке (forecast.scan_week зовёт store.load_sites) — в этом весь его
+  // смысл. А вот пустая библиотека — причина не спрашивать сервер: свежая
+  // установка получала на «Все старты» совершенно пустой экран и вдобавок
+  // отправляла самый дорогой запрос приложения про пустоту (финальное ревью
+  // ветки, Minor 6). Раньше это состояние приезжало пропом site === null;
+  // теперь такой проп значит «пилот не выбрал», а это другое, — и список
+  // приходится читать самим. Запрос тот же (ключ ["sites"], его уже сделала
+  // оболочка), то есть подписка на общий кэш.
+  const sites = useSites()
+  // Ждём ОТВЕТА про библиотеку, а не гадаем: спросить скан и только потом
+  // узнать, что спрашивать было не о чем, — это тот самый лишний тяжёлый
+  // запрос, ради которого всё и затевалось (api.py:one_at_a_time держит один
+  // такой на пилота). Ждать почти нечего: тот же ключ ["sites"] оболочка
+  // запрашивает при запуске, и к нажатию «Все старты» ответ обычно уже в кэше.
+  const scan = useScan(model, active && sites.data !== undefined && sites.data.length > 0)
 
-  if (site === null) {
+  if (sites.isPending) {
+    return <Spinner />
+  }
+  // Отказ /api/sites разбирается здесь же, а не молчанием: без этой ветки
+  // экран остался бы в спиннере навсегда — скан не запускается, пока список
+  // неизвестен, и ждать его было бы нечего.
+  if (sites.isError) {
+    return <ErrorBox error={sites.error} onRetry={() => { void sites.refetch() }} />
+  }
+  if (sites.data.length === 0) {
     return <NoSites />
   }
   if (scan.isPending) {
@@ -310,26 +342,47 @@ function ScanView({ site, model, active, onOpenDay }: {
 }
 
 export function Overview({ site, model, active = true, onOpenDay }: OverviewProps) {
-  const [range, setRange] = useState<RangeKey>("3d")
+  // Ни период, ни режим не предвыбраны: экран открывается, ничего не считая,
+  // и ждёт, пока пилот скажет, что смотреть (бриф explicit-site-and-day).
+  const [range, setRange] = useState<RangeKey | null>(null)
+  const [allSites, setAllSites] = useState(false)
 
   return (
     <>
-      <div className="seg" role="group" aria-label="Диапазон обзора">
-        {RANGE_TABS.map((t) => (
-          <button
-            key={t.key}
-            type="button"
-            aria-pressed={range === t.key}
-            onClick={() => setRange(t.key)}
-          >
-            {t.label}
-          </button>
-        ))}
+      {/* «Все старты» — отдельный переключатель, а не четвёртый период:
+          вопрос «по всем стартам или по одному» и вопрос «за какой срок» —
+          разные, и у скана срок ровно один (см. RANGE_TABS выше). */}
+      <div className="seg" role="group" aria-label="Что смотрим">
+        <button type="button" aria-pressed={allSites} onClick={() => setAllSites((on) => !on)}>
+          Все старты
+        </button>
       </div>
 
-      {range === "scan"
-        ? <ScanView site={site} model={model} active={active} onOpenDay={onOpenDay} />
-        : <RangeView site={site} range={range} model={model} active={active} onOpenDay={onOpenDay} />}
+      {allSites
+        // Селектор периодов не просто гаснет, а объясняет, почему его нет:
+        // GET /api/scan диапазона не принимает вовсе (forecast.scan_week
+        // считает неделю), и выбирать пилоту тут нечего.
+        ? <div className="attrib">по всем стартам — на неделю вперёд</div>
+        : (
+          <div className="seg" role="group" aria-label="Диапазон обзора">
+            {RANGE_TABS.map((t) => (
+              <button
+                key={t.key}
+                type="button"
+                aria-pressed={range === t.key}
+                onClick={() => setRange(t.key)}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+        )}
+
+      {allSites
+        ? <ScanView model={model} active={active} onOpenDay={onOpenDay} />
+        : site === null || range === null
+          ? <NeedsChoice site={site} range={range} />
+          : <RangeView site={site} range={range} model={model} active={active} onOpenDay={onOpenDay} />}
     </>
   )
 }

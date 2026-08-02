@@ -74,6 +74,19 @@ def test_ms_to_kmh_matches_route():
     assert _literal(_domain(), "MS_TO_KMH") == route.MS_TO_KMH
 
 
+def test_day_picker_depth_matches_engine():
+    """Выбиралка дня предлагает ровно столько дней, сколько считает домен.
+
+    Список дней в шапке приложения (webapp/src/sheets/DayPickerSheet.tsx)
+    доходит до самого дальнего дня, на который вообще есть прогноз, —
+    engine.RANGE_DAYS["2weeks"]. Разойдись копия в меньшую сторону — пилот не
+    сможет выбрать день, который бот ему же покажет на «2 недели»; в большую —
+    выберет день, на который open-meteo ответа не даёт вовсе (engine.build_url
+    просит forecast_days=RANGE_DAYS[rng]).
+    """
+    assert _literal(_domain(), "RANGE_DAYS_2WEEKS") == engine.RANGE_DAYS["2weeks"]
+
+
 def test_feasibility_labels_match_route():
     """Проходимость маршрута подписана в приложении теми же словами, что в чате."""
     assert _literal(_domain(), "FEASIBILITY_RU") == route.FEASIBILITY_RU

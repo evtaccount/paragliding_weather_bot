@@ -18,7 +18,6 @@ import { useDeleteSite, useSites } from "../api/queries"
 import type { Site } from "../api/types"
 import { colorOfCategory } from "../charts/palette"
 import { compass, fmtNum } from "../format"
-import { defaultSiteName } from "../sites"
 import { ErrorBox } from "../ui/ErrorBox"
 import { Spinner } from "../ui/Spinner"
 
@@ -46,8 +45,8 @@ export function siteSubtitle(site: Site): string {
 }
 
 type PickerProps = {
-  // Сырой выбор пилота (null — явного выбора ещё не было), а не вычисленный
-  // «текущий старт»: запасной вариант шторка считает сама, из СВЕЖЕГО списка.
+  // Выбор пилота; null — явного выбора ещё не было, и тогда не отмечен ни
+  // один старт.
   selected: string | null
   onPick: (name: string) => void
 }
@@ -63,11 +62,11 @@ export function SitePickerSheet({ selected, onPick }: PickerProps) {
   if (sites.isPending) return <Spinner />
   if (sites.isError) return <ErrorBox error={sites.error} onRetry={() => { void sites.refetch() }} />
 
-  // Тем же правилом, что и оболочка (sites.ts: запасной старт — первый в
-  // списке), иначе при пустом выборе шторка не отметила бы ни одного старта,
-  // хотя приложение показывает первый.
-  const current = selected ?? defaultSiteName(sites.data)
-  const notes = sites.data.find((s) => s.name === current)?.notes ?? ""
+  // Отмечен ровно тот старт, который выбрал пилот, и никакой иначе: запасного
+  // старта в приложении больше нет (шапка при пустом выборе так и пишет —
+  // «Старт не выбран»), а галочка у первого старта обещала бы выбор, которого
+  // не было.
+  const notes = sites.data.find((s) => s.name === selected)?.notes ?? ""
 
   if (sites.data.length === 0) {
     return (
@@ -85,12 +84,12 @@ export function SitePickerSheet({ selected, onPick }: PickerProps) {
           <button
             key={site.name}
             type="button"
-            aria-pressed={site.name === current}
+            aria-pressed={site.name === selected}
             onClick={() => onPick(site.name)}
           >
             <b>{site.name}</b>
             <s>{siteSubtitle(site)}</s>
-            {site.name === current && <em>✓</em>}
+            {site.name === selected && <em>✓</em>}
           </button>
         ))}
       </div>

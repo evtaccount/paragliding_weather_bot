@@ -53,14 +53,37 @@ test("приложение открывается и показывает вкл
 
   // Одних вкладок мало: они рисуются и при отвергнутой подписи — оболочка
   // показывает их до любого ответа сервера. Поэтому сценарий требует ещё и
-  // того, что приходит ТОЛЬКО по успешному подписанному запросу: имя старта
-  // из /api/sites и подпись модели из /api/prefs. Отвергни сервер подпись —
-  // на месте старта будет «Нет стартов», а чип модели останется пустым
-  // (App.tsx: modelLabel(prefs.data, …) ?? <Spinner/>).
-  await expect(page.locator(".site__name")).not.toHaveText("Нет стартов")
-  await expect(page.locator(".site__name")).toHaveText(/\S/)
+  // того, что приходит ТОЛЬКО по успешному подписанному запросу: подпись
+  // модели из /api/prefs и список стартов из /api/sites. Отвергни сервер
+  // подпись — чип модели останется пустым (App.tsx: modelLabel(prefs.data, …)
+  // ?? <Spinner/>), а в шторке выбора старта будет «Нет стартов».
+  //
+  // Само имя старта в шапке признаком этого больше не служит: пока пилот не
+  // выбрал, там стоит «Старт не выбран» независимо от ответа сервера (бриф
+  // explicit-site-and-day) — поэтому список проверяется там, где он живёт.
   await expect(page.locator(".ctx .chip--live")).toHaveText(/\S/)
+
+  await page.getByRole("button", { name: "Старт не выбран" }).click()
+  const sheet = page.getByRole("dialog")
+  await expect(sheet.getByText("Нет стартов")).toHaveCount(0)
+  await expect(sheet.locator(".pick button").first()).toHaveText(/\S/)
+  await sheet.getByRole("button", { name: "Закрыть" }).click()
 })
+
+// Приложение ничего не выбирает за пилота: пока старт и день не названы,
+// «Прогноз» показывает, чего не хватает, и в сеть не ходит вовсе (бриф
+// explicit-site-and-day). Сценарии, которым нужен посчитанный прогноз,
+// проходят тот же путь, что и пилот: две кнопки в шапке, две шторки.
+//
+// Старт берётся первый из живой библиотеки (какой именно — сценарию всё
+// равно, данные настоящие), день — сегодняшний: он всегда есть в списке.
+async function chooseSiteAndToday(page: import("@playwright/test").Page) {
+  await page.getByRole("button", { name: "Старт не выбран" }).click()
+  await page.getByRole("dialog").locator(".pick button").first().click()
+
+  await page.getByRole("button", { name: "День не выбран" }).click()
+  await page.getByRole("dialog").getByRole("button", { name: /^сегодня, / }).click()
+}
 
 // Экран «Прогноз» — не единственный, кто рисует вердикт: «Обзор» показывает
 // такую же категорию своим днём, и все четыре экрана смонтированы разом
@@ -72,6 +95,7 @@ function dayScreen(page: import("@playwright/test").Page) {
 
 test("прогноз загружается и показывает вердикт", async ({ page }) => {
   await page.goto("/")
+  await chooseSiteAndToday(page)
   const day = dayScreen(page)
 
   // Балл дня — число или прочерк (Forecast.tsx: assessment.score ?? "—"),
@@ -88,6 +112,7 @@ test("прогноз загружается и показывает вердик
 
 test("шторка ветра по высотам открывается и закрывается", async ({ page }) => {
   await page.goto("/")
+  await chooseSiteAndToday(page)
 
   // Кнопка живёт под вердиктом и появляется вместе с ним — ждём именно её,
   // а не «сколько-нибудь времени».
