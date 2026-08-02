@@ -12,7 +12,7 @@ RSYNC_EXCL   = --exclude .git --exclude .venv --exclude .env --exclude __pycache
                --exclude node_modules
 
 .DEFAULT_GOAL := help
-.PHONY: help install run check test webapp-install webapp-build secrets clean \
+.PHONY: help install run check test e2e webapp-install webapp-build secrets clean \
         docker-build docker-up docker-down docker-restart docker-logs docker-ps \
         deploy deploy-restart deploy-logs
 
@@ -33,6 +33,12 @@ check:              ## byte-compile all modules (quick syntax check)
 test:               ## run python + webapp test suites
 	.venv/bin/python -m pytest -q
 	npm --prefix webapp run test -- --run
+
+# Сквозные сценарии в `test` не входят намеренно: им нужен настоящий браузер,
+# запущенный рядом app.py и поход в open-meteo — всего того, чего у обычного
+# прогона тестов нет. Подготовка описана в README, раздел «Сквозные сценарии».
+e2e:                ## run end-to-end tests (needs a running app.py and DEV_INIT_DATA)
+	npm --prefix webapp run e2e
 
 webapp-install:     ## install webapp dependencies
 	npm --prefix webapp ci

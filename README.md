@@ -383,6 +383,36 @@ python app.py                 # бот + API на 127.0.0.1:8080
 
 Или через `make`: `make install`, `make run`, `make docker-up`, `make docker-logs`.
 
+### Сквозные сценарии (Playwright)
+
+`make test` гоняет питоновские тесты и тесты интерфейса в jsdom. Сквозные
+сценарии — отдельная цель `make e2e`: им нужен настоящий браузер, запущенный
+рядом `app.py` и поход в open-meteo, поэтому в общий прогон они не входят.
+
+```bash
+make webapp-install                                     # ставит и @playwright/test
+npm --prefix webapp exec -- playwright install chromium  # браузер, один раз на машину
+python app.py                                           # в отдельном терминале: бот + API на :8080
+export DEV_INIT_DATA="$(python scripts/dev_init_data.py \
+    --user-id <ваш telegram id> --token "$BOT_TOKEN")"
+make e2e
+```
+
+- **Токен — тот же, что у запущенного `app.py`.** Подпись `initData` проверяется
+  тем же токеном, которым она выпущена (`webauth.verify` — HMAC от `"WebAppData"`,
+  в Telegram он не ходит), поэтому сценарии не требуют настоящего клиента
+  Telegram, но требуют совпадения токенов.
+- **`--user-id` должен быть в `ALLOWED_USER_IDS`**, если список непустой: подпись
+  чужого пилота валидна, и API отвечает на неё 403 (`api.current_user`).
+- **Подпись живёт сутки** (`webauth.MAX_AGE_SEC`) — на следующий день выпустите
+  заново.
+- Сценарии раскладки (`webapp/e2e/layout.spec.ts`) идут на фиксированных ответах
+  API из `webapp/test/fixtures` и живого `app.py` не требуют; сценарии из
+  `webapp/e2e/app.spec.ts` — требуют.
+- Приложение Playwright собирает сам (`npm run build` внутри `webServer`) и
+  отдаёт через `vite preview`, а `/api` проксирует на `127.0.0.1:8080` —
+  специально запускать `make webapp-build` не нужно.
+
 ## Добавить старт
 
 Прямо из Telegram: `/add <Имя> <lat> <lon> <экспозиция>` (или `/add` — бот

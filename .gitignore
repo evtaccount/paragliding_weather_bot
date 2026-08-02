@@ -22,4 +22,10 @@ deploy/pgbot.service
 # webapp (Vite + React)
 webapp/node_modules
 webapp/dist
+# следы прогонов Playwright: снимки и трассы упавших сценариев (test-results,
+# outputDir по умолчанию) и HTML-отчёт, если его попросили ключом --reporter.
+# Сами браузеры Playwright кладёт мимо репозитория (~/Library/Caches или
+# ~/.cache/ms-playwright), поэтому исключать их не нужно.
 webapp/test-results
+webapp/playwright-report
+webapp/blob-report
