@@ -86,7 +86,7 @@ function jsonResponse(body: unknown, status = 200): Promise<Response> {
 // несколько за сеанс (монтирование, смена времени вылета, смена маршрута), и
 // проверять надо именно последний: «есть хоть один запрос без departure»
 // верно всегда — первый запрос уходит без времени по определению.
-type RouteRequestBody = { name?: string | null; departure?: string | null }
+type RouteRequestBody = { name?: string | null; date?: string; departure?: string | null }
 
 function lastRouteBody(fetchMock: { mock: { calls: [string, (RequestInit | undefined)?][] } }): RouteRequestBody {
   const posts = fetchMock.mock.calls
@@ -561,4 +561,80 @@ test("под строгим режимом разработки открытие
   await screen.findByText(ROUTE.verdict.label)
   await userEvent.click(screen.getByRole("button", { name: /Разбор от ИИ/ }))
   expect(await screen.findByText("Разбор под строгим режимом разработки.")).toBeInTheDocument()
+})
+
+// Финальное ревью ветки, I5. Та же ось, что N1 задачи 13, только вторая:
+// выбранное время вылета было привязано к маршруту, но не к дате. Пилот
+// подобрал «18:00» сегодняшнему дню, ушёл в «Обзор» и тапнул другой день —
+// новый день молча считался с departure прежнего, хотя термическое окно у
+// него другое и «18:00» может не быть в departure_scan вовсе: ни один чип не
+// подсвечен, а маршрут посчитан по времени, которого в списке нет. Вернуть
+// «пусть выбирает сервер» пилоту при этом нечем.
+test("другой день считается по своему окну, а не по времени, подобранному вчера", async () => {
+  const fetchMock = vi.fn((_url: string, _init?: RequestInit) => jsonResponse(ROUTE))
+  vi.stubGlobal("fetch", fetchMock)
+  const { rerender } = render(
+    <Route points={POINTS} name={ROUTE.route.name} date={ROUTE.route.date} model="ecmwf" onPickRoute={() => {}} />,
+    { wrapper },
+  )
+  await screen.findByText(ROUTE.verdict.label)
+
+  const target = ROUTE.departure_scan.find((e) => e.departure !== ROUTE.route.departure)!
+  await userEvent.click(screen.getByRole("button", { name: new RegExp(`^${target.departure} →`) }))
+  await waitFor(() => {
+    expect(lastRouteBody(fetchMock).departure).toBe(target.departure)
+  })
+
+  // Тот же маршрут (та же ССЫЛКА на точки), другой день — как после тапа по
+  // дню в «Обзоре».
+  rerender(
+    <Route points={POINTS} name={ROUTE.route.name} date="2026-07-31" model="ecmwf" onPickRoute={() => {}} />,
+  )
+
+  await waitFor(() => {
+    const body = lastRouteBody(fetchMock)
+    expect(body.date).toBe("2026-07-31")
+    expect(body.departure).toBeNull()
+  })
+})
+
+// Финальное ревью ветки, I3: скрытая вкладка не тратит единственный слот
+// пилота. У «Маршрута» это не запрос-подписка, а мутация в эффекте, поэтому
+// проверяется отдельно от «Прогноза» и «Обзора».
+test("скрытый экран маршрута не считает маршрут, а показанный — считает", async () => {
+  const fetchMock = vi.fn((_url: string, _init?: RequestInit) => jsonResponse(ROUTE))
+  vi.stubGlobal("fetch", fetchMock)
+  const { rerender } = render(
+    <Route points={POINTS} name={ROUTE.route.name} date={ROUTE.route.date} model="ecmwf"
+           active={false} onPickRoute={() => {}} />,
+    { wrapper },
+  )
+  await new Promise((resolve) => { setTimeout(resolve, 20) })
+  expect(fetchMock).not.toHaveBeenCalled()
+
+  rerender(
+    <Route points={POINTS} name={ROUTE.route.name} date={ROUTE.route.date} model="ecmwf"
+           active onPickRoute={() => {}} />,
+  )
+  expect(await screen.findByText(ROUTE.verdict.label)).toBeInTheDocument()
+})
+
+// Обратная сторона той же правки: возвращение на вкладку не должно считать
+// заново то, что уже посчитано. Без памяти о последнем отправленном вводе
+// каждое переключение вкладок туда-обратно стоило бы пилоту ещё одного
+// тяжёлого запроса — то самое, ради устранения чего эффект и гасится.
+test("возвращение на вкладку не пересчитывает тот же маршрут", async () => {
+  const fetchMock = vi.fn((_url: string, _init?: RequestInit) => jsonResponse(ROUTE))
+  vi.stubGlobal("fetch", fetchMock)
+  const props = { points: POINTS, name: ROUTE.route.name, date: ROUTE.route.date, model: "ecmwf", onPickRoute: () => {} }
+  const { rerender } = render(<Route {...props} active />, { wrapper })
+  await screen.findByText(ROUTE.verdict.label)
+  const posts = (): unknown[] => fetchMock.mock.calls.filter(([u]) => String(u).split("?")[0] === "/api/route")
+  expect(posts()).toHaveLength(1)
+
+  rerender(<Route {...props} active={false} />)
+  rerender(<Route {...props} active />)
+  await new Promise((resolve) => { setTimeout(resolve, 20) })
+
+  expect(posts()).toHaveLength(1)
 })

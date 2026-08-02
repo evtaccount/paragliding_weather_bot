@@ -76,3 +76,18 @@ def test_overview_rows_flags_flyable_and_windy_days():
     assert rows[1]["limiting"], "у нелётного дня должен быть назван лимит-фактор"
     for key in ("wmax", "gmax", "dom", "precip", "wc", "tmax"):
         assert key in rows[0]
+
+
+def test_overview_rows_describe_the_weather_in_words():
+    """Строка скана несёт погоду СЛОВАМИ, а не только код WMO.
+
+    Код `wc` читатель перевести не может, не заведя у себя копию таблицы
+    engine.WMO: чат её и держит (bot.py:252), а мини-приложение не держало — и
+    показывало вместо погоды категорию лётности, уже стоявшую в соседней
+    ячейке балла (финальное ревью ветки, I6). Слова кладёт домен, тем же
+    WMO, что и у дня диапазонного обзора (facts_overview).
+    """
+    rows = engine.overview_rows(_week_data(), _site())
+    assert rows[0]["weather"] == engine.WMO[0]     # weather_code 0 — ясно
+    assert rows[1]["weather"] == engine.WMO[3]     # weather_code 3 — пасмурно
+    assert rows[0]["weather"] != rows[1]["weather"]

@@ -11,11 +11,18 @@
 
 export type Model = { key: string; label: string }
 
+// ceiling_model — модель, которой сервер считает потолок термиков, независимо
+// от выбранной пилотом (api.py:_prefs_payload по engine.CEILING_MODEL_KEY).
+// Приходит с сервера, а не пишется здесь словом: экран настроек и шторка
+// выбора модели объясняют пилоту, почему потолок не меняется вместе с
+// моделью, и три такие подписи уже жили копиями константы (финальное ревью
+// ветки, I1).
 export type Prefs = {
   avg_route_speed_kmh: number
   wind_correction_enabled: boolean
   model_key: string
   models: Model[]
+  ceiling_model: Model
 }
 
 export type Site = {
@@ -31,10 +38,17 @@ export type Site = {
   notes: string
 }
 
+// flyable — лётный ли день по criteria.FLYABLE (engine.py:assessment_facts →
+// criteria.flyable). Та же функция отбирает дни в /api/scan
+// (forecast.py:scan_week), поэтому обе половины экрана «Обзор» подписывают
+// день одним правилом. Своей копии правила у приложения нет намеренно: она
+// была и уже расходилась с доменом на категории marginal (финальное ревью
+// ветки, I2).
 export type Assessment = {
   score: number | null
   category: string
   label_ru: string
+  flyable: boolean
   limiting_factor: string | null
   limiting_factor_ru: string | null
   fly_window: number[] | null
@@ -80,6 +94,12 @@ export type OverviewRow = {
   dom: number
   precip: number
   wc: number
+  // weather — описание погоды словами (engine.py:overview_rows через
+  // engine.WMO), то же поле, что и у дня диапазонного обзора
+  // (ForecastOverview.days_daytime[].weather). Приложение не переводит `wc`
+  // само: таблица кодов WMO — знание домена, и её копия в TypeScript была бы
+  // третьей (чат печатает ту же строку, bot.py:252).
+  weather: string
 }
 
 // aspect_deg — ГРАДУСЫ, а не румб: forecast.py:91 кладёт сюда site["aspect_deg"]
@@ -155,6 +175,12 @@ export type Facts = {
     // поля не разошлись в разные стороны.
     timezone: string | null
     model: string
+    // ceiling_model — подпись модели, которой посчитан потолок термиков
+    // (engine.py:facts_1day по CEILING_MODEL_KEY). Столб воздуха подписывает
+    // ею высоту слоя перемешивания; поле `model` выше несёт то же знание
+    // внутри фразы для чата («ECMWF (потолок GFS)»), разбирать её разметкой
+    // значило бы завести четвёртую копию правила (финальное ревью ветки, I1).
+    ceiling_model: string
   }
   date: string
   daylight_hours: string

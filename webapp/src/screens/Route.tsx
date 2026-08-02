@@ -28,13 +28,14 @@
 // (состояние, а не литерал `[]`/новый массив на каждый рендер), иначе экран
 // будет слать запрос на каждый чужой ре-рендер родителя. App.tsx хранит
 // пустой маршрут константой вне компонента ровно по этой причине.
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { useRoute } from "../api/queries"
-import type { RoutePointRow } from "../api/queries"
+import type { RouteInput, RoutePointRow } from "../api/queries"
 import type { RoutePoint, Site } from "../api/types"
 import { useSheetsContext } from "../App"
 import { BAND, TERRAIN, colorOfCategory } from "../charts/palette"
 import { RouteProfile } from "../charts/RouteProfile"
+import { FEASIBILITY_RU } from "../domain"
 import { compass, fmtNum, fmtPoints } from "../format"
 import { MapView } from "../map/MapView"
 import { NewRouteSheet } from "../sheets/NewRouteSheet"
@@ -49,26 +50,30 @@ type RouteProps = {
   name: string | null
   date: string
   model: string | null
+  // Показан ли экран и известна ли действующая модель — см. подробный разбор
+  // у OverviewProps.active (screens/Overview.tsx) и у `enabled` в
+  // api/queries.ts. Здесь это не запрос-подписка, а мутация в эффекте,
+  // поэтому гасится сам эффект.
+  active?: boolean
   // Выбранный маршрут уходит наверх, а не остаётся здесь: точки хранит
   // оболочка (App.tsx), иначе они пропадали бы при переключении вкладки.
   onPickRoute: (points: RoutePointRow[], name: string | null) => void
 }
 
-// route.py:FEASIBILITY_RU — дословно те же четыре строки, что печатает
-// карточка маршрута в Telegram (route.py:756-761, показывается всегда:
-// _verdict_lines кладёт её строкой под баллом). Без неё экран рисует
-// одинаковый вердикт для «проходится» и «не успеваешь до закрытия окна»:
-// балл и категория у них совпадают (route.json: вылет 15:30 — too_slow при
-// том же 70,5 и «отличная лётная»), различает их только это поле.
-// Незнакомый ключ показывается как есть, а не подменяется чужим смыслом —
-// тот же приём, что и ROLE_RU в sheets/PointCardSheet.tsx.
-const FEASIBILITY_RU: Record<string, string> = {
-  completable: "маршрут проходится",
-  blocked_at_km: "маршрут обрывается",
-  too_slow: "не успеваешь до закрытия окна",
-  unknown: "данных не хватает для вердикта",
-}
-
+// FEASIBILITY_RU (../domain, копия route.py под сверкой
+// tests/test_webapp_sync.py) — те же строки, что печатает карточка маршрута в
+// Telegram (route.py:756-761, показывается всегда: _verdict_lines кладёт её
+// строкой под баллом). Без неё экран рисует одинаковый вердикт для
+// «проходится» и «не успеваешь до закрытия окна»: балл и категория у них
+// совпадают (route.json: вылет 15:30 — too_slow при том же 70,5 и «отличная
+// лётная»), различает их только это поле.
+//
+// Незнакомый ключ показывается как есть, а не подменяется чужим смыслом. Это
+// запасной путь на случай, когда сервер новее приложения, — но молчаливым он
+// быть перестал: раньше пятый статус в criteria.FEASIBILITY означал латинский
+// `no_window` под баллом маршрута и на чипе вылета, и ни один тест этого не
+// видел (финальное ревью ветки, I4). Теперь набор ключей сверяется с
+// criteria.FEASIBILITY питоновским тестом.
 function feasibilityLabel(feasibility: string): string {
   return FEASIBILITY_RU[feasibility] ?? feasibility
 }
@@ -157,34 +162,64 @@ function RouteSourceButtons(
   )
 }
 
-export function Route({ points, name, date, model, onPickRoute }: RouteProps) {
+export function Route({ points, name, date, model, active = true, onPickRoute }: RouteProps) {
   const sheets = useSheetsContext()
-  // Выбранное чипом время вылета хранится ВМЕСТЕ с маршрутом, для которого его
-  // выбрали, и действует только пока показывают этот самый маршрут.
+  // Выбранное чипом время вылета хранится ВМЕСТЕ с маршрутом И ДАТОЙ, для
+  // которых его выбрали, и действует, только пока показывают ровно их.
   //
   // Экран никогда не размонтируется (вкладки скрыты через hidden, а не сняты
   // с дерева, см. App.tsx), поэтому обычное состояние `departure` пережило бы
-  // смену маршрута: пилот подобрал 18:00 маршруту А, открыл сохранённый
-  // маршрут Б — и Б посчитался бы не по своему термическому окну (его сервер
-  // выбирает сам, route.py:get_route), а по времени, подобранному для А.
-  // Вернуть «пусть выбирает сервер» пилоту при этом нечем: чипы задают только
-  // конкретное время. Найдено ревью задачи 13 (N1), воспроизведено на смене
-  // маршрута.
+  // и смену маршрута, и смену дня:
+  //
+  //  — маршрут: пилот подобрал 18:00 маршруту А, открыл сохранённый маршрут Б
+  //    — и Б посчитался бы не по своему термическому окну (его сервер выбирает
+  //    сам, route.py:get_route), а по времени, подобранному для А (ревью
+  //    задачи 13, N1);
+  //  — дата: пилот подобрал 18:00 сегодняшнему дню, ушёл в «Обзор» и тапнул
+  //    другой день — маршрут молча пересчитывался на новый день с прежним
+  //    «18:00», которого в departure_scan нового дня может не быть вовсе:
+  //    ни один чип не подсвечен, а маршрут посчитан по времени, которого в
+  //    списке нет (финальное ревью ветки, I5). Термическое окно у другого дня
+  //    другое, и подобранное время к нему не относится.
+  //
+  // Вернуть «пусть выбирает сервер» пилоту нечем — чипы задают только
+  // конкретное время, — поэтому право выбора возвращается серверу само, как
+  // только меняется то, для чего время подбирали.
   //
   // Сравнение по ССЫЛКЕ на массив точек, а не по его содержимому: тот же
   // маршрут, пришедший заново (перевыбор того же имени в «Сохранённых»), —
   // это новый расчёт, и время вылета для него сервер снова подбирает сам.
-  const [pickedDeparture, setPickedDeparture] = useState<{ points: RoutePointRow[]; time: string } | null>(null)
+  const [pickedDeparture, setPickedDeparture] =
+    useState<{ points: RoutePointRow[]; date: string; time: string } | null>(null)
   // null — сервер сам выбирает время вылета (начало термического окна первой
   // точки, route.py:get_route).
-  const departure = pickedDeparture !== null && pickedDeparture.points === points ? pickedDeparture.time : null
+  const departure =
+    pickedDeparture !== null && pickedDeparture.points === points && pickedDeparture.date === date
+      ? pickedDeparture.time
+      : null
   const route = useRoute()
   const { mutate } = route
 
+  // Что уже отправлено: расчёт маршрута — мутация, а не запрос-подписка, и
+  // своего ключа у него нет, поэтому «этот ввод уже посчитан» приходится
+  // помнить самому. Нужно это ровно из-за `active`: без памяти каждое
+  // возвращение на вкладку слало бы ПОВТОРНЫЙ расчёт того же маршрута — тот
+  // самый лишний тяжёлый запрос, ради устранения которых эффект и гасится.
+  // Сравнение по тем же правилам, что и зависимости эффекта (ссылка на
+  // points, остальное по значению).
+  const sentRef = useRef<RouteInput | null>(null)
+
   useEffect(() => {
+    if (!active) return
     if (points.length < 2) return
+    const sent = sentRef.current
+    if (sent !== null && sent.points === points && sent.name === name && sent.date === date
+        && sent.departure === departure && sent.model === model) {
+      return
+    }
+    sentRef.current = { points, name, date, departure, model }
     mutate({ points, name, date, departure, model })
-  }, [points, name, date, departure, model, mutate])
+  }, [active, points, name, date, departure, model, mutate])
 
   if (points.length < 2) {
     return (
@@ -379,7 +414,7 @@ export function Route({ points, name, date, model, onPickRoute }: RouteProps) {
                 aria-label={`${entry.departure} → ${score} · ${feasibility}`}
                 style={isActive ? { borderColor: "var(--ink)", color: "var(--ink)" } : undefined}
                 title={isBest ? `Лучший вылет · ${feasibility}` : feasibility}
-                onClick={() => setPickedDeparture({ points, time: entry.departure })}
+                onClick={() => setPickedDeparture({ points, date, time: entry.departure })}
               >
                 {entry.departure} → {score}{isBest ? " ★" : ""}{warning}
               </button>

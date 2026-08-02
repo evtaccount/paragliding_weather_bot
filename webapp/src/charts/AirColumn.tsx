@@ -14,6 +14,9 @@
 // thermal_ceiling_m_agl/msl приходят null (engine.py:_series_available).
 // Потолок в этом случае подписывается «потолок неизвестен», а не
 // рисуется по выдуманной высоте: ни линии, ни коридора без него нет.
+//
+// Имя модели, которой считается потолок, приходит с ответом
+// (facts.site.ceiling_model) — см. подпись внизу графика.
 import { BAND, TERRAIN } from "./palette"
 import type { Facts } from "../api/types"
 
@@ -133,10 +136,15 @@ export function AirColumn({ facts }: AirColumnProps) {
       </text>
 
       {/* Модель для потолка не совпадает с моделью, выбранной пилотом для
-          остального прогноза (miniapp/README.md:39-41): GFS отдаёт
-          boundary_layer_height всегда, а ECMWF (модель по умолчанию) — нет. */}
+          остального прогноза (miniapp/README.md:39-41): она одна отдаёт
+          boundary_layer_height, а ECMWF (модель по умолчанию) — нет. Её имя
+          берётся из ответа (facts.site.ceiling_model, engine.py:facts_1day по
+          CEILING_MODEL_KEY), а не пишется здесь словом: подпись «по GFS» была
+          одной из трёх копий константы и пережила бы её смену молча —
+          пилот читал бы «по GFS» под высотой, посчитанной другой моделью
+          (финальное ревью ветки, I1). */}
       <text x={4} y={HEIGHT - 6} fontSize={9.5} style={{ fill: "var(--faint)" }}>
-        Высота термического слоя всегда считается по GFS, а не по выбранной модели
+        Высота термического слоя всегда считается по {facts.site.ceiling_model}, а не по выбранной модели
       </text>
     </svg>
   )

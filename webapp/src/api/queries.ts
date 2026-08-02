@@ -149,11 +149,20 @@ export type ForecastRange = "1d" | "3d" | "week" | "2weeks"
 // вызывающий код, — так вызов с range="1d" получает Facts без приведения
 // типов, а не Facts | ForecastOverview с ручной проверкой на каждом сайте
 // использования.
+//
+// `enabled` — «этому запросу пора уходить»: экран показан пилоту И действующая
+// модель уже известна. Тяжёлые запросы скрытых вкладок тратили единственный
+// слот пилота на сервере (api.py:one_at_a_time) раньше того экрана, на который
+// он смотрит, а запрос, ушедший до ответа /api/prefs, считался ВТОРОЙ раз, как
+// только модель появлялась в ключе кэша (финальное ревью ветки, I3 и I4).
+// Условие «старт выбран» остаётся внутри хука — оно про сам запрос, а не про
+// вызывающий экран.
 export function useForecast(
-  site: string | null, range: "1d", date: string | null, model: string | null,
+  site: string | null, range: "1d", date: string | null, model: string | null, enabled?: boolean,
 ): UseQueryResult<Facts, ApiError>
 export function useForecast(
   site: string | null, range: Exclude<ForecastRange, "1d">, date: string | null, model: string | null,
+  enabled?: boolean,
 ): UseQueryResult<ForecastOverview, ApiError>
 // `{ signal }` — из QueryFunctionContext, который TanStack Query передаёt
 // каждому queryFn сам и «взводит», когда запрос перестал быть нужным (пилот
@@ -164,14 +173,14 @@ export function useForecast(
 // сервера значит гарантированно получить 429 на следующий запрос. Полный
 // разбор — в шапке ./queue.
 export function useForecast(
-  site: string | null, range: ForecastRange, date: string | null, model: string | null,
+  site: string | null, range: ForecastRange, date: string | null, model: string | null, enabled = true,
 ): UseQueryResult<Facts | ForecastOverview, ApiError> {
   return useQuery({
     queryKey: ["forecast", site, range, date, model] as const,
     queryFn: ({ signal }) => heavy(() => apiGet<Facts | ForecastOverview>("/api/forecast", {
       site: site ?? undefined, range, date: date ?? undefined, model: model ?? undefined,
     }), signal),
-    enabled: site !== null,
+    enabled: enabled && site !== null,
     retry: false,
     staleTime: STALE_TIME_MS,
     gcTime: GC_TIME_MS,
@@ -195,10 +204,14 @@ export function useWindGrid(
   })
 }
 
-export function useScan(model: string | null): UseQueryResult<Scan, ApiError> {
+// `enabled` — то же, что и у useForecast (см. комментарий там), плюс «в
+// библиотеке есть хотя бы один старт»: /api/scan ходит за погодой по ВСЕЙ
+// библиотеке, и на пустой спрашивать нечего.
+export function useScan(model: string | null, enabled = true): UseQueryResult<Scan, ApiError> {
   return useQuery({
     queryKey: ["scan", model] as const,
     queryFn: ({ signal }) => heavy(() => apiGet<Scan>("/api/scan", { model: model ?? undefined }), signal),
+    enabled,
     retry: false,
     staleTime: STALE_TIME_MS,
     gcTime: GC_TIME_MS,

@@ -19,5 +19,9 @@
       "key": "icon",
       "label": "ICON"
     }
-  ]
+  ],
+  "ceiling_model": {
+    "key": "gfs",
+    "label": "GFS"
+  }
 }

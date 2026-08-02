@@ -93,6 +93,7 @@ export function Settings({
   const speed = speedDraft ?? prefs.data.avg_route_speed_kmh
   const windOn = windDraft ?? prefs.data.wind_correction_enabled
   const modelLabel = prefs.data.models.find((m) => m.key === prefs.data.model_key)?.label ?? prefs.data.model_key
+  const ceilingModel = prefs.data.ceiling_model
 
   // Нажатия НЕ запираются на время запроса: очередь мутаций держит их порядок
   // (api/queries.ts: scope у useUpdatePrefs), а каждое следующее нажатие
@@ -141,10 +142,16 @@ export function Settings({
           value={<div className="row__v">{modelLabel} ›</div>}
           onClick={openModelSheet}
         />
+        {/* Имя модели потолка — из ответа сервера (prefs.ceiling_model,
+            api.py:_prefs_payload по engine.CEILING_MODEL_KEY), а не словом:
+            это было одно и то же знание в четырёх местах TypeScript при
+            одной константе в домене, и смена константы (у GFS может пропасть
+            boundary_layer_height) оставила бы все четыре подписи врать, не
+            уронив ни одного теста — финальное ревью ветки, I1. */}
         <Row
           title="Потолок термички"
-          subtitle="Всегда считается по GFS — только она даёт высоту слоя перемешивания"
-          value={<div className="row__v">GFS</div>}
+          subtitle={`Всегда считается по ${ceilingModel.label} — только она даёт высоту слоя перемешивания`}
+          value={<div className="row__v">{ceilingModel.label}</div>}
         />
       </div>
 

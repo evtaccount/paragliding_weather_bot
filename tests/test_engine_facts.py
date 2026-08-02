@@ -119,3 +119,41 @@ def test_blue_thermals_needs_the_boundary_layer_series():
     facts = engine.facts_1day(data, _site())
     assert facts["blue_thermals"] is False
     assert not any("голубая термичка" in c for c in facts["caveats"])
+
+
+def test_facts_name_the_model_that_counted_the_ceiling():
+    """Потолок термиков считается ОДНОЙ моделью независимо от выбранной, и
+    ответ говорит какой — готовым словом, а не константой, которую читателю
+    предлагается знать наизусть.
+
+    Мини-приложение писало «всегда по GFS» в трёх местах разметки при одной
+    константе engine.CEILING_MODEL_KEY в домене: смена константы (повод
+    реальный — у GFS может пропасть boundary_layer_height) оставила бы пилота
+    с подписью «по GFS» под высотой, посчитанной другой моделью (финальное
+    ревью ветки, I1).
+    """
+    facts = engine.facts_1day(_full_1d(), _site())
+    assert facts["site"]["ceiling_model"] == engine.model_label(engine.CEILING_MODEL_KEY)
+    assert facts["site"]["ceiling_model"] != facts["site"]["model"], (
+        "подпись модели прогноза и модель потолка — разные строки")
+
+
+def test_assessment_says_whether_the_day_is_flyable():
+    """Лётность дня решает criteria.FLYABLE, и ответ несёт готовый ответ.
+
+    Копия правила в мини-приложении («не лётно» только у no_fly и danger) уже
+    расходилась с доменом на категории marginal: день, который скан считает
+    нелётным, вкладка «Неделя» подписывала «лётно» (финальное ревью ветки, I2).
+    Категории названы здесь поимённо намеренно — поднимут планку в
+    criteria.FLYABLE, и этот тест потребует пересмотреть подписи, а не
+    промолчит.
+    """
+    import criteria
+
+    for category, expected in (("excellent", True), ("fair", True),
+                               ("marginal", False), ("no_fly", False)):
+        assert criteria.flyable(category) is expected, (
+            f"{category}: правило лётности изменилось — пересмотрите подписи в приложении")
+
+    facts = engine.facts_1day(_full_1d(), _site())
+    assert facts["assessment"]["flyable"] is criteria.flyable(facts["assessment"]["category"])

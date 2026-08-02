@@ -30,6 +30,7 @@
         "score": 84,
         "category": "excellent",
         "label_ru": "отличная лётная",
+        "flyable": true,
         "limiting_factor": "thermal_index",
         "limiting_factor_ru": "Thermal Index",
         "fly_window": [
@@ -62,6 +63,7 @@
         "score": 84,
         "category": "excellent",
         "label_ru": "отличная лётная",
+        "flyable": true,
         "limiting_factor": "thermal_index",
         "limiting_factor_ru": "Thermal Index",
         "fly_window": [
@@ -94,6 +96,7 @@
         "score": 84,
         "category": "excellent",
         "label_ru": "отличная лётная",
+        "flyable": true,
         "limiting_factor": "thermal_index",
         "limiting_factor_ru": "Thermal Index",
         "fly_window": [
@@ -126,6 +129,7 @@
         "score": 84,
         "category": "excellent",
         "label_ru": "отличная лётная",
+        "flyable": true,
         "limiting_factor": "thermal_index",
         "limiting_factor_ru": "Thermal Index",
         "fly_window": [
@@ -158,6 +162,7 @@
         "score": 84,
         "category": "excellent",
         "label_ru": "отличная лётная",
+        "flyable": true,
         "limiting_factor": "thermal_index",
         "limiting_factor_ru": "Thermal Index",
         "fly_window": [
@@ -190,6 +195,7 @@
         "score": 84,
         "category": "excellent",
         "label_ru": "отличная лётная",
+        "flyable": true,
         "limiting_factor": "thermal_index",
         "limiting_factor_ru": "Thermal Index",
         "fly_window": [
@@ -222,6 +228,7 @@
         "score": 84,
         "category": "excellent",
         "label_ru": "отличная лётная",
+        "flyable": true,
         "limiting_factor": "thermal_index",
         "limiting_factor_ru": "Thermal Index",
         "fly_window": [

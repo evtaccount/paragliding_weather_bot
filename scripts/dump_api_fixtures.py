@@ -181,6 +181,28 @@ async def _scan(sites: list[dict], bodies: dict[float, dict | None]) -> dict:
         return await forecast.scan_week(model=engine.DEFAULT_MODEL_KEY)
 
 
+async def _prefs() -> dict:
+    """Настоящий GET /api/prefs: api.read_prefs поверх настоящего store.
+
+    Раньше этот словарь собирался литералом — тем же способом, каким разошлись
+    scan и routes (см. docstring скрипта): tests/test_api_fixtures_fresh.py
+    перезапускает ЭТОТ скрипт и сравнивает результат с самим собой, поэтому
+    литерал он не проверяет вовсе. Заметно это стало на поле ceiling_model
+    (модель потолка термиков, финальное ревью ветки I1): дописанное в
+    api._prefs_payload, оно обязано появиться в фикстуре само, а не второй
+    рукописной копией рядом.
+
+    Модель ставится явно, а не берётся дефолтом store ("auto"): фикстура
+    описывает пилота, который выбор УЖЕ сделал, — иначе экраны тестировались
+    бы только на «сервер решает сам». Скорость и поправка на ветер остаются
+    дефолтами store (25 км/ч, включена) — это и есть их значения у нового
+    пилота.
+    """
+    store.init()
+    store.set_model(FIXTURE_USER.id, "ecmwf")
+    return await api.read_prefs(user=FIXTURE_USER)
+
+
 async def _routes() -> list:
     """Настоящий GET /api/routes: api.list_routes поверх настоящего store.
 
@@ -219,9 +241,7 @@ def main() -> None:
     write("wind_grid", engine.wind_grid(day, SITE))
     write("overview_3d", engine.overview_rows(week, SITE))
     write("sites", [SITE])
-    write("prefs", {"avg_route_speed_kmh": 25.0, "wind_correction_enabled": True,
-                    "model_key": "ecmwf",
-                    "models": [{"key": k, "label": engine.model_label(k)} for k in engine.MODELS]})
+    write("prefs", asyncio.run(_prefs()))
     write("scan", asyncio.run(_scan([SITE], {SITE["lat"]: week})))
     # Скан со стартом без лётных дней и стартом, который упал ошибкой — иначе
     # Scan.empty/Scan.failed всегда были бы [] и never[] тихо прошёл бы под

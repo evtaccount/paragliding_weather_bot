@@ -5,7 +5,8 @@
     "aspect_deg": null,
     "elevation_m": 1800,
     "timezone": "Asia/Tbilisi",
-    "model": "Auto (best_match)"
+    "model": "Auto (best_match)",
+    "ceiling_model": "GFS"
   },
   "date": "2026-07-25",
   "daylight_hours": "05-20",
@@ -20,6 +21,7 @@
     "score": 97,
     "category": "ideal",
     "label_ru": "идеальная",
+    "flyable": true,
     "limiting_factor": "spread",
     "limiting_factor_ru": "спред T−Td",
     "fly_window": [

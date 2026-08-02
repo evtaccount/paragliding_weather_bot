@@ -224,20 +224,6 @@ function ShellContent() {
     telegram.ready()
   }, [])
 
-  // Переменные темы Telegram — на document.documentElement, чтобы
-  // styles.css (var(--surface) и т.п.) их подхватил. resolveThemeVars
-  // берёт схему (colorScheme() — есть всегда, даже без themeParams) и
-  // накладывает присланные Telegram поля на ЦЕЛЬНУЮ палитру той же
-  // схемы — недостающие поля не берутся из чужой (см. theme.ts, правка
-  // ревью: было наоборот, каждая переменная бралась независимо и при
-  // частичном themeParams получался тёмный фон со светлым текстом).
-  useEffect(() => {
-    const vars = resolveThemeVars(telegram.colorScheme(), telegram.themeVars())
-    for (const [key, value] of Object.entries(vars)) {
-      document.documentElement.style.setProperty(key, value)
-    }
-  }, [])
-
   // Кнопка «назад» Telegram: пока стек шторок не пуст — снимает верхнюю
   // шторку; когда стек опустел — обработчик СНИМАЕТСЯ (onBack(null)),
   // иначе кнопка осталась бы мёртвой, а Telegram не смог бы закрыть
@@ -283,6 +269,30 @@ function ShellContent() {
     selectedSite !== null && (sites.data === undefined || sites.data.some((s) => s.name === selectedSite))
   const site = selectionAlive ? selectedSite : defaultSiteName(sites.data)
   const model = onceModel ?? prefs.data?.model_key ?? null
+
+  // Кому из экранов сейчас можно ходить в сеть. Условий два, и оба про
+  // ЛИШНИЕ тяжёлые запросы — сервер держит один такой запрос на пилота
+  // (api.py:one_at_a_time), а каждый из них это поход в open-meteo.
+  //
+  // 1. Вкладка показана. Все четыре экрана смонтированы всегда (на этом
+  //    держится отложенная подгонка карты, map/MapView.tsx), и скрытые
+  //    занимали слот раньше видимого: один тап по чипу модели на «Маршруте»
+  //    отправлял три тяжёлых запроса, и собственный запрос пилота уходил
+  //    третьим — после прогноза скрытого «Прогноза» и скана скрытого
+  //    «Обзора» (финальное ревью ветки, I3).
+  //
+  // 2. Настройки уже пришли. Пока их нет, `model` равен null, и запрос
+  //    уходит без `model=`; когда настройки приходят, модель попадает в ключ
+  //    кэша — и ТОТ ЖЕ прогноз считается второй раз, а показанный экран
+  //    возвращается в спиннер (замерено: вердикт показан на 79 мс, исчез на
+  //    332 мс — финальное ревью ветки, I4). Ждём не успеха, а ОТВЕТА:
+  //    при отказе /api/prefs модель так и останется неизвестной, и тогда
+  //    пусть сервер берёт сохранённую настройку сам (api.py:_model_for) —
+  //    иначе экран остался бы в спиннере навсегда.
+  const modelSettled = !prefs.isPending
+  function screenActive(key: TabKey): boolean {
+    return tab === key && modelSettled
+  }
 
   // Тап по дню в «Обзоре» — настоящее переключение (старт и дата ИМЕННО
   // этого дня плюс переход на вкладку «Прогноз»), а не только смена вкладки:
@@ -364,10 +374,10 @@ function ShellContent() {
 
       <main className="body" ref={bodyRef}>
         <section className="view" hidden={tab !== "day"} aria-label="Прогноз на день">
-          <Forecast site={site} date={date} model={model} />
+          <Forecast site={site} date={date} model={model} active={screenActive("day")} />
         </section>
         <section className="view" hidden={tab !== "over"} aria-label="Обзор">
-          <Overview site={site} model={model} onOpenDay={openDay} />
+          <Overview site={site} model={model} active={screenActive("over")} onOpenDay={openDay} />
         </section>
         <section className="view" hidden={tab !== "route"} aria-label="Маршрут">
           <Route
@@ -375,6 +385,7 @@ function ShellContent() {
             name={routeName}
             date={date}
             model={model}
+            active={screenActive("route")}
             onPickRoute={(points, name) => { setRoutePoints(points); setRouteName(name); sheets.pop() }}
           />
         </section>
@@ -420,6 +431,27 @@ function Shell() {
 }
 
 export function App() {
+  // Переменные темы Telegram — на document.documentElement, чтобы
+  // styles.css (var(--surface) и т.п.) их подхватил. resolveThemeVars
+  // берёт схему (colorScheme() — есть всегда, даже без themeParams) и
+  // накладывает присланные Telegram поля на ЦЕЛЬНУЮ палитру той же
+  // схемы — недостающие поля не берутся из чужой (см. theme.ts, правка
+  // ревью: было наоборот, каждая переменная бралась независимо и при
+  // частичном themeParams получался тёмный фон со светлым текстом).
+  //
+  // Эффект стоит ЗДЕСЬ, а не в оболочке (ShellContent), потому что цвета
+  // нужны обеим веткам ниже: экран «Не Telegram» рисуется теми же
+  // переменными (styles.css: .offline/.empty), а оболочки на нём нет. С тех
+  // пор как styles.css перестал держать вторую копию светлой палитры
+  // (единственный источник — theme.ts, см. комментарий в шапке styles.css),
+  // экран без этого эффекта остался бы вовсе без цветов.
+  useEffect(() => {
+    const vars = resolveThemeVars(telegram.colorScheme(), telegram.themeVars())
+    for (const [key, value] of Object.entries(vars)) {
+      document.documentElement.style.setProperty(key, value)
+    }
+  }, [])
+
   // Подпись пустая — приложение открыто не из Telegram: initData()
   // деградирует к "" вместо исключения (telegram.ts), здесь это условие
   // читается и превращается в понятный экран вместо пустоты/падения.

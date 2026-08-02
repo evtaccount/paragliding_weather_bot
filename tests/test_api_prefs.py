@@ -1,6 +1,7 @@
 """Личные настройки через HTTP."""
 import pytest
 
+import engine
 import store
 from conftest import TEST_USER_ID
 from tma import header
@@ -28,6 +29,23 @@ async def test_prefs_carry_the_model_list(client):
     keys = [m["key"] for m in body["models"]]
     assert keys == ["auto", "ecmwf", "gfs", "icon"]
     assert all(m["label"] for m in body["models"])
+
+
+async def test_prefs_name_the_ceiling_model(client):
+    """Модель потолка термиков приезжает с настройками, а не пишется словом на
+    экране.
+
+    Мини-приложение объясняет пилоту, почему потолок не меняется вместе с
+    выбранной моделью, и держало это объяснение копией константы: «всегда по
+    GFS» стояло словом в четырёх местах TypeScript при одной
+    engine.CEILING_MODEL_KEY в домене (финальное ревью ветки, I1). Ключ едет
+    рядом с подписью — по нему приложение может отличить «потолок считается
+    той же моделью, что и всё остальное» от «другой».
+    """
+    body = (await client.get("/api/prefs", headers=header())).json()
+    assert body["ceiling_model"]["key"] == engine.CEILING_MODEL_KEY
+    assert body["ceiling_model"]["label"] == engine.model_label(engine.CEILING_MODEL_KEY)
+    assert body["ceiling_model"]["key"] in [m["key"] for m in body["models"]]
 
 
 async def test_patch_speed(client):

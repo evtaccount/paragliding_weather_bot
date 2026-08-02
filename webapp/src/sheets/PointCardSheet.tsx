@@ -22,18 +22,18 @@
 // единицы, что во всём открытом прогнозе open-meteo) — конвертация тем же
 // коэффициентом, что и route.py:ms_to_kmh.
 import { colorOfCategory } from "../charts/palette"
+import { MS_TO_KMH, ROLE_RU } from "../domain"
 import { compass, fmtNum } from "../format"
 import type { RoutePoint, RouteWeather } from "../api/types"
 
-// route.py:ROLE_RU — три роли профиля маршрута, дословно.
-export const ROLE_RU: Record<string, string> = { takeoff: "старт", enroute: "маршрут", goal: "финиш" }
-
+// ROLE_RU и MS_TO_KMH живут в ../domain — там же, где остальные копии
+// значений питона, и под сверкой tests/test_webapp_sync.py: до неё
+// переименование роли в route.py давало заголовок шторки вида
+// «12,5 км · 14:30 · goal», и ни один тест этого не замечал (финальное ревью
+// ветки, I4).
 export function roleLabel(role: string): string {
   return ROLE_RU[role] ?? role
 }
-
-// route.py:MS_TO_KMH.
-const MS_TO_KMH = 3.6
 
 // `weather` — RouteWeather (40 ключей) либо `{}` без единого ключа (точка с
 // eta:null, см. комментарий у RoutePoint.weather в api/types.ts). `key in w`

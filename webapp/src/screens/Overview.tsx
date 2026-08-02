@@ -20,14 +20,17 @@
 // Причина ограничения в строке дня вытесняет описание погоды — `.day__f`
 // (miniapp/prototype.html:252-253) однострочный, с ellipsis, обе фразы не
 // влезают, а причина полезнее пилоту: она говорит, что оценивать, а не
-// просто "переменная облачность". Погода показывается только в лид-панели
-// "Лучший день", у которой отдельная, более просторная строка
-// (miniapp/prototype.html:972).
+// просто "переменная облачность". Когда ограничивать нечего, на её месте
+// стоит погода — и это правило одно на ОБА режима экрана (см. overviewDayLine
+// и scanRowLine ниже: раньше «Все старты» подставляли туда название
+// категории). В лид-панели "Лучший день" погода стоит всегда: у неё
+// отдельная, более просторная строка (miniapp/prototype.html:972).
 import { useState } from "react"
 import type { ForecastRange } from "../api/queries"
 import { useForecast, useScan } from "../api/queries"
 import type { ForecastOverview, OverviewRow } from "../api/types"
 import { colorOfCategory } from "../charts/palette"
+import { RAIN_DAY_MM } from "../domain"
 import { compass, fmtDate, fmtNum } from "../format"
 import { ErrorBox } from "../ui/ErrorBox"
 import { Spinner } from "../ui/Spinner"
@@ -42,6 +45,20 @@ import { Spinner } from "../ui/Spinner"
 type OverviewProps = {
   site: string | null
   model: string | null
+  // Показан ли экран (вкладка активна) И известна ли действующая модель.
+  // Пока false, экран в сеть не ходит вовсе: /api/scan — самый дорогой запрос
+  // приложения (forecast.scan_week идёт за погодой по ВСЕЙ библиотеке
+  // стартов), а сервер держит один тяжёлый запрос на пилота
+  // (api.py:one_at_a_time). Скрытый «Обзор» занимал этот единственный слот
+  // раньше того экрана, на который пилот смотрит: один тап по чипу модели на
+  // «Маршруте» отправлял три тяжёлых запроса, и собственный запрос пилота
+  // уходил третьим (финальное ревью ветки, I3). Размонтировать экран вместо
+  // этого нельзя — на том, что все четыре смонтированы всегда, держится
+  // отложенная подгонка карты (map/MapView.tsx).
+  //
+  // Значение по умолчанию — true: экран, отрисованный без оболочки (тесты
+  // экрана), показан по определению.
+  active?: boolean
   onOpenDay: (site: string, date: string) => void
 }
 
@@ -55,12 +72,22 @@ const RANGE_TABS: { key: RangeKey; label: string }[] = [
   { key: "scan", label: "Все старты" },
 ]
 
-function isNotFly(category: string): boolean {
-  return category === "no_fly" || category === "danger"
+// «Лётно / не лётно» — по assessment.flyable, то есть по criteria.FLYABLE
+// (engine.py:assessment_facts). Своего правила у экрана нет намеренно: копия
+// («не лётно» только у no_fly и danger) уже разошлась с доменом на категории
+// marginal, и старт со всеми маргинальными днями был подписан «лётно» в
+// каждой строке «Недели» и лежал в «Без лётных дней» на вкладке «Все старты»
+// — один экран противоречил сам себе через один тап (финальное ревью ветки,
+// I2).
+function flyTag(flyable: boolean): string {
+  return flyable ? "лётно" : "не лётно"
 }
 
-function flyTag(category: string): string {
-  return isNotFly(category) ? "не лётно" : "лётно"
+// Осадки показываются с того же порога, с которого о них говорит чат
+// (bot.py:252 — `r["precip"] > engine.RAIN_DAY`); значение — копия
+// criteria.RAIN_DAY_MM под сверкой tests/test_webapp_sync.py (см. ../domain).
+function precipTail(mm: number): string {
+  return mm > RAIN_DAY_MM ? ` · ${fmtNum(mm, 1)} мм` : ""
 }
 
 type OverviewDay = ForecastOverview["days_daytime"][number]
@@ -71,17 +98,25 @@ type OverviewDay = ForecastOverview["days_daytime"][number]
 // того же значения, что и на экране "Прогноз", см. Forecast.tsx).
 function overviewDayLine(day: OverviewDay): string {
   const reason = day.assessment.limiting_factor_ru ?? day.weather
-  const precip = day.precip_mm > 0.2 ? ` · ${fmtNum(day.precip_mm, 1)} мм` : ""
-  return `до ${fmtNum(day.wind_max_ms, 1)} порыв ${fmtNum(day.gust_max_ms, 1)} · ${day.wind_dir_window} · ${reason}${precip}`
+  return `до ${fmtNum(day.wind_max_ms, 1)} порыв ${fmtNum(day.gust_max_ms, 1)} · ${day.wind_dir_window} · ${reason}${precipTail(day.precip_mm)}`
 }
 
-// OverviewRow (форма строк /api/scan) не несёт готовую строку направления —
-// в отличие от ForecastOverview.days_daytime[].wind_dir_window (уже
-// "Ю (180°)"), здесь только сырые градусы (dom), поэтому compass() нужен
-// именно тут, а не в overviewDayLine выше.
+// Строка дня в «Все старты» собирается ПО ТЕМ ЖЕ правилам, что и строка дня
+// диапазонных вкладок выше: тот же запасной текст (описание погоды, когда
+// ограничивать нечего) и тот же порог осадков. Раньше правила были разные:
+// запасным текстом стояла row.label — название категории («отличная
+// лётная»), которое строка и так несёт баллом и его цветом, а осадков не
+// было вовсе. Чат на этом же месте печатает погоду и дождь, а категорию
+// строкой не пишет (bot.py:250-252), — то есть дождливый день в скане
+// приложения был неотличим от ясного (финальное ревью ветки, I6).
+//
+// Отличие ровно одно и оно от формы ответа: OverviewRow не несёт готовую
+// строку направления — в отличие от ForecastOverview.days_daytime[].
+// wind_dir_window (уже "Ю (180°)"), здесь только сырые градусы (dom),
+// поэтому compass() нужен именно тут.
 function scanRowLine(row: OverviewRow): string {
-  const reason = row.limiting ?? row.label
-  return `до ${fmtNum(row.wmax, 1)} порыв ${fmtNum(row.gmax, 1)} · ${compass(row.dom)} · ${reason}`
+  const reason = row.limiting ?? row.weather
+  return `до ${fmtNum(row.wmax, 1)} порыв ${fmtNum(row.gmax, 1)} · ${compass(row.dom)} · ${reason}${precipTail(row.precip)}`
 }
 
 function bestOverviewDay(days: OverviewDay[]): OverviewDay {
@@ -99,13 +134,14 @@ function NoSites() {
   )
 }
 
-function RangeView({ site, range, model, onOpenDay }: {
+function RangeView({ site, range, model, active, onOpenDay }: {
   site: string | null
   range: Exclude<RangeKey, "scan">
   model: string | null
+  active: boolean
   onOpenDay: (site: string, date: string) => void
 }) {
-  const forecast = useForecast(site, range, null, model)
+  const forecast = useForecast(site, range, null, model, active)
 
   if (site === null) {
     return <NoSites />
@@ -181,7 +217,7 @@ function RangeView({ site, range, model, onOpenDay }: {
             </div>
             <div className="day__s" style={{ color: colorOfCategory(day.assessment.category) }}>
               {day.assessment.score ?? "—"}
-              <small>{flyTag(day.assessment.category)}</small>
+              <small>{flyTag(day.assessment.flyable)}</small>
             </div>
           </button>
         ))}
@@ -191,9 +227,24 @@ function RangeView({ site, range, model, onOpenDay }: {
   )
 }
 
-function ScanView({ model, onOpenDay }: { model: string | null; onOpenDay: (site: string, date: string) => void }) {
-  const scan = useScan(model)
+function ScanView({ site, model, active, onOpenDay }: {
+  site: string | null
+  model: string | null
+  active: boolean
+  onOpenDay: (site: string, date: string) => void
+}) {
+  // `site === null` означает «в библиотеке нет ни одного старта» — то же
+  // условие, по которому соседние сегменты показывают «Нет стартов» (см.
+  // RangeView выше: site считается в оболочке через defaultSiteName(sites)).
+  // Без этой ветки свежая установка получала на вкладке «Все старты»
+  // совершенно пустой экран — только переключатель сегментов и под ним
+  // ничего, — и вдобавок в сеть уходил самый дорогой запрос приложения про
+  // пустую библиотеку (финальное ревью ветки, Minor 6).
+  const scan = useScan(model, active && site !== null)
 
+  if (site === null) {
+    return <NoSites />
+  }
   if (scan.isPending) {
     return <Spinner />
   }
@@ -236,10 +287,16 @@ function ScanView({ model, onOpenDay }: { model: string | null; onOpenDay: (site
         </div>
       ))}
 
+      {/* Порог лётности словами здесь не пересказывается («ни одного окна ≥
+          удовлетворительного» было третьей копией criteria.FLYABLE, после
+          isNotFly и прозы: финальное ревью ветки, I2). Состав списка задаёт
+          сам домен — forecast.scan_week кладёт сюда старт, у которого
+          criteria.flyable не пропустил ни одного дня, — и «лётный день» это
+          его собственное слово, а не пересказ порога. */}
       {data.empty.length > 0 && (
         <div className="empty">
           <b>Без лётных дней</b>
-          {data.empty.join(", ")} — на неделе ни одного окна ≥ удовлетворительного.
+          {data.empty.join(", ")} — на неделе не нашлось ни одного лётного дня.
         </div>
       )}
       {data.failed.length > 0 && (
@@ -252,7 +309,7 @@ function ScanView({ model, onOpenDay }: { model: string | null; onOpenDay: (site
   )
 }
 
-export function Overview({ site, model, onOpenDay }: OverviewProps) {
+export function Overview({ site, model, active = true, onOpenDay }: OverviewProps) {
   const [range, setRange] = useState<RangeKey>("3d")
 
   return (
@@ -271,8 +328,8 @@ export function Overview({ site, model, onOpenDay }: OverviewProps) {
       </div>
 
       {range === "scan"
-        ? <ScanView model={model} onOpenDay={onOpenDay} />
-        : <RangeView site={site} range={range} model={model} onOpenDay={onOpenDay} />}
+        ? <ScanView site={site} model={model} active={active} onOpenDay={onOpenDay} />
+        : <RangeView site={site} range={range} model={model} active={active} onOpenDay={onOpenDay} />}
     </>
   )
 }

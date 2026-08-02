@@ -124,7 +124,16 @@ def _prefs_payload(uid: int) -> dict:
             "model_key": p.model_key,
             # Список моделей едет вместе с настройками, а не отдельным
             # эндпоинтом: выбиралка без подписей показала бы пилоту ключи.
-            "models": [{"key": k, "label": engine.model_label(k)} for k in engine.MODELS]}
+            "models": [{"key": k, "label": engine.model_label(k)} for k in engine.MODELS],
+            # Модель потолка термиков — та же константа engine.CEILING_MODEL_KEY,
+            # которой считает потолок весь сервер. Едет сюда по той же причине,
+            # что и список моделей: экран настроек и шторка выбора модели
+            # объясняют пилоту, почему потолок не меняется вместе с моделью, и
+            # писали это слово «GFS» своей копией — смена константы (у GFS
+            # может пропасть boundary_layer_height) оставила бы обе подписи
+            # врать, не уронив ни одного теста (финальное ревью ветки, I1).
+            "ceiling_model": {"key": engine.CEILING_MODEL_KEY,
+                              "label": engine.model_label(engine.CEILING_MODEL_KEY)}}
 
 
 class PrefsPatch(BaseModel):

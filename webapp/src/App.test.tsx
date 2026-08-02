@@ -347,3 +347,92 @@ test("удалённый старт перестаёт быть текущим",
   })
   expect(within(header).getByText("Гудаури")).toBeInTheDocument()
 })
+
+// Финальное ревью ветки, I3. Все четыре экрана смонтированы разом (на этом
+// держится отложенная подгонка карты, map/MapView.tsx), и скрытые ходили в
+// сеть наравне с показанным: сервер держит ОДИН тяжёлый запрос на пилота
+// (api.py:one_at_a_time), и запрос скрытого «Обзора» занимал слот раньше
+// того экрана, на который пилот смотрит. Замерено ревьюером: один тап по
+// чипу модели на «Маршруте» отправлял три тяжёлых запроса, собственный
+// запрос пилота уходил третьим.
+test("скрытые вкладки не ходят в сеть, а открытая — ходит", async () => {
+  const fetchMock = vi.fn((url: string) => {
+    const path = String(url).split("?")[0]
+    const body =
+      path === "/api/sites" ? sites
+      : path === "/api/prefs" ? prefs
+      : path === "/api/forecast" && url.includes("range=1d") ? facts
+      : path === "/api/forecast" ? overview
+      : path === "/api/scan" ? scan
+      : {}
+    return Promise.resolve(new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } }))
+  })
+  vi.stubGlobal("fetch", fetchMock)
+
+  render(<App />)
+  await screen.findByText(facts.assessment.label_ru)
+
+  const heavy = (): string[] => fetchMock.mock.calls
+    .map(([u]) => String(u))
+    .filter((u) => u.startsWith("/api/forecast") || u.startsWith("/api/scan"))
+  // Пилот стоит на «Прогнозе» — в сеть ушёл ровно его запрос.
+  expect(heavy().filter((u) => u.includes("range=3d"))).toHaveLength(0)
+  expect(heavy().filter((u) => u.includes("range=1d"))).toHaveLength(1)
+
+  // Открыл «Обзор» — теперь его запрос законен.
+  await userEvent.click(screen.getByRole("tab", { name: "Обзор" }))
+  await waitFor(() => {
+    expect(heavy().filter((u) => u.includes("range=3d"))).toHaveLength(1)
+  })
+})
+
+// Финальное ревью ветки, I4. /api/sites и /api/prefs идут параллельно, и
+// порядок ответов ничем не задан. Пришли старты первыми — старт уже есть, а
+// модель ещё нет: запрос уходил без model=, а когда настройки приезжали,
+// модель попадала в ключ кэша, и ТОТ ЖЕ прогноз считался второй раз —
+// показанный вердикт пропадал обратно в спиннер (замерено: показан на 79 мс,
+// исчез на 332 мс). Здесь порядок задан явно: настройки отвечают по команде,
+// уже после стартов.
+test("на холодном старте прогноз считается один раз, а не дважды", async () => {
+  let deliverPrefs = (): void => { throw new Error("настройки не запрашивались") }
+  const pendingPrefs = new Promise<Response>((resolve) => {
+    deliverPrefs = () => {
+      resolve(new Response(JSON.stringify(prefs), { status: 200, headers: { "content-type": "application/json" } }))
+    }
+  })
+  const fetchMock = vi.fn((url: string) => {
+    const path = String(url).split("?")[0]
+    if (path === "/api/prefs") return pendingPrefs
+    const body =
+      path === "/api/sites" ? sites
+      : path === "/api/forecast" && url.includes("range=1d") ? facts
+      : path === "/api/forecast" ? overview
+      : {}
+    return Promise.resolve(new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } }))
+  })
+  vi.stubGlobal("fetch", fetchMock)
+
+  render(<App />)
+  const forecasts = (): string[] => fetchMock.mock.calls
+    .map(([u]) => String(u)).filter((u) => u.startsWith("/api/forecast"))
+
+  // Ждать надо не ВЫЗОВА /api/sites, а того, что список УЖЕ применён:
+  // имя старта в шапке — единственный признак этого, видимый снаружи. По
+  // одному лишь вызову проверка была бы пустой — ответы стартов и настроек
+  // прикладываются одним пакетом, и гонка, ради которой написан тест, не
+  // воспроизводится вовсе (проверено мутацией: она оставалась зелёной).
+  const header = screen.getByRole("banner")
+  await within(header).findByText("Гудаури")
+
+  // Старты пришли, настройки — ещё нет. Запрос без model= не уходит: сервер
+  // посчитал бы его по сохранённой настройке, и тот же ответ пришлось бы
+  // считать заново под другим ключом кэша.
+  expect(forecasts()).toHaveLength(0)
+
+  deliverPrefs()
+  await screen.findByText(facts.assessment.label_ru)
+  await new Promise((resolve) => { setTimeout(resolve, 30) })
+
+  expect(forecasts()).toHaveLength(1)
+  expect(forecasts()[0]).toContain("model=ecmwf")
+})

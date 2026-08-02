@@ -215,6 +215,119 @@ test("без стартов — понятный текст, а не вечна�
   expect(screen.getByText("Нет стартов")).toBeInTheDocument()
 })
 
+// Финальное ревью ветки, I2. Правило «лётный день» живёт в criteria.FLYABLE
+// и приезжает готовым ответом (assessment.flyable, engine.assessment_facts).
+// Копия правила в экране («не лётно» только у no_fly и danger) расходилась с
+// доменом на категории marginal: старт со всеми маргинальными днями был
+// подписан «лётно» в каждой строке «Недели» и одновременно лежал в «Без
+// лётных дней» на вкладке «Все старты».
+//
+// Подделывается ровно то, что отличает копию от домена: категория остаётся
+// «хорошей», а flyable — false. Проверка на самой фикстуре (excellent +
+// flyable: true) прошла бы и со старым правилом.
+test("«лётно» под баллом — по ответу сервера, а не по собственному разбору категории", async () => {
+  const marginalFirstDay = {
+    ...overview,
+    days_daytime: overview.days_daytime.map((day, i) => (
+      i === 0 ? { ...day, assessment: { ...day.assessment, flyable: false } } : day
+    )),
+  }
+  vi.stubGlobal("fetch", () => jsonResponse(marginalFirstDay))
+  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} />, { wrapper })
+  const list = await screen.findByRole("group", { name: "Дни диапазона" })
+
+  const rows = within(list).getAllByRole("button")
+  expect(within(rows[0]!).getByText("не лётно")).toBeInTheDocument()
+  expect(within(rows[1]!).getByText("лётно")).toBeInTheDocument()
+})
+
+// Финальное ревью ветки, I6. Две половины экрана описывали один и тот же день
+// по разным правилам: в «Все старты» запасным текстом стояла row.label —
+// название категории, которое строка и так несёт баллом и его цветом, — а
+// погоды не было вовсе, хотя чат на этом же месте её печатает (bot.py:252).
+// Запасной текст виден только у дня, которому нечего ограничивать
+// (criteria: «если всё на максимуме, лимит-фактора нет»), а в фикстуре
+// лимит-фактор есть у каждого дня — поэтому он снимается точечно.
+test("в строке «Все старты» стоит погода, а не второй раз категория", async () => {
+  const noLimit = {
+    ...scan,
+    sites: scan.sites.map((s) => ({
+      ...s,
+      days: s.days.map((d, i) => (i === 0 ? { ...d, limiting: null } : d)),
+    })),
+  }
+  stubByPath(noLimit)
+  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} />, { wrapper })
+  await screen.findByRole("group", { name: "Дни диапазона" })
+  await userEvent.click(screen.getByRole("button", { name: "Все старты" }))
+
+  const row = noLimit.sites[0]!.days[0]!
+  const group = await screen.findByRole("group", { name: noLimit.sites[0]!.name })
+  const first = within(group).getAllByRole("button")[0]!
+  expect(first).toHaveTextContent(row.weather)
+  // Название категории в строке не повторяется: её место занимает то, чего в
+  // строке не было, — погода.
+  expect(first).not.toHaveTextContent(row.label)
+})
+
+// Вторая половина I6: осадки. Порог — criteria.RAIN_DAY_MM (webapp/src/domain.ts
+// под сверкой tests/test_webapp_sync.py), тот же, по которому дождь печатает
+// чат. В фикстуре осадков нет (ясная неделя), поэтому день с дождём
+// подставляется точечно — иначе проверять было бы нечего.
+test("в строке «Все старты» виден дождь", async () => {
+  const rainy = {
+    ...scan,
+    sites: scan.sites.map((s) => ({
+      ...s,
+      days: s.days.map((d, i) => (i === 0 ? { ...d, precip: 2.4 } : { ...d, precip: 0.1 })),
+    })),
+  }
+  stubByPath(rainy)
+  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} />, { wrapper })
+  await screen.findByRole("group", { name: "Дни диапазона" })
+  await userEvent.click(screen.getByRole("button", { name: "Все старты" }))
+
+  const group = await screen.findByRole("group", { name: rainy.sites[0]!.name })
+  const rows = within(group).getAllByRole("button")
+  expect(rows[0]!).toHaveTextContent("2,4 мм")
+  // 0,1 мм — ниже порога: это роса, а не дождь, и чат о ней тоже молчит.
+  expect(rows[1]!).not.toHaveTextContent("мм")
+})
+
+// Финальное ревью ветки, Minor 6. На свежей установке вкладка «Все старты»
+// показывала СОВЕРШЕННО пустой экран — только переключатель сегментов, — при
+// том что соседние сегменты в том же состоянии объясняют, что делать. Заодно
+// в сеть уходил самый дорогой запрос приложения про пустую библиотеку.
+test("без стартов «Все старты» объясняет это и не спрашивает сервер", async () => {
+  const fetchMock = vi.fn((_url: string) => jsonResponse(overview))
+  vi.stubGlobal("fetch", fetchMock)
+  render(<Overview site={null} model="ecmwf" onOpenDay={() => {}} />, { wrapper })
+  await userEvent.click(screen.getByRole("button", { name: "Все старты" }))
+
+  expect(screen.getByText("Нет стартов")).toBeInTheDocument()
+  expect(fetchMock.mock.calls.filter(([u]) => String(u).startsWith("/api/scan"))).toHaveLength(0)
+})
+
+// Финальное ревью ветки, I3. Экран смонтирован всегда (все четыре живут в
+// дереве разом, App.tsx), и скрытым он занимал единственный слот пилота на
+// сервере раньше того экрана, на который пилот смотрит.
+test("скрытый экран в сеть не ходит, а показанный — ходит", async () => {
+  const fetchMock = vi.fn((url: string) => {
+    const path = String(url).split("?")[0]
+    return jsonResponse(path === "/api/scan" ? scan : overview)
+  })
+  vi.stubGlobal("fetch", fetchMock)
+  const { rerender } = render(
+    <Overview site="Гудаури" model="ecmwf" active={false} onOpenDay={() => {}} />, { wrapper },
+  )
+  await new Promise((resolve) => { setTimeout(resolve, 20) })
+  expect(fetchMock).not.toHaveBeenCalled()
+
+  rerender(<Overview site="Гудаури" model="ecmwf" active onOpenDay={() => {}} />)
+  await screen.findByRole("group", { name: "Дни диапазона" })
+  expect(fetchMock.mock.calls.map(([u]) => String(u).split("?")[0])).toEqual(["/api/forecast"])
+})
+
 // scan_mixed.json несёт непустые sites[].days ВМЕСТЕ с непустыми empty/failed
 // (см. комментарий в scripts/dump_api_fixtures.py про never[]) — старт с
 // лётными днями и старты без них показаны одновременно, каждый в своём месте.

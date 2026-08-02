@@ -507,3 +507,26 @@ test("поправка на ветер сохраняется", async () => {
     expect(screen.getByRole("switch", { name: /Учитывать ветер/ })).toHaveAttribute("aria-checked", "false")
   })
 })
+
+// Финальное ревью ветки, I1. «Всегда считается по GFS» стояло словом и в
+// строке настроек, и в её значении, и в объяснении внутри шторки модели — при
+// одной константе engine.CEILING_MODEL_KEY в домене. Настройки называют
+// модель сами (prefs.ceiling_model), и подделка называет ДРУГУЮ: на фикстуре
+// (GFS) зашитое слово выглядело бы работающим.
+test("строка «Потолок термички» называет модель из настроек, а не зашитую словом", async () => {
+  prefsState = { ...prefsState, ceiling_model: { key: "icon", label: "ICON" } }
+  renderSettings()
+
+  expect(await screen.findByText("Потолок термички")).toBeInTheDocument()
+  expect(screen.getByText(/Всегда считается по ICON/)).toBeInTheDocument()
+  expect(screen.queryByText(/по GFS/)).not.toBeInTheDocument()
+})
+
+test("шторка модели объясняет потолок той же моделью из настроек", async () => {
+  prefsState = { ...prefsState, ceiling_model: { key: "icon", label: "ICON" } }
+  renderSettings()
+
+  await userEvent.click(await screen.findByRole("button", { name: /Постоянная модель/ }))
+  const sheet = screen.getByRole("dialog", { name: "Метеомодель" })
+  expect(within(sheet).getByText(/Потолок термички всегда считается по ICON/)).toBeInTheDocument()
+})

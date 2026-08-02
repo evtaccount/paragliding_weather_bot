@@ -154,3 +154,62 @@ test("с предупреждениями — показывает оговор�
   expect(await screen.findByText(WINDY.assessment.label_ru)).toBeInTheDocument()
   expect(screen.getByText(/вето внутри окна/)).toBeInTheDocument()
 })
+
+// Финальное ревью ветки, I1. «Потолок всегда по GFS» было написано словом в
+// четырёх местах TypeScript при одной константе engine.CEILING_MODEL_KEY в
+// домене. Теперь имя модели приезжает с ответом (facts.site.ceiling_model), и
+// подделка называет ДРУГУЮ модель: на фикстуре (GFS) зашитое слово выглядело
+// бы работающим.
+test("подпись столба воздуха называет модель потолка из ответа, а не зашитую словом", async () => {
+  const byIcon = { ...F, site: { ...F.site, ceiling_model: "ICON" } }
+  vi.stubGlobal("fetch", () => jsonResponse(byIcon))
+  render(<Forecast site="Гудаури" date="2026-07-25" model="ecmwf" />, { wrapper })
+  await screen.findByText(F.assessment.label_ru)
+  expect(screen.getByText(/всегда считается по ICON/)).toBeInTheDocument()
+  expect(screen.queryByText(/по GFS/)).not.toBeInTheDocument()
+})
+
+// Финальное ревью ветки, I3. Подпись кнопки обещала «6 уровней × 10 часов» —
+// форму, которой не бывает: уровней остаётся столько, сколько их выше старта
+// (engine.py:919-923), столбцов — сколько светлых часов у даты. На
+// собственной фикстуре проекта (wind_grid.json) это 5 × 16, то есть подпись
+// была неверна уже сегодня. Числа на кнопке запрещены: она рисуется ДО
+// запроса и знать их не может.
+test("кнопка ветра по высотам не обещает числа, которых не знает", async () => {
+  vi.stubGlobal("fetch", () => jsonResponse(F))
+  render(<Forecast site="Гудаури" date="2026-07-25" model="ecmwf" />, { wrapper })
+  await screen.findByText(F.assessment.label_ru)
+  const button = screen.getByRole("button", { name: /Ветер по высотам/ })
+  expect(button.textContent).not.toMatch(/\d/)
+})
+
+// Вторая половина: настоящие числа показывает шторка — по САМОМУ ответу.
+test("шторка ветра по высотам называет свой настоящий размер", async () => {
+  vi.stubGlobal("fetch", (url: string) => {
+    const path = url.split("?")[0]
+    return jsonResponse(path === "/api/forecast/wind-grid" ? windGrid : F)
+  })
+  render(<Forecast site="Гудаури" date="2026-07-25" model="ecmwf" />, { wrapper })
+  await screen.findByText(F.assessment.label_ru)
+  await userEvent.click(screen.getByRole("button", { name: /Ветер по высотам/ }))
+
+  const sheet = await screen.findByRole("dialog", { name: "Ветер по высотам" })
+  expect(windGrid.levels).toHaveLength(5)
+  expect(windGrid.hours).toHaveLength(16)
+  expect(within(sheet).getByText(/5 × 16/)).toBeInTheDocument()
+})
+
+// Финальное ревью ветки, I3: скрытая вкладка не тратит единственный слот
+// пилота на сервере (api.py:one_at_a_time).
+test("скрытый экран прогноза в сеть не ходит, а показанный — ходит", async () => {
+  const fetchMock = vi.fn(() => jsonResponse(F))
+  vi.stubGlobal("fetch", fetchMock)
+  const { rerender } = render(
+    <Forecast site="Гудаури" date="2026-07-25" model="ecmwf" active={false} />, { wrapper },
+  )
+  await new Promise((resolve) => { setTimeout(resolve, 20) })
+  expect(fetchMock).not.toHaveBeenCalled()
+
+  rerender(<Forecast site="Гудаури" date="2026-07-25" model="ecmwf" active />)
+  expect(await screen.findByText(F.assessment.label_ru)).toBeInTheDocument()
+})

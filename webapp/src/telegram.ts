@@ -15,9 +15,12 @@ interface BackButton {
   offClick(handler: () => void): void
 }
 
+// Методы необязательные по той же причине, по которой необязателен сам
+// HapticFeedback у WebApp: клиент может быть старше Bot API 6.1 (см. haptic()
+// внизу файла).
 interface HapticFeedback {
-  impactOccurred(style: "light" | "medium" | "heavy" | "rigid" | "soft"): void
-  notificationOccurred(type: "error" | "success" | "warning"): void
+  impactOccurred?(style: "light" | "medium" | "heavy" | "rigid" | "soft"): void
+  notificationOccurred?(type: "error" | "success" | "warning"): void
 }
 
 interface WebApp {
@@ -27,7 +30,7 @@ interface WebApp {
   ready(): void
   expand(): void
   BackButton: BackButton
-  HapticFeedback: HapticFeedback
+  HapticFeedback?: HapticFeedback
 }
 
 declare global {
@@ -81,12 +84,21 @@ export function onBack(handler: (() => void) | null): void {
   }
 }
 
+// Вибро: короткое уведомление об отказе (ErrorBox — единственное место, где
+// приложение показывает отказ сервера) и «щелчок» для остальных случаев.
+//
+// HapticFeedback проверяется отдельно от самого WebApp: он появился в Bot API
+// 6.1, и в клиенте постарше объект Telegram есть, а этой группы методов у него
+// нет. Обёртка обязана деградировать молча (см. шапку файла) — вибро приятно,
+// но падать из-за него на весь экран нельзя; ровно так и оказалось при первом
+// применении: экран ошибки уронил шесть тестов, потому что каждый подделывает
+// в window.Telegram только те поля, которые ему нужны.
 export function haptic(kind: "light" | "medium" | "error"): void {
-  const app = webApp()
-  if (!app) return
+  const feedback = webApp()?.HapticFeedback
+  if (!feedback) return
   if (kind === "error") {
-    app.HapticFeedback.notificationOccurred("error")
+    feedback.notificationOccurred?.("error")
   } else {
-    app.HapticFeedback.impactOccurred(kind)
+    feedback.impactOccurred?.(kind)
   }
 }

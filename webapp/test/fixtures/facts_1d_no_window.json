@@ -5,7 +5,8 @@
     "aspect_deg": 0.0,
     "elevation_m": 2200,
     "timezone": "Asia/Tbilisi",
-    "model": "Auto (best_match)"
+    "model": "Auto (best_match)",
+    "ceiling_model": "GFS"
   },
   "date": "2026-12-15",
   "daylight_hours": "07-16",
@@ -15,6 +16,7 @@
     "score": 0,
     "category": "danger",
     "label_ru": "опасная",
+    "flyable": false,
     "limiting_factor": "dir_offset",
     "limiting_factor_ru": "отклонение ветра от склона",
     "fly_window": null,

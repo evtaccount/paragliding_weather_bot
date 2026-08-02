@@ -30,6 +30,13 @@ type ForecastProps = {
   site: string | null
   date: string | null
   model: string | null
+  // Показан ли экран и известна ли действующая модель — см. подробный разбор
+  // у OverviewProps.active и у `enabled` в api/queries.ts. Экран «Прогноз»
+  // виден первым при открытии приложения, но скрытым он бывает не реже
+  // других: пилот на «Маршруте» жмёт чип модели, и прогноз скрытой вкладки
+  // занимает единственный слот сервера раньше маршрута, на который пилот
+  // смотрит (финальное ревью ветки, I3).
+  active?: boolean
 }
 
 // fly_window — null, когда лётное окно не открывается вовсе (см.
@@ -55,9 +62,9 @@ function thermalWindowLabel(facts: Facts): string {
   return `${sun} · световой день ${facts.daylight_hours}`
 }
 
-export function Forecast({ site, date, model }: ForecastProps) {
+export function Forecast({ site, date, model, active = true }: ForecastProps) {
   const sheets = useSheetsContext()
-  const forecast = useForecast(site, "1d", date, model)
+  const forecast = useForecast(site, "1d", date, model, active)
 
   // Нет сохранённых стартов (свежая установка — старты заводятся на
   // вкладке «Настройки») — понятный текст вместо вечной загрузки: useForecast сам
@@ -136,7 +143,15 @@ export function Forecast({ site, date, model }: ForecastProps) {
           onClick={() => sheets.push(<WindGridSheet site={site} date={date} model={model} />, "Ветер по высотам")}
         >
           <b>Ветер по высотам</b>
-          <span>6 уровней × 10 часов</span>
+          {/* Чисел здесь нет намеренно. Форма таблицы не постоянна: уровней
+              остаётся столько, сколько их выше старта плюс один ближайший
+              снизу (engine.py:919-923), а столбцов — сколько светлых часов у
+              этой даты (daylight_idx). Подпись «6 уровней × 10 часов» была
+              неверна уже на собственной фикстуре проекта (wind_grid.json —
+              5 × 16) и стала бы врать заново при каждой смене старта или
+              сезона (финальное ревью ветки, I3). Настоящие числа показывает
+              сама шторка, когда ответ пришёл (sheets/WindGridSheet.tsx). */}
+          <span>таблица «высота × час» на этот день</span>
         </button>
         <button
           type="button"
