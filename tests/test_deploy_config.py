@@ -6,13 +6,56 @@ Caddyfile/Dockerfile/docker-compose.yml/Makefile никто не исполня�
 healthcheck существует и упомянут в обоих файлах, порт driven из одной
 переменной, а не трёх независимых копий.
 """
+import os
 import pathlib
+import re
+import stat
+import subprocess
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 
 def _read(name: str) -> str:
     return (ROOT / name).read_text(encoding="utf-8")
+
+
+def _dockerfile_instructions() -> list[str]:
+    """Инструкции Dockerfile: без комментариев и с раскрытыми переносами строк.
+
+    Поиск подстрок по всему тексту файла проверять раскладку образа не может:
+    комментарии в этом же Dockerfile объясняют, зачем нужны `npm ci` и
+    `webapp/dist`, поэтому обе подстроки остаются на месте и после удаления
+    самих инструкций.
+    """
+    out: list[str] = []
+    for raw in _read("Dockerfile").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if out and out[-1].endswith("\\"):
+            out[-1] = out[-1][:-1].rstrip() + " " + line
+        else:
+            out.append(line)
+    return out
+
+
+def _marked_block(name: str, marker: str) -> str:
+    """Кусок шелл-скрипта между строками `# >>> marker` и `# <<< marker`.
+
+    Скрипт целиком в тестах не запустить (создаёт venv и ставит зависимости),
+    но отдельная проверка внутри него исполняется за миллисекунды и ничего от
+    окружения не требует — её и вырезаем, чтобы проверять ПОВЕДЕНИЕ, а не
+    форму записи.
+
+    Границы заданы явными маркерами, а не «от `if` до `fi`»: вырезание по
+    ключевым словам снова привязало бы тест к форме — переписывание проверки
+    на `[ -f … ] || echo …` роняло бы его при полностью сохранном поведении.
+    """
+    lines = _read(name).splitlines()
+    start = next(i for i, line in enumerate(lines) if line.strip() == f"# >>> {marker}")
+    end = next(i for i in range(start, len(lines))
+               if lines[i].strip() == f"# <<< {marker}")
+    return "\n".join(lines[start + 1:end]) + "\n"
 
 
 def test_caddyfile_comment_matches_the_directive_it_uses():
@@ -53,6 +96,54 @@ def test_api_port_is_driven_from_a_single_source():
     caddyfile = _read("Caddyfile")
     assert compose.count("${API_PORT:-8080}") >= 3  # pgbot env, expose, caddy env
     assert "{$API_PORT" in caddyfile
+
+
+def test_vite_config_takes_the_dev_proxy_from_one_place():
+    """Оба сервера Vite берут набор прокси из webapp/dev-proxy.ts, а своего
+    литерала не держат.
+
+    Исполнением набор уже проверен (webapp/test/proxy.test.ts зовёт rewrite),
+    но исполняется там МОДУЛЬ, а серверы разработки читают конфигурацию.
+    Мутация «импорт API_PROXY заменён прежним литералом с `/tiles →
+    127.0.0.1:8080`» оставляла оба прогона зелёными и tsc чистым, а подложка
+    карты снова пропадала — то самое состояние, которое уже чинили (финальное
+    ревью ветки, круг 2, I6).
+
+    Проверка питоновская, хотя файл лежит в webapp: vitest прочитал бы его
+    через node:fs (см. шапку tests/test_webapp_sync.py), но `webapp/tsconfig.json`
+    перечисляет типы поимённо и @types/node среди них нет — импорт node:fs не
+    проходит `tsc --noEmit`, то есть `npm run build`.
+
+    Условий три, и нужны все. Набор приезжает из одного места; его берут ОБА
+    сервера (у `preview` своя секция — настройки `server` он не читает вовсе,
+    и разъехавшись они дали бы работающий `npm run dev` при сломанных сквозных
+    сценариях); своих адресов в конфигурации не осталось — иначе рядом с
+    `proxy: API_PROXY` мог бы лежать второй, настоящий набор.
+    """
+    text = _read("webapp/vite.config.ts")
+    assert 'import { API_PROXY } from "./dev-proxy"' in text
+    assert text.count("proxy: API_PROXY") == 2, text.count("proxy: API_PROXY")
+    assert "127.0.0.1" not in text
+    assert "openstreetmap" not in text
+
+
+def test_dev_proxy_targets_the_port_the_app_listens_on():
+    """Прокси разработки (webapp/dev-proxy.ts) шлёт /api туда, где app.py
+    действительно слушает.
+
+    Третья копия того же числа: у compose и Caddyfile она уже сведена к
+    ${API_PORT:-8080} (тест выше), а у прокси разработки осталась литералом —
+    он просто переехал из webapp/vite.config.ts в dev-proxy.ts (финальное ревью
+    ветки, круг 2, I6). Разъехавшись с умолчанием app.py, оба сервера Vite
+    отдают index.html вместо JSON на каждый /api/* — и вместе с `npm run dev`
+    это ломает `vite preview`, на котором стоят все восемь сквозных сценариев.
+    Само число проверять нечем, кроме текста: TypeScript питоновскую константу
+    не импортирует.
+    """
+    default = re.search(r'API_PORT = int\(os\.environ\.get\("API_PORT", "(\d+)"\)\)',
+                        _read("app.py"))
+    assert default, "в app.py не нашлось умолчания API_PORT — проверьте разбор"
+    assert f'"/api": "http://127.0.0.1:{default.group(1)}"' in _read("webapp/dev-proxy.ts")
 
 
 def test_caddyfile_default_port_syntax_has_no_hyphen():
@@ -119,3 +210,272 @@ def test_compose_sets_api_host_to_all_interfaces_for_pgbot():
     text = _read("docker-compose.yml")
     pgbot_block = text.split("\n  caddy:")[0]  # услуги идут по порядку: pgbot, затем caddy
     assert "API_HOST=0.0.0.0" in pgbot_block
+
+
+def test_image_builds_the_webapp():
+    """Собранное приложение попадает в образ отдельным этапом на Node. Без
+    этого контейнер поднимется и будет отдавать 500 на корне — молча:
+    healthcheck стучится в /api/health, где сборка не нужна, контейнер
+    объявляется healthy, caddy стартует и выпускает сертификат, а пилот
+    получает ошибку на каждом открытии приложения.
+
+    Проверяются ИНСТРУКЦИИ, а не подстроки в тексте файла: на подстроках тест
+    оставался зелёным при удалении одной только строки `COPY --from=webapp`
+    (и одной только `RUN npm ci`) — слова находились в комментариях этого же
+    Dockerfile."""
+    instructions = _dockerfile_instructions()
+    stages = [i for i in instructions if i.startswith("FROM ")]
+    assert any(i.startswith("FROM node:22") and " AS webapp" in i
+               for i in stages), instructions
+    assert any(i.startswith("RUN ") and "npm ci" in i for i in instructions), instructions
+    assert any(i.startswith("RUN ") and "npm run build" in i
+               for i in instructions), instructions
+    # источник проверяется наравне с назначением: `COPY --from=webapp /build`
+    # вместо `/build/dist` собирает образ без единой ошибки, но index.html
+    # уезжает уровнем глубже — каталог на месте, healthcheck 200, / → 404.
+    copied = [i for i in instructions
+              if i.split()[:2] == ["COPY", "--from=webapp"]
+              and i.split()[2:] == ["/build/dist", "./webapp/dist"]]
+    assert copied, instructions
+    # копирование должно попасть в ФИНАЛЬНЫЙ этап: строка выше последнего FROM
+    # собрала бы приложение внутрь самого сборочного этапа и наружу не вынесла.
+    assert instructions.index(copied[0]) > instructions.index(stages[-1]), instructions
+
+
+def test_deploy_script_warns_exactly_when_the_webapp_is_not_built(tmp_path):
+    """`deploy.sh` (раскатка без Docker) обязан сказать про `make webapp-build`.
+
+    webapp/dist — артефакт сборки, в git его нет, а npm скрипт не запускает.
+    Оператор проходит все шаги, которые скрипт печатает сам, получает рабочий
+    чат и 200 на /api/health — и вечные 500 на кнопке Web App, с
+    `RuntimeError: StaticFiles directory ... does not exist` в логе и без
+    единого намёка, что не хватает сборки. В Docker-раскатке этого отказа нет:
+    там сборку делает сам Dockerfile.
+
+    Блок ВЫПОЛНЯЕТСЯ в двух состояниях каталога, а не разбирается как текст.
+    Проверки формы записи здесь мало: они одновременно краснеют на безобидном
+    переписывании (`[ -f … ] || echo …` вместо `if`) и молчат на потере
+    одного символа `!`, которая переворачивает смысл — предупреждение начинает
+    печататься ровно тогда, когда сборка есть, а нужному оператору не
+    достаётся ничего."""
+    block = tmp_path / "block.sh"
+    # `set -euo pipefail` — первой строкой, потому что ровно с неё начинается
+    # сам deploy.sh: без неё песочница снисходительнее продакшена, и блок,
+    # дополненный когда-нибудь строкой вроде `command -v npm >/dev/null`,
+    # здесь пройдёт, а в настоящем скрипте оборвётся на ней же — предупреждение
+    # не напечатается вовсе, скрипт вернёт 1, и цепочка `./deploy.sh && …`
+    # порвётся. Причём именно на сервере без Node, то есть ровно там, ради
+    # кого предупреждение и написано.
+    block.write_text("set -euo pipefail\n" + _marked_block("deploy.sh", "webapp-build check"),
+                     encoding="utf-8")
+    workdir = tmp_path / "checkout"
+    workdir.mkdir()
+
+    def run() -> str:
+        done = subprocess.run(["bash", str(block)], cwd=workdir,
+                              capture_output=True, text=True, check=True)
+        return done.stdout
+
+    not_built = run()
+    assert "make webapp-build" in not_built, not_built
+
+    # Третье состояние, а не два: каталог есть, страницы нет. Так выглядит
+    # оборвавшийся на середине `npm run build` — и без этой проверки условие,
+    # подмененное на `[ ! -d webapp/dist ]`, осталось бы зелёным, хотя пилот
+    # получил бы 404 (состояние замерено на живом контейнере в ревью задачи).
+    (workdir / "webapp" / "dist").mkdir(parents=True)
+    half_built = run()
+    assert "make webapp-build" in half_built, half_built
+
+    (workdir / "webapp" / "dist" / "index.html").write_text("<html>", encoding="utf-8")
+    assert run().strip() == "", run()
+
+
+def test_compose_no_longer_mounts_static_into_caddy():
+    """Статику отдаёт pgbot: смонтированный в caddy каталог был вторым путём к
+    тому же месту и расходился бы с образом при первой же пересборке."""
+    assert "/srv/www" not in _read("docker-compose.yml")
+
+
+def test_caddy_sends_everything_but_tiles_to_pgbot():
+    """Собранное приложение лежит внутри образа pgbot (Dockerfile, этап
+    webapp), и отдаёт его сам pgbot — api.py монтирует webapp/dist на "/".
+    Оставленная в Caddy отдача файлов означала бы том с тем же каталогом:
+    второй путь к тому же артефакту, показывающий старую сборку после первой
+    же пересборки образа."""
+    text = _read("Caddyfile")
+    assert "file_server" not in text
+    assert text.count("reverse_proxy pgbot:") >= 1
+
+
+def _tiles_block() -> str:
+    """Кусок Caddyfile от `handle /tiles/*` до общего безматчерного handle."""
+    return _read("Caddyfile").split("handle /tiles/*")[1].split("\n\thandle {")[0]
+
+
+def _caddy_bytes(size: str) -> int:
+    """«2MiB» → 2097152. У Caddy MB — это 1 000 000, а MiB — 1 048 576
+    (go-humanize), и перепутанная единица тихо разъезжается с питоновским
+    потолком на 97 152 байта."""
+    units = {"B": 1, "KB": 10**3, "MB": 10**6, "KiB": 1024, "MiB": 1024**2}
+    number, unit = re.fullmatch(r"(\d+)\s*([A-Za-z]+)", size).groups()
+    return int(number) * units[unit]
+
+
+def test_caddy_caps_the_request_body_at_the_same_size_as_the_api():
+    """Тело запроса читается раньше проверки подписи (FastAPI решает Depends
+    уже после `await request.body()`), поэтому неавторизованный POST стоит
+    процессу ровно столько, сколько прислали: 800 МБ подняли RSS с 38 до
+    635 МБ, и только потом ушёл 401 (финальное ревью ветки, безопасность, I1).
+    Процесс один на чат и HTTP, так что это уносит и бота.
+
+    Потолков два, и оба нужны: Caddy закрывает путь снаружи, api.py — bare
+    metal, где Caddy впереди нет. Разъехавшись, они дают либо 413 от Caddy на
+    законной загрузке, либо тихий приём того, что бэкенд всё равно отвергнет.
+    """
+    import api
+    # Строка целиком, а не подстрока: слова max_size есть и в комментарии над
+    # директивой — он объясняет, что именно замерено на живом Caddy.
+    size = re.search(r"^\s*max_size\s+(\S+)\s*$", _read("Caddyfile"), re.M).group(1)
+    assert _caddy_bytes(size) == api.MAX_BODY_BYTES, size
+
+
+def test_the_tile_matcher_accepts_the_url_the_client_actually_builds():
+    """Рамка вокруг тайлов проверяется ТЕМ ЖЕ адресом, который строит Leaflet
+    по шаблону из MapView: регулярное выражение, не совпавшее с ним, гасит
+    карту у пилота целиком, а `caddy adapt` и все остальные тесты остаются
+    зелёными.
+
+    Мусор в списке ниже — воспроизведённые пробы: `POST /tiles/anything` с
+    телом доезжал до апстрима как `POST /anything`, с нашим User-Agent
+    (финальное ревью ветки, безопасность, m3).
+    """
+    pattern = re.search(r"path_regexp\s+(\S+)", _tiles_block()).group(1)
+    template = re.search(r'TILE_URL = "([^"]+)"',
+                         _read("webapp/src/map/MapView.tsx")).group(1)
+    url = template.replace("{z}", "10").replace("{x}", "637").replace("{y}", "380")
+    assert re.match(pattern, url), (pattern, url)
+    for junk in ("/tiles/anything", "/tiles/10/637/380.jpg", "/tiles/999/1/1.png",
+                 "/tiles/", "/tiles/10/637/380.png/../secret"):
+        assert not re.match(pattern, junk), junk
+
+
+def test_only_get_and_head_reach_the_tile_upstream():
+    """Ретранслятор на чужой сервер для любого метода — это чужой трафик под
+    нашим именем: правила OpenStreetMap банят по User-Agent, а он захардкожен
+    именно как наш, и карта погасла бы у пилота."""
+    assert "method GET HEAD" in _tiles_block()
+
+
+def test_the_tile_proxy_hides_the_pilot_from_the_upstream():
+    """Ради этого прокси и заведён (комментарий в Caddyfile: «прямой запрос с
+    устройства пилота отдал бы чужому серверу и адрес устройства»). Caddy
+    добавляет X-Forwarded-For сам, и на живом Caddy апстрим видел в нём адрес
+    устройства — то есть прямой запрос к tile.openstreetmap.org был заменён на
+    такой же, но с лишним посредником (финальное ревью ветки, безопасность,
+    m1)."""
+    block = _tiles_block()
+    for header in ("X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "Via"):
+        assert f"header_up -{header}" in block, header
+
+
+def test_the_tile_proxy_carries_no_cookies_either_way():
+    """Клиентские Cookie и Authorization доезжали до апстрима дословно, а его
+    Set-Cookie возвращался в браузер на НАШ домен (m2). Сегодня кук на домене
+    нет — стрельнёт в день, когда заведут первую."""
+    block = _tiles_block()
+    assert "header_up -Cookie" in block
+    assert "header_up -Authorization" in block
+    assert "header_down -Set-Cookie" in block
+
+
+def test_the_deploy_script_locks_down_the_env_file(tmp_path):
+    """`.env` держит BOT_TOKEN, а его достаточно, чтобы выпустить себе initData
+    на ЛЮБОЙ Telegram id: подпись считается тем же токеном локально
+    (webauth._secret_key), и api.current_user сверяет только число — список
+    допуска после этого не значит ничего. `make secrets` ставил 0600, а
+    deploy.sh оставлял то, что даст umask, то есть обычно 0644 (финальное
+    ревью ветки, безопасность, m4).
+
+    Блок ИСПОЛНЯЕТСЯ, как и проверка сборки ниже: права — это результат работы
+    скрипта, а не слово в его тексте.
+    """
+    block = tmp_path / "block.sh"
+    block.write_text("set -euo pipefail\n" + _marked_block("deploy.sh", "env file"),
+                     encoding="utf-8")
+    workdir = tmp_path / "checkout"
+    workdir.mkdir()
+    (workdir / ".env.example").write_text("BOT_TOKEN=\n", encoding="utf-8")
+    subprocess.run(["bash", str(block)], cwd=workdir, capture_output=True,
+                   text=True, check=True)
+    mode = stat.S_IMODE(os.stat(workdir / ".env").st_mode)
+    assert mode == 0o600, oct(mode)
+
+    # Второй прогон по уже существующему файлу: .env мог остаться от прежней
+    # раскатки, когда этой строки в скрипте ещё не было, и тогда `cp` не
+    # выполняется вовсе — а права всё равно обязаны стать 0600.
+    os.chmod(workdir / ".env", 0o644)
+    subprocess.run(["bash", str(block)], cwd=workdir, capture_output=True,
+                   text=True, check=True)
+    assert stat.S_IMODE(os.stat(workdir / ".env").st_mode) == 0o600
+
+
+def test_the_database_directory_is_ignored_by_git():
+    """data/pgbot.db — Telegram id каждого допущенного пилота, его маршруты и
+    координаты стартов. Bare-metal раскатка кладёт базу именно туда
+    (store.DB_PATH), и первый же `git add -A` унёс бы её в историю.
+
+    Проверяет САМ git своим матчером, а не тест — чтением .gitignore: `data`
+    без слэша, `/data/` и `data/**` ведут себя по-разному, и глазами это не
+    отличить."""
+    done = subprocess.run(["git", "check-ignore", "-q", "data/pgbot.db"],
+                          cwd=ROOT, capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+
+
+def test_the_database_directory_is_ignored_by_docker():
+    """Тот же файл, второй путь: оператор, переехавший с systemd на
+    рекомендованный README `docker compose up -d --build`, унёс бы базу слоем
+    в образ — а образ уезжает в реестр или в `docker save` «посмотри, почему
+    не работает». Воспроизведено: база из контекста сборки читалась обратно из
+    готового образа (финальное ревью ветки, безопасность, m5).
+
+    Здесь проверяется только наличие строки: матчера .dockerignore без самого
+    docker не запустить, а сборка образа в прогон тестов не входит.
+    """
+    lines = [line.strip() for line in _read(".dockerignore").splitlines()]
+    assert "data" in lines or "data/" in lines, lines
+
+
+def test_tiles_are_proxied_through_our_own_domain():
+    """Клиент ходит за тайлами только к своему домену: прямые запросы к
+    tile.openstreetmap.org показали бы чужому сервису адрес каждого пилота и
+    район, куда он смотрит. Ради этого прокси и заводился."""
+    text = _read("Caddyfile")
+    assert "handle /tiles/*" in text
+    assert "tile.openstreetmap.org" in text
+
+
+def test_tile_proxy_names_the_application_in_user_agent():
+    """Правила использования тайлов OpenStreetMap требуют, чтобы клиент себя
+    называл. Безымянный поток запросов там блокируют."""
+    text = _read("Caddyfile")
+    assert "header_up User-Agent" in text
+
+
+def test_tile_proxy_strips_the_tiles_prefix_before_the_upstream():
+    """Клиент шлёт /tiles/{z}/{x}/{y}.png (см. webapp/src/map/MapView.tsx),
+    а OpenStreetMap отдаёт тайлы по /{z}/{x}/{y}.png, БЕЗ префикса /tiles —
+    канонический шаблон виден в самом Leaflet, уже лежащем в проекте
+    (webapp/node_modules/leaflet/src/layer/tile/TileLayer.js). Без явного
+    среза наверх уходил бы буквально /tiles/10/637/380.png, и апстрим отвечал
+    бы 404 на каждый тайл — карта не показала бы ни одной картинки, при этом
+    caddy adapt и все остальные тесты остаются зелёными (они не смотрят,
+    что реально доезжает до чужого сервера). Симметрично истории с /api/*
+    выше (test_caddyfile_comment_matches_the_directive_it_uses) — там
+    handle_path срезал бы префикс, который бэкенду был нужен; здесь handle
+    префикс, наоборот, сохраняет, поэтому срез сделан явной директивой uri
+    strip_prefix внутри блока, а не сменой handle на handle_path."""
+    text = _read("Caddyfile")
+    tiles_block = text.split("handle /tiles/*")[1].split("\n\thandle {")[0]
+    assert "uri strip_prefix /tiles" in tiles_block

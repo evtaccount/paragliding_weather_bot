@@ -5,15 +5,19 @@
 SERVER      ?=
 REMOTE_DIR  ?= paragliding-bot
 COMPOSE     ?= docker compose
-RSYNC_EXCL   = --exclude .git --exclude .venv --exclude .env --exclude __pycache__
+# node_modules — ~106 МБ, которые на сервере всё равно не используются: образ
+# ставит зависимости сам (npm ci в этапе webapp), а bare-metal-сборка идёт
+# через make webapp-install там же на месте.
+RSYNC_EXCL   = --exclude .git --exclude .venv --exclude .env --exclude __pycache__ \
+               --exclude node_modules
 
 .DEFAULT_GOAL := help
-.PHONY: help install run check test secrets clean \
+.PHONY: help install run check test e2e webapp-install webapp-build secrets clean \
         docker-build docker-up docker-down docker-restart docker-logs docker-ps \
         deploy deploy-restart deploy-logs
 
 help:               ## show this help
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
+	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
 	  | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
 
 # --- local dev ---
@@ -26,8 +30,47 @@ run:                ## run bot + API locally (needs .env)
 check:              ## byte-compile all modules (quick syntax check)
 	.venv/bin/python -m py_compile *.py && echo "SYNTAX OK"
 
-test:               ## run the dialog test suite (needs requirements-dev.txt installed)
+test:               ## run python + webapp test suites
 	.venv/bin/python -m pytest -q
+	npm --prefix webapp run test -- --run
+
+# Сквозные сценарии в `test` не входят намеренно: им нужен настоящий браузер,
+# запущенный рядом app.py и поход в open-meteo — всего того, чего у обычного
+# прогона тестов нет. Подготовка описана в README, раздел «Сквозные сценарии».
+#
+# Проверка занятости порта стоит ДО запуска ради текста в терминале. Playwright
+# на занятом порту советует «set reuseExistingServer: true», а этот совет ровно
+# противоположен тому, зачем там false: переиспользованный предпросмотр отдаёт
+# вчерашнюю сборку, и восемь сценариев зеленеют, не увидев правки (разбор — в
+# webapp/playwright.config.ts). Разработчик читает терминал, а не комментарий в
+# конфигурации, поэтому возражение должно быть в терминале.
+# Порт продублирован из webapp/playwright.config.ts (PREVIEW_PORT).
+# lsof на машине может не оказаться — тогда проверка молча пропускается и
+# остаётся прежнее поведение, то есть сообщение самого Playwright.
+#
+# `override`, а не `?=` и даже не `=`: вызов `make e2e E2E_PORT=9999` при
+# занятом 4173 отправлял сторожа смотреть на свободный порт, тот пропускал
+# запуск, и человек получал ровно то сообщение Playwright, ради вытеснения
+# которого сторож и заведён. Переменная из командной строки бьёт обычное
+# присваивание в файле — остановить её может только `override`. Переопределять
+# порт снаружи всё равно бессмысленно: настоящий порт задан вторым числом, в
+# webapp/playwright.config.ts, и от этой переменной не зависит.
+override E2E_PORT = 4173
+
+e2e:                ## run end-to-end tests (needs a running app.py and DEV_INIT_DATA)
+	@if lsof -ti tcp:$(E2E_PORT) >/dev/null 2>&1; then \
+	  echo "порт $(E2E_PORT) занят — погасите свой 'npm run preview' и повторите."; \
+	  echo "НЕ ставьте reuseExistingServer: true (это посоветует сам Playwright):"; \
+	  echo "тогда сценарии пойдут по СТАРОЙ сборке и не увидят вашей правки."; \
+	  exit 1; \
+	fi
+	npm --prefix webapp run e2e
+
+webapp-install:     ## install webapp dependencies
+	npm --prefix webapp ci
+
+webapp-build:       ## build the webapp into webapp/dist
+	npm --prefix webapp run build
 
 secrets:            ## create .env from example and lock it down (chmod 600)
 	@test -f .env || cp .env.example .env

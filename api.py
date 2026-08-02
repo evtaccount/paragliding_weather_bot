@@ -5,6 +5,7 @@
 резолв личных настроек, вызов forecast и перевод исключений в коды.
 """
 import dataclasses
+import json
 import logging
 import os
 import sqlite3
@@ -12,6 +13,7 @@ import sqlite3
 import httpx
 from fastapi import (APIRouter, Depends, FastAPI, File, Form, Header,
                      HTTPException, UploadFile)
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -30,7 +32,139 @@ log = logging.getLogger("pgbot.api")
 app = FastAPI(title="pgbot mini app", docs_url=None, redoc_url=None, openapi_url=None)
 router = APIRouter(prefix="/api")
 
-STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+# Результат `npm run build` (Makefile: webapp-build; в образе — этап webapp из
+# Dockerfile). Каталог собирается, а не хранится в git, поэтому его может не
+# быть — см. _static_files ниже.
+STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "webapp", "dist")
+
+
+def _static_files(directory: str) -> StaticFiles:
+    """Отдача собранного приложения, переживающая отсутствие сборки.
+
+    check_dir=False именно ради этого: по умолчанию StaticFiles проверяет
+    каталог прямо в конструкторе и бросает RuntimeError. Монтируется он на
+    импорте модуля, а импортирует api ещё и app.py (единый процесс чата и
+    HTTP) — на свежем клоне без `make webapp-build` это уронило бы вместе с
+    приложением и чат по polling. С флагом отказ остаётся на одном URL.
+    """
+    return StaticFiles(directory=directory, html=True, check_dir=False)
+
+
+# ------------------------------------------------------------- тело запроса
+# Потолок: MAX_GPX_BYTES (1 МиБ — единственное большое, что приложение шлёт
+# законно, см. route.py) плюс запас на обвязку multipart и текстовые поля
+# рядом с файлом. Меньше — и законная загрузка трека начнёт обрываться.
+MAX_BODY_BYTES = 2 * route.MAX_GPX_BYTES
+
+
+class _BodyTooLarge(BaseException):
+    """Сигнал из обёртки receive наружу от неё же. В ответ не уходит.
+
+    Наследник BaseException, а не Exception, намеренно: FastAPI читает тело
+    внутри `try: ... except Exception` и переводит ЛЮБУЮ ошибку чтения в 400
+    «There was an error parsing the body» (fastapi/routing.py,
+    get_request_handler). Обычное исключение отсюда до middleware не долетало
+    бы вовсе — проверено: chunked-тело сверх потолка отвечало 400 вместо 413,
+    то есть обрыв выглядел как ошибка клиента в разборе JSON.
+    """
+
+
+def _too_large_response() -> tuple[dict, dict]:
+    """Сообщения ASGI для 413. Собраны руками, потому что отвечать приходится
+    из middleware, где обработчиков исключений FastAPI ещё нет."""
+    body = json.dumps({"detail": "Запрос слишком большой."},
+                      ensure_ascii=False).encode()
+    return ({"type": "http.response.start", "status": 413,
+             "headers": [(b"content-type", b"application/json; charset=utf-8"),
+                         (b"content-length", str(len(body)).encode())]},
+            {"type": "http.response.body", "body": body})
+
+
+class LimitBodySize:
+    """Тело больше потолка не доезжает до приложения.
+
+    Зачем вообще: FastAPI решает Depends(current_user) уже ПОСЛЕ того, как
+    получил тело целиком — `get_request_handler` зовёт `await request.body()`
+    / `await request.form()` раньше зависимостей. Значит, за неавторизованный
+    POST платит память процесса, и только потом уходит 401. Замерено на живом
+    сервере (финальное ревью ветки, безопасность, I1): 800 МБ JSON БЕЗ
+    заголовка Authorization подняли RSS с 38 до 635 МБ; multipart на 600 МБ
+    вырастил временный файл Starlette до 594 МБ (SpooledTemporaryFile потолка
+    не имеет — max_part_size сторожит только нефайловые поля). Проверка
+    MAX_GPX_BYTES в parse_route стоит уже после приёма файла и от этого не
+    спасает. Процесс один на чат и HTTP (app.py), поэтому OOM уносит вместе с
+    приложением и бота в чате.
+
+    Именно ASGI-обёртка, а не BaseHTTPMiddleware: тот сам собирает тело в
+    памяти, то есть платит ровно ту цену, которую здесь надо не платить.
+
+    Проверок две, и нужны обе. Content-Length отвечает 413, не прочитав ни
+    байта, — так шлют curl, httpx и браузер. Счётчик в обёртке receive ловит
+    chunked-тело, у которого Content-Length нет вовсе, и обрывает его на
+    первом же байте сверх потолка, а не после приёма целиком.
+
+    В Caddy на том же потолке стоит `request_body max_size` — не дубль, а
+    вторая граница на другом пути. Замерено на живом caddy:2-alpine: сверх
+    потолка до бэкенда доезжает не больше max_size (с Content-Length) или не
+    доезжает ничего (chunked). Эта же обёртка закрывает bare-metal раскатку
+    (deploy.sh) и любой запуск api.app без Caddy впереди — там перед процессом
+    нет никого.
+    """
+
+    def __init__(self, app, max_bytes: int = MAX_BODY_BYTES):
+        self.app = app
+        self.max_bytes = max_bytes
+
+    def _declared(self, scope) -> int:
+        for name, value in scope.get("headers") or ():
+            if name == b"content-length":
+                try:
+                    return int(value)
+                except ValueError:
+                    return 0
+        return 0
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        if self._declared(scope) > self.max_bytes:
+            for message in _too_large_response():
+                await send(message)
+            return
+
+        received = 0
+        started = False
+
+        async def counting_receive():
+            nonlocal received
+            message = await receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if received > self.max_bytes:
+                    raise _BodyTooLarge
+            return message
+
+        async def watching_send(message):
+            nonlocal started
+            if message["type"] == "http.response.start":
+                started = True
+            await send(message)
+
+        try:
+            await self.app(scope, counting_receive, watching_send)
+        except _BodyTooLarge:
+            # Ответить можно, только пока приложение ничего не отправило:
+            # второй http.response.start — нарушение протокола ASGI. Если
+            # ответ уже начался, пусть падает как обычная ошибка сервера.
+            if started:
+                raise
+            for message in _too_large_response():
+                await send(message)
+
+
+app.add_middleware(LimitBodySize)
 
 
 async def current_user(authorization: str = Header(default="")) -> webauth.TelegramUser:
@@ -49,7 +183,25 @@ async def current_user(authorization: str = Header(default="")) -> webauth.Teleg
         raise HTTPException(401, "initData не прошла проверку") from None
 
     allowed = guards.allowed_ids()
-    if allowed and user.id not in allowed:
+    if not allowed:
+        # Здесь HTTP строже чата намеренно, и это единственное место, где они
+        # расходятся. В чате пустой список означает «кто нашёл моего бота»:
+        # чтобы дойти до бота, надо знать его имя в Telegram. У HTTP то же
+        # умолчание означает «кто нашёл мой сайт», а домен становится
+        # публично известен сам собой — Let's Encrypt публикует каждое имя в
+        # Certificate Transparency, и оно ищется на crt.sh. Воспроизведено на
+        # сервере с умолчанием из .env.example (финальное ревью ветки,
+        # безопасность, I2): подпись постороннего id получала 200 на
+        # GET /api/sites с точными координатами и заметками, 201 на
+        # POST /api/sites и 204 на DELETE чужого старта — библиотека общая.
+        # Отказ закрытый: приложение не работает, пока владелец не назовёт
+        # хотя бы один id. Чат при этом продолжает работать как работал.
+        log.info("отказ %s: ALLOWED_USER_IDS пуст", user.id)
+        raise HTTPException(
+            403, "Приложение закрыто: владелец не задал список доступа. "
+                 "Впишите Telegram ID в ALLOWED_USER_IDS в .env и перезапустите — "
+                 "бот в чате при этом работает.")
+    if user.id not in allowed:
         # Мирроринг guards.WhitelistMiddleware: там такой же отказ пишет
         # log.info("refused user %s (...)"). Здесь подпись ВАЛИДНА — значит,
         # это не шум сканера, а живой чужой Telegram-аккаунт, и на новой
@@ -92,6 +244,34 @@ async def _route_error(_request, exc: route.RouteError):
     return JSONResponse({"detail": str(exc)}, status_code=400)
 
 
+@app.exception_handler(RequestValidationError)
+async def _validation_error(_request, exc: RequestValidationError):
+    """400 с именами полей — и без ЭХА отвергнутого значения.
+
+    Штатный обработчик FastAPI кладёт отвергнутое значение обратно в тело
+    ответа (ключ `input` в каждой ошибке), и на нечисловом float это роняет сам
+    ответ: `elevation_m: NaN` (а также Infinity и -Infinity) pydantic честно
+    отвергает, после чего JSONResponse собирает тело через
+    `json.dumps(allow_nan=False)` и падает уже на сериализации. Пилот получал
+    «Internal Server Error» вместо «проверьте высоту», а в лог на каждую
+    попытку ложилась двухэкранная трасса — при `json-file 10m × 3` цикл
+    повторов вытесняет из лога настоящую историю, включая строки `refused user`
+    (финальное ревью ветки, круг 2, I5). Достижимо без злого умысла: высоту в
+    форму подставляет POST /api/elevation.
+
+    Наружу уходят только имена полей: значение вернулось бы отправителю как
+    есть — тем же способом, каким большие поля уже раздували ответы
+    (store.details_error). Разбор для разработчика — в лог, одной строкой.
+    """
+    fields = sorted({".".join(str(p) for p in e["loc"][1:]) or "тело"
+                     for e in exc.errors()})
+    log.info("запрос не прошёл разбор: %s",
+             [(e["loc"], e["msg"]) for e in exc.errors()])
+    return JSONResponse({"detail": "Запрос не принят, проверьте поля: "
+                                   + ", ".join(fields) + "."},
+                        status_code=400)
+
+
 @app.exception_handler(httpx.HTTPError)
 async def _upstream_error(_request, exc: httpx.HTTPError):
     """502. Текст наружу не отдаём: в нём бывает URL запроса целиком."""
@@ -108,7 +288,16 @@ def _prefs_payload(uid: int) -> dict:
             "model_key": p.model_key,
             # Список моделей едет вместе с настройками, а не отдельным
             # эндпоинтом: выбиралка без подписей показала бы пилоту ключи.
-            "models": [{"key": k, "label": engine.model_label(k)} for k in engine.MODELS]}
+            "models": [{"key": k, "label": engine.model_label(k)} for k in engine.MODELS],
+            # Модель потолка термиков — та же константа engine.CEILING_MODEL_KEY,
+            # которой считает потолок весь сервер. Едет сюда по той же причине,
+            # что и список моделей: экран настроек и шторка выбора модели
+            # объясняют пилоту, почему потолок не меняется вместе с моделью, и
+            # писали это слово «GFS» своей копией — смена константы (у GFS
+            # может пропасть boundary_layer_height) оставила бы обе подписи
+            # врать, не уронив ни одного теста (финальное ревью ветки, I1).
+            "ceiling_model": {"key": engine.CEILING_MODEL_KEY,
+                              "label": engine.model_label(engine.CEILING_MODEL_KEY)}}
 
 
 class PrefsPatch(BaseModel):
@@ -174,10 +363,10 @@ class Coords(BaseModel):
 
 
 def _public_site(site: dict) -> dict:
-    """Старт без added_by: Telegram id того, кто его завёл, клиенту не нужен,
-    а при пустом ALLOWED_USER_IDS (открытый режим, см.
-    test_empty_allowlist_lets_everyone_in) отдавался бы кому угодно в
-    интернете. В базе поле остаётся — там ему и место."""
+    """Старт без added_by: Telegram id того, кто его завёл, клиенту не нужен.
+
+    Список допущенных пилотов — тоже не его дело: приложение открывают друзья
+    владельца, а не один человек. В базе поле остаётся — там ему и место."""
     return {k: v for k, v in site.items() if k != "added_by"}
 
 
@@ -204,6 +393,12 @@ async def create_site(body: SiteIn, user: webauth.TelegramUser = Depends(current
     if bad:
         raise HTTPException(400, bad)
     bad = store.coords_error(site["lat"], site["lon"])
+    if bad:
+        raise HTTPException(400, bad)
+    # Остальные поля: из чата они недостижимы (bot.cmd_add задаёт только имя,
+    # координаты и экспозицию), а здесь приезжают из тела запроса — см.
+    # store.details_error.
+    bad = store.details_error(site)
     if bad:
         raise HTTPException(400, bad)
     if store.find_site(site["name"]) is not None:
@@ -471,4 +666,4 @@ app.include_router(router)
 
 # Монтируется ПОСЛЕ роутера: StaticFiles на "/" перехватывает всё, до чего
 # доходит, и повешенный первым съел бы /api/*.
-app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
+app.mount("/", _static_files(STATIC_DIR), name="static")

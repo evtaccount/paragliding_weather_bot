@@ -268,10 +268,10 @@ async def test_scan_lists_sites_with_day_buttons(feed, session, fake_scan):
     d0, d1 = TODAY, (dt.date.today() + dt.timedelta(days=1)).isoformat()
     fake_scan["result"] = {
         "sites": [
-            {"name": "Гудаури", "aspect": 180.0, "days": [
+            {"name": "Гудаури", "aspect_deg": 180.0, "days": [
                 {"date": d0, "emoji": "✅", "label": "лётный", "score": 90,
                  "wmax": 5, "gmax": 8, "dom": 180, "precip": 0.0, "wc": 0, "tmax": 20}]},
-            {"name": "Лалискури", "aspect": 225.0, "days": [
+            {"name": "Лалискури", "aspect_deg": 225.0, "days": [
                 {"date": d1, "emoji": "⚠️", "label": "с оговорками", "score": 60,
                  "wmax": 7, "gmax": 10, "dom": 200, "precip": 0.0, "wc": 3, "tmax": 18}]},
         ],
@@ -280,6 +280,11 @@ async def test_scan_lists_sites_with_day_buttons(feed, session, fake_scan):
     await feed(text_update("/scan"))
     body = "\n".join(texts(session))
     assert "Гудаури" in body and "Лалискури" in body
+    # scan_week отдаёт экспозицию ГРАДУСАМИ (forecast.py:91 — aspect_deg), а в
+    # заголовке старта пилот читает румб. Без engine.card в шапке стояло бы
+    # «Гудаури (180.0)» — ровно то, что случилось в мини-приложении (финальное
+    # ревью ветки, C1б).
+    assert "🪂 Гудаури (Ю)" in body and "🪂 Лалискури (ЮЗ)" in body
     kb = keyboards(session)[-1]
     assert [b.callback_data for b in buttons(kb)] == [f"pd|Гудаури|{d0}", f"pd|Лалискури|{d1}"]
 
@@ -305,7 +310,7 @@ async def test_scan_no_sites_hints_add(feed, session):
 
 async def test_scan_reports_failed_sites(feed, session, fake_scan):
     fake_scan["result"] = {
-        "sites": [{"name": "Гудаури", "aspect": 180.0, "days": [
+        "sites": [{"name": "Гудаури", "aspect_deg": 180.0, "days": [
             {"date": TODAY, "emoji": "✅", "label": "лётный", "score": 90,
              "wmax": 5, "gmax": 8, "dom": 180, "precip": 0.0, "wc": 0, "tmax": 20}]}],
         "empty": [], "failed": ["Лалискури"],

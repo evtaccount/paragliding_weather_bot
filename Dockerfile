@@ -1,3 +1,16 @@
+# webapp/dist в git не лежит (.gitignore) — его собирают. Отдельный этап на
+# Node нужен, чтобы node_modules и тулчейн сборки не ехали в финальный образ:
+# приложение отдаёт pgbot (api.py монтирует webapp/dist на "/"), а из всей
+# сборки ему нужен только результат.
+FROM node:22-slim AS webapp
+WORKDIR /build
+# package*.json отдельным слоем: npm ci переустанавливается только когда
+# меняются зависимости, а не на каждую правку в webapp/src.
+COPY webapp/package.json webapp/package-lock.json ./
+RUN npm ci
+COPY webapp/ ./
+RUN npm run build
+
 FROM python:3.12-slim
 
 # fonts-dejavu-core → Cyrillic glyphs for the Pillow charts; tzdata → correct local date
@@ -12,9 +25,26 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
+# Результат этапа webapp — обязательно ВЫШЕ единственного `chown -R` ниже.
+# Дело не в доступе: файлы приезжают с режимом 644 и читаются кем угодно,
+# образ с этой строкой после USER app отдаёт GET / → 200 как ни в чём не
+# бывало. Дело в том, что одним проходом chown владелец всего /app остаётся
+# однородным: выравнивать потом пришлось бы вторым `chown -R app /app`, а он
+# переписывает метаданные каждого файла и кладёт их копии в отдельный слой.
+COPY --from=webapp /build/dist ./webapp/dist
+
 # run as non-root; /app/data holds the writable SQLite database (a named volume
 # mounts here and inherits this ownership, so the app user can persist sites,
 # routes, settings and the model choice)
+#
+# Следствие одного `chown -R`: код в /app процессу тоже доступен на запись
+# (проверено дозаписью в /app/api.py от uid 10001). Оставлено сознательно —
+# сузить владение до /app/data значило бы разбить единственный проход chown на
+# два и вернуть тот самый второй слой с метаданными, ради отсутствия которого
+# `COPY --from=webapp` стоит выше. Цена известна и мала: примитива записи в
+# проекте нет (в ревью его искали и не нашли), а без него разница только между
+# «ошибка позволила записать файл» и «ошибка позволила пережить рестарт»
+# (финальное ревью ветки, безопасность, m6).
 RUN mkdir -p /app/data && useradd -m -u 10001 app && chown -R app /app
 USER app
 

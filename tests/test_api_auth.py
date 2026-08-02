@@ -59,10 +59,53 @@ async def test_user_inside_the_allowlist_passes(client, allowlist):
     assert (await client.get("/api/prefs", headers=header(uid=2))).status_code == 200
 
 
-async def test_empty_allowlist_lets_everyone_in(client, allowlist):
-    """Открытый режим — тот же, что у бота: пустой список никого не отсекает."""
+async def test_empty_allowlist_closes_the_http_surface(client, allowlist):
+    """Единственное место, где HTTP строже чата.
+
+    В чате пустой список означает «кто нашёл моего бота» — надо знать имя бота
+    в Telegram. У HTTP то же умолчание означает «кто нашёл мой сайт», а домен
+    публикуется сам: Let's Encrypt отдаёт каждое имя в Certificate
+    Transparency, и оно ищется на crt.sh. На сервере, поднятом ровно с
+    умолчанием из .env.example, подпись постороннего id получала 200 на
+    GET /api/sites с координатами и заметками, 201 на POST и 204 на DELETE
+    чужого старта — библиотека общая (финальное ревью ветки, безопасность, I2).
+    """
     allowlist("")
-    assert (await client.get("/api/prefs", headers=header(uid=99))).status_code == 200
+    assert (await client.get("/api/prefs", headers=header(uid=99))).status_code == 403
+
+
+async def test_the_closed_surface_names_the_variable_to_fill(client, allowlist):
+    """Отказ читает владелец, а не посторонний: молчаливый 403 выглядит как
+    поломка приложения, и чинить его пойдут в код, а не в .env."""
+    allowlist("")
+    r = await client.get("/api/prefs", headers=header(uid=99))
+    assert "ALLOWED_USER_IDS" in r.text
+
+
+async def test_the_chat_stays_open_on_an_empty_allowlist(allowlist):
+    """Правило чата не менялось: там пустой список по-прежнему пускает всех.
+
+    Расхождение поверхностей — решение, а не побочный эффект, и оно должно
+    быть видно из тестов: закрыв заодно чат, владелец, обновившийся ради
+    мини-приложения, остался бы и без бота.
+    """
+    import guards
+    allowlist("")
+
+    passed = []
+
+    async def handler(event, data):
+        passed.append(event)
+        return "ok"
+
+    class _Stranger:
+        from_user = type("U", (), {"id": 999999, "username": "stranger"})()
+
+        async def answer(self, *args, **kwargs):
+            raise AssertionError("чат ответил отказом, а должен был пропустить")
+
+    assert await guards.WhitelistMiddleware()(handler, _Stranger(), {}) == "ok"
+    assert passed
 
 
 async def test_a_403_refusal_is_logged(client, allowlist, caplog):

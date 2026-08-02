@@ -164,15 +164,25 @@ def elevation(monkeypatch):
 
 
 @pytest.fixture()
-async def client():
+async def client(monkeypatch):
     """HTTP-клиент поверх ASGI-приложения: без сокета и свободного порта.
 
     Импорт api откладывается до вызова фикстуры — модуль тянет FastAPI, и
     падение импорта не должно ронять сбор тестов, которые до API не касаются.
+
+    Список допуска задаётся здесь, а не глобально в окружении выше: пустой
+    ALLOWED_USER_IDS оставляет чат открытым (так и задумано, чат этим и
+    тестируется), но HTTP-поверхность закрывает целиком — см. tma.ALLOWED_IN_TESTS
+    и test_api_auth.test_empty_allowlist_closes_the_http_surface. Тесты, которым
+    нужен другой список, зовут фикстуру allowlist уже в теле теста — она
+    отрабатывает позже этой строки и побеждает.
     """
     import httpx
 
     import api
+    from tma import ALLOWED_IN_TESTS
+
+    monkeypatch.setenv("ALLOWED_USER_IDS", ALLOWED_IN_TESTS)
     transport = httpx.ASGITransport(app=api.app)
     async with httpx.AsyncClient(transport=transport,
                                  base_url="http://test") as c:

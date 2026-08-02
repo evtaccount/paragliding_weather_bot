@@ -1,0 +1,16 @@
+[
+  {
+    "name": "Гудаури",
+    "lat": 42.47,
+    "lon": 44.48,
+    "elevation_m": 2200,
+    "aspect": "Ю",
+    "aspect_deg": 180.0,
+    "slope_deg": 25.0,
+    "route_top_m": 3000,
+    "notes": "",
+    "aliases": [
+      "gudauri"
+    ]
+  }
+]

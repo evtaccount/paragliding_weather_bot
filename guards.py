@@ -2,8 +2,11 @@
 
 WhitelistMiddleware — only Telegram user IDs from ALLOWED_USER_IDS may use the
 bot; strangers get one polite refusal (with their ID, so they can ask the owner
-to add them). If ALLOWED_USER_IDS is empty/unset the bot stays open, with a
-loud warning in the log.
+to add them). If ALLOWED_USER_IDS is empty/unset the chat stays open, with a
+loud warning in the log — the mini app, on the same empty list, refuses every
+request instead (api.current_user; to reach the chat one has to know the bot's
+name in Telegram, while the app's domain becomes public on its own through
+Certificate Transparency).
 
 ThrottleMiddleware — applies only to handlers flagged `forecast` (the ones that
 hit open-meteo/Gemini). Two guards:
@@ -45,7 +48,8 @@ def allowed_ids() -> frozenset[int]:
     ids = frozenset(int(p) for p in raw.replace(";", ",").split(",") if p.strip())
     if not ids and not _warned_open:
         _warned_open = True
-        log.warning("ALLOWED_USER_IDS не задан — бот открыт для ВСЕХ пользователей")
+        log.warning("ALLOWED_USER_IDS не задан — чат открыт для ВСЕХ пользователей, "
+                    "мини-приложение при этом закрыто целиком")
     return ids
 
 

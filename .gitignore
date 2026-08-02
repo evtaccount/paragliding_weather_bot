@@ -1,6 +1,12 @@
 # secrets
 .env
 
+# база: Telegram id каждого допущенного пилота, его маршруты и координаты
+# стартов. Сюда её кладёт bare-metal раскатка (store.DB_PATH по умолчанию —
+# <репозиторий>/data/pgbot.db), и без этой строки первый же `git add -A`
+# унёс бы её в историю. В Docker БД живёт в томе pgbot-data.
+data/
+
 # python
 __pycache__/
 *.py[cod]
@@ -18,3 +24,14 @@ deploy/pgbot.service
 
 # superpowers scratch (SDD workspace)
 .superpowers/
+
+# webapp (Vite + React)
+webapp/node_modules
+webapp/dist
+# следы прогонов Playwright: снимки и трассы упавших сценариев (test-results,
+# outputDir по умолчанию) и HTML-отчёт, если его попросили ключом --reporter.
+# Сами браузеры Playwright кладёт мимо репозитория (~/Library/Caches или
+# ~/.cache/ms-playwright), поэтому исключать их не нужно.
+webapp/test-results
+webapp/playwright-report
+webapp/blob-report

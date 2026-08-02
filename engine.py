@@ -668,6 +668,16 @@ def assessment_facts(assess):
         "score": None if assess.score is None else round(assess.score),
         "category": assess.category,
         "label_ru": assess.label,
+        # Лётный ли день по criteria.FLYABLE — решает домен, а не читатель.
+        # Мини-приложение подписывало строки дня своим правилом
+        # («не лётно» только у no_fly и danger) и уже расходилось с ним на
+        # marginal: старт со всеми маргинальными днями был подписан «лётно» на
+        # вкладке «Неделя» и лежал в «Без лётных дней» на вкладке «Все старты»
+        # — один экран противоречил сам себе через один тап (финальное ревью
+        # ветки, I2). Тот же criteria.flyable отбирает дни скана
+        # (forecast.py:scan_week), так что обе половины экрана теперь считают
+        # лётность одной функцией.
+        "flyable": criteria.flyable(assess.category),
         "limiting_factor": assess.limiting,
         "limiting_factor_ru": assess.limiting_label,
         "fly_window": list(assess.fly_window) if assess.fly_window else None,
@@ -952,12 +962,20 @@ def overview_rows(data, site):
         else:
             dom = D["wind_direction_10m_dominant"][k]
         day, _ctx = assess_day(data, site, k)
+        # weather — описание погоды словами, тем же WMO, что и у диапазонного
+        # обзора (facts_overview: "weather"). Раньше строка несла только код
+        # `wc`, и каждый читатель переводил его сам: чат — engine.WMO
+        # (bot.py:252), а мини-приложение не переводило вовсе и печатало
+        # вместо погоды категорию лётности, уже стоявшую в соседней ячейке
+        # балла, — дождливый день в скане был неотличим от ясного (финальное
+        # ревью ветки, I6). `wc` остаётся: по нему выбирает иконку charts.
         rows.append(dict(date=dcode, emoji=day.emoji, label=day.label,
                          score=day.score if day.score is not None else 0.0,
                          category=day.category, limiting=day.limiting_label,
                          confidence=day.confidence, fly_window=day.fly_window,
                          tmax=max(dt_temp), wmax=max(dt_wind), gmax=max(dt_gust),
-                         dom=dom, precip=D["precipitation_sum"][k], wc=D["weather_code"][k]))
+                         dom=dom, precip=D["precipitation_sum"][k], wc=D["weather_code"][k],
+                         weather=WMO.get(D["weather_code"][k], "")))
     return rows
 
 
@@ -1038,8 +1056,18 @@ def facts_1day(data, site, assessment=None):
     by_hour = {h.hour: h for h in assess.hours}
 
     return {
+        # ceiling_model — подпись модели, которой считается потолок термиков,
+        # ГОТОВЫМ значением, а не пересказом константы на стороне читателя.
+        # Мини-приложение писало «всегда по GFS» словом в трёх местах (столб
+        # воздуха, настройки, шторка модели), и смена CEILING_MODEL_KEY —
+        # повод реальный: у GFS может пропасть boundary_layer_height —
+        # оставила бы пилота с подписью «по GFS» под высотой, посчитанной
+        # другой моделью (финальное ревью ветки, I1). _model_note выше несёт
+        # то же знание внутри фразы для чата; отдельным полем его читает
+        # разметка, которой фраза не годится.
         "site": {"name": site["name"], "aspect": card(aspect) if aspect is not None else None, "aspect_deg": aspect,
-                 "elevation_m": elev, "timezone": data.get("timezone"), "model": _model_note(data)},
+                 "elevation_m": elev, "timezone": data.get("timezone"), "model": _model_note(data),
+                 "ceiling_model": model_label(CEILING_MODEL_KEY)},
         "date": t[0][:10],
         "daylight_hours": f"{hour_of(sr):02d}-{hour_of(ss):02d}",
         "thermal_window": thermal_window,

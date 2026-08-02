@@ -1,6 +1,7 @@
 """Личные настройки через HTTP."""
 import pytest
 
+import engine
 import store
 from conftest import TEST_USER_ID
 from tma import header
@@ -30,12 +31,50 @@ async def test_prefs_carry_the_model_list(client):
     assert all(m["label"] for m in body["models"])
 
 
+async def test_prefs_name_the_ceiling_model(client):
+    """Модель потолка термиков приезжает с настройками, а не пишется словом на
+    экране.
+
+    Мини-приложение объясняет пилоту, почему потолок не меняется вместе с
+    выбранной моделью, и держало это объяснение копией константы: «всегда по
+    GFS» стояло словом в четырёх местах TypeScript при одной
+    engine.CEILING_MODEL_KEY в домене (финальное ревью ветки, I1). Ключ едет
+    рядом с подписью — по нему приложение может отличить «потолок считается
+    той же моделью, что и всё остальное» от «другой».
+    """
+    body = (await client.get("/api/prefs", headers=header())).json()
+    assert body["ceiling_model"]["key"] == engine.CEILING_MODEL_KEY
+    assert body["ceiling_model"]["label"] == engine.model_label(engine.CEILING_MODEL_KEY)
+    assert body["ceiling_model"]["key"] in [m["key"] for m in body["models"]]
+
+
 async def test_patch_speed(client):
     r = await client.patch("/api/prefs", json={"avg_route_speed_kmh": 32.0},
                            headers=header(uid=1))
     assert r.status_code == 200
     assert store.prefs(1).avg_route_speed_kmh == 32.0
     assert r.json()["avg_route_speed_kmh"] == 32.0, "ответ должен нести новое значение"
+
+
+async def test_patch_answers_with_the_same_shape_as_get(client):
+    """Ответ PATCH — это ПОЛНЫЕ настройки, как у GET, а не эхо присланного поля.
+
+    Мини-приложение кладёт тело ответа PATCH прямо в свой кэш настроек
+    (webapp/src/api/queries.ts: useUpdatePrefs → setQueryData) и не
+    перезапрашивает их отдельным GET — так закрыто окно, в котором экран
+    показывал прежнее значение, а нажатие, попавшее в это окно, отправляло его
+    повторно. Цена решения: неполный ответ ляжет в кэш молча, и экран настроек
+    упадёт на отсутствующем ключе (models), забрав с собой всё приложение —
+    все четыре вкладки смонтированы одновременно. Контракт «PATCH отвечает тем
+    же набором ключей, что и GET» до этого теста не проверял никто.
+    """
+    get_body = (await client.get("/api/prefs", headers=header(uid=1))).json()
+    patch_body = (await client.patch("/api/prefs", json={"wind_correction_enabled": False},
+                                     headers=header(uid=1))).json()
+    assert patch_body.keys() == get_body.keys()
+    # Список моделей — не просто ключ, а то, по чему приложение подписывает
+    # выбранную модель: пустой или урезанный он так же ломает экран.
+    assert patch_body["models"] == get_body["models"]
 
 
 async def test_patch_wind_correction(client):

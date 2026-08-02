@@ -1,0 +1,245 @@
+{
+  "site": {
+    "name": "Гудаури",
+    "aspect": "Ю",
+    "aspect_deg": 180.0,
+    "elevation_m": 2200,
+    "timezone": "Asia/Tbilisi"
+  },
+  "range": "3d",
+  "criteria_version": "2026-07-doc-v1",
+  "fidelity": "обзор — сокращённый набор полей, у дня подробно расчёт полнее",
+  "days_daytime": [
+    {
+      "date": "2026-07-25",
+      "weather": "ясно",
+      "temp_max_c": 20,
+      "temp_min_c": 10,
+      "wind_max_ms": 2.0,
+      "gust_max_ms": 4.0,
+      "wind_dir_window": "Ю (180°)",
+      "precip_mm": 0.0,
+      "sunshine_h": 11.1,
+      "thermal_window": {
+        "start_hour": 7,
+        "end_hour": 17,
+        "peak_hour": 12,
+        "solar_noon": "12:30"
+      },
+      "assessment": {
+        "score": 84,
+        "category": "excellent",
+        "label_ru": "отличная лётная",
+        "flyable": true,
+        "limiting_factor": "thermal_index",
+        "limiting_factor_ru": "Thermal Index",
+        "fly_window": [
+          7,
+          17
+        ],
+        "confidence": 1.0,
+        "warnings": [],
+        "vetoes_in_window": [],
+        "unchecked_vetoes": []
+      }
+    },
+    {
+      "date": "2026-07-26",
+      "weather": "ясно",
+      "temp_max_c": 20,
+      "temp_min_c": 10,
+      "wind_max_ms": 2.0,
+      "gust_max_ms": 4.0,
+      "wind_dir_window": "Ю (180°)",
+      "precip_mm": 0.0,
+      "sunshine_h": 11.1,
+      "thermal_window": {
+        "start_hour": 7,
+        "end_hour": 17,
+        "peak_hour": 12,
+        "solar_noon": "12:30"
+      },
+      "assessment": {
+        "score": 84,
+        "category": "excellent",
+        "label_ru": "отличная лётная",
+        "flyable": true,
+        "limiting_factor": "thermal_index",
+        "limiting_factor_ru": "Thermal Index",
+        "fly_window": [
+          7,
+          17
+        ],
+        "confidence": 1.0,
+        "warnings": [],
+        "vetoes_in_window": [],
+        "unchecked_vetoes": []
+      }
+    },
+    {
+      "date": "2026-07-27",
+      "weather": "ясно",
+      "temp_max_c": 20,
+      "temp_min_c": 10,
+      "wind_max_ms": 2.0,
+      "gust_max_ms": 4.0,
+      "wind_dir_window": "Ю (180°)",
+      "precip_mm": 0.0,
+      "sunshine_h": 11.1,
+      "thermal_window": {
+        "start_hour": 7,
+        "end_hour": 17,
+        "peak_hour": 12,
+        "solar_noon": "12:30"
+      },
+      "assessment": {
+        "score": 84,
+        "category": "excellent",
+        "label_ru": "отличная лётная",
+        "flyable": true,
+        "limiting_factor": "thermal_index",
+        "limiting_factor_ru": "Thermal Index",
+        "fly_window": [
+          7,
+          17
+        ],
+        "confidence": 1.0,
+        "warnings": [],
+        "vetoes_in_window": [],
+        "unchecked_vetoes": []
+      }
+    },
+    {
+      "date": "2026-07-28",
+      "weather": "ясно",
+      "temp_max_c": 20,
+      "temp_min_c": 10,
+      "wind_max_ms": 2.0,
+      "gust_max_ms": 4.0,
+      "wind_dir_window": "Ю (180°)",
+      "precip_mm": 0.0,
+      "sunshine_h": 11.1,
+      "thermal_window": {
+        "start_hour": 7,
+        "end_hour": 17,
+        "peak_hour": 12,
+        "solar_noon": "12:30"
+      },
+      "assessment": {
+        "score": 84,
+        "category": "excellent",
+        "label_ru": "отличная лётная",
+        "flyable": true,
+        "limiting_factor": "thermal_index",
+        "limiting_factor_ru": "Thermal Index",
+        "fly_window": [
+          7,
+          17
+        ],
+        "confidence": 1.0,
+        "warnings": [],
+        "vetoes_in_window": [],
+        "unchecked_vetoes": []
+      }
+    },
+    {
+      "date": "2026-07-29",
+      "weather": "ясно",
+      "temp_max_c": 20,
+      "temp_min_c": 10,
+      "wind_max_ms": 2.0,
+      "gust_max_ms": 4.0,
+      "wind_dir_window": "Ю (180°)",
+      "precip_mm": 0.0,
+      "sunshine_h": 11.1,
+      "thermal_window": {
+        "start_hour": 7,
+        "end_hour": 17,
+        "peak_hour": 12,
+        "solar_noon": "12:30"
+      },
+      "assessment": {
+        "score": 84,
+        "category": "excellent",
+        "label_ru": "отличная лётная",
+        "flyable": true,
+        "limiting_factor": "thermal_index",
+        "limiting_factor_ru": "Thermal Index",
+        "fly_window": [
+          7,
+          17
+        ],
+        "confidence": 1.0,
+        "warnings": [],
+        "vetoes_in_window": [],
+        "unchecked_vetoes": []
+      }
+    },
+    {
+      "date": "2026-07-30",
+      "weather": "ясно",
+      "temp_max_c": 20,
+      "temp_min_c": 10,
+      "wind_max_ms": 2.0,
+      "gust_max_ms": 4.0,
+      "wind_dir_window": "Ю (180°)",
+      "precip_mm": 0.0,
+      "sunshine_h": 11.1,
+      "thermal_window": {
+        "start_hour": 7,
+        "end_hour": 17,
+        "peak_hour": 12,
+        "solar_noon": "12:30"
+      },
+      "assessment": {
+        "score": 84,
+        "category": "excellent",
+        "label_ru": "отличная лётная",
+        "flyable": true,
+        "limiting_factor": "thermal_index",
+        "limiting_factor_ru": "Thermal Index",
+        "fly_window": [
+          7,
+          17
+        ],
+        "confidence": 1.0,
+        "warnings": [],
+        "vetoes_in_window": [],
+        "unchecked_vetoes": []
+      }
+    },
+    {
+      "date": "2026-07-31",
+      "weather": "ясно",
+      "temp_max_c": 20,
+      "temp_min_c": 10,
+      "wind_max_ms": 2.0,
+      "gust_max_ms": 4.0,
+      "wind_dir_window": "Ю (180°)",
+      "precip_mm": 0.0,
+      "sunshine_h": 11.1,
+      "thermal_window": {
+        "start_hour": 7,
+        "end_hour": 17,
+        "peak_hour": 12,
+        "solar_noon": "12:30"
+      },
+      "assessment": {
+        "score": 84,
+        "category": "excellent",
+        "label_ru": "отличная лётная",
+        "flyable": true,
+        "limiting_factor": "thermal_index",
+        "limiting_factor_ru": "Thermal Index",
+        "fly_window": [
+          7,
+          17
+        ],
+        "confidence": 1.0,
+        "warnings": [],
+        "vetoes_in_window": [],
+        "unchecked_vetoes": []
+      }
+    }
+  ]
+}

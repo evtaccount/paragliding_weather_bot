@@ -1,0 +1,156 @@
+{
+  "sites": [
+    {
+      "name": "Гудаури",
+      "aspect_deg": 180.0,
+      "days": [
+        {
+          "date": "2026-07-25",
+          "emoji": "🟢",
+          "label": "отличная лётная",
+          "score": 84.0,
+          "category": "excellent",
+          "limiting": "Thermal Index",
+          "confidence": 1.0,
+          "fly_window": [
+            7,
+            17
+          ],
+          "tmax": 20.0,
+          "wmax": 2.0,
+          "gmax": 4.0,
+          "dom": 180.0,
+          "precip": 0.0,
+          "wc": 0,
+          "weather": "ясно"
+        },
+        {
+          "date": "2026-07-26",
+          "emoji": "🟢",
+          "label": "отличная лётная",
+          "score": 84.0,
+          "category": "excellent",
+          "limiting": "Thermal Index",
+          "confidence": 1.0,
+          "fly_window": [
+            7,
+            17
+          ],
+          "tmax": 20.0,
+          "wmax": 2.0,
+          "gmax": 4.0,
+          "dom": 180.0,
+          "precip": 0.0,
+          "wc": 0,
+          "weather": "ясно"
+        },
+        {
+          "date": "2026-07-27",
+          "emoji": "🟢",
+          "label": "отличная лётная",
+          "score": 84.0,
+          "category": "excellent",
+          "limiting": "Thermal Index",
+          "confidence": 1.0,
+          "fly_window": [
+            7,
+            17
+          ],
+          "tmax": 20.0,
+          "wmax": 2.0,
+          "gmax": 4.0,
+          "dom": 180.0,
+          "precip": 0.0,
+          "wc": 0,
+          "weather": "ясно"
+        },
+        {
+          "date": "2026-07-28",
+          "emoji": "🟢",
+          "label": "отличная лётная",
+          "score": 84.0,
+          "category": "excellent",
+          "limiting": "Thermal Index",
+          "confidence": 1.0,
+          "fly_window": [
+            7,
+            17
+          ],
+          "tmax": 20.0,
+          "wmax": 2.0,
+          "gmax": 4.0,
+          "dom": 180.0,
+          "precip": 0.0,
+          "wc": 0,
+          "weather": "ясно"
+        },
+        {
+          "date": "2026-07-29",
+          "emoji": "🟢",
+          "label": "отличная лётная",
+          "score": 84.0,
+          "category": "excellent",
+          "limiting": "Thermal Index",
+          "confidence": 1.0,
+          "fly_window": [
+            7,
+            17
+          ],
+          "tmax": 20.0,
+          "wmax": 2.0,
+          "gmax": 4.0,
+          "dom": 180.0,
+          "precip": 0.0,
+          "wc": 0,
+          "weather": "ясно"
+        },
+        {
+          "date": "2026-07-30",
+          "emoji": "🟢",
+          "label": "отличная лётная",
+          "score": 84.0,
+          "category": "excellent",
+          "limiting": "Thermal Index",
+          "confidence": 1.0,
+          "fly_window": [
+            7,
+            17
+          ],
+          "tmax": 20.0,
+          "wmax": 2.0,
+          "gmax": 4.0,
+          "dom": 180.0,
+          "precip": 0.0,
+          "wc": 0,
+          "weather": "ясно"
+        },
+        {
+          "date": "2026-07-31",
+          "emoji": "🟢",
+          "label": "отличная лётная",
+          "score": 84.0,
+          "category": "excellent",
+          "limiting": "Thermal Index",
+          "confidence": 1.0,
+          "fly_window": [
+            7,
+            17
+          ],
+          "tmax": 20.0,
+          "wmax": 2.0,
+          "gmax": 4.0,
+          "dom": 180.0,
+          "precip": 0.0,
+          "wc": 0,
+          "weather": "ясно"
+        }
+      ]
+    }
+  ],
+  "empty": [
+    "Лалискури"
+  ],
+  "failed": [
+    "Казбеги"
+  ]
+}
