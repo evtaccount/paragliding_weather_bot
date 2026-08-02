@@ -33,14 +33,44 @@ def _stored() -> dict[str, bytes]:
     return {p.name: p.read_bytes() for p in FIX.glob("*.json")}
 
 
+def _stamps() -> dict[str, int]:
+    """Моменты последней записи файлов фикстур.
+
+    Факт перезаписи ловится ими, а не сравнением содержимого: при целом домене
+    генератор пишет ПОБАЙТОВО ТО ЖЕ САМОЕ, и проверка по содержимому не
+    срабатывает вовсе — то есть сторожа над сторожем не существует ровно до
+    того дня, когда он понадобится.
+    """
+    return {p.name: p.stat().st_mtime_ns for p in FIX.glob("*.json")}
+
+
 def test_fixtures_match_what_the_domain_returns_now(tmp_path):
     before = _stored()
-    subprocess.run([sys.executable, str(SCRIPT), "--out", str(tmp_path)],
-                   capture_output=True, text=True, check=True)
+    stamps = _stamps()
+    try:
+        subprocess.run([sys.executable, str(SCRIPT), "--out", str(tmp_path)],
+                       capture_output=True, text=True, check=True)
+        touched = sorted(n for n, ns in _stamps().items() if stamps.get(n) != ns)
+    finally:
+        # Восстановление ОБЯЗАТЕЛЬНО и обязательно в finally: без него первый
+        # же красный прогон оставляет на диске пересобранные файлы, второй
+        # прогон сравнивает их сами с собой и зеленеет, а `git status`
+        # показывает правку, неотличимую от законной. Это и есть тот самый
+        # отказ, который проверяет строка ниже, — сторож не должен уметь
+        # разоружить себя даже собственным срабатыванием.
+        for name, raw in before.items():
+            path = FIX / name
+            if not path.exists() or path.read_bytes() != raw:
+                path.write_bytes(raw)
+        for path in FIX.glob("*.json"):
+            if path.name not in before:
+                path.unlink()
+
     # Проверка сторожа, а не домена: снятие обязано быть чтением рабочего
     # дерева, иначе первый же красный прогон чинит себя сам (см. docstring).
-    assert _stored() == before, (
-        "снятие фикстур переписало рабочее дерево — сторож лечит то, что проверяет")
+    assert not touched, (
+        "снятие фикстур переписало рабочее дерево — сторож лечит то, что "
+        "проверяет: " + ", ".join(touched))
 
     fresh = {p.name: json.loads(p.read_text(encoding="utf-8"))
              for p in tmp_path.glob("*.json") if p.name not in HAND_COLLECTED}

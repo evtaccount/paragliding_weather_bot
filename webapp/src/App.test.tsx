@@ -436,3 +436,98 @@ test("на холодном старте прогноз считается од�
   expect(forecasts()).toHaveLength(1)
   expect(forecasts()[0]).toContain("model=ecmwf")
 })
+
+// То же правило, но для второй вкладки. Условие «ждём ответа /api/prefs»
+// живёт одной строкой на все четыре экрана (App.screenActive), а проверялось
+// только через «Прогноз»: снятие условия для «Обзора» оставляло весь пакет
+// зелёным (проверка второго круга финального ревью, N6). Считается запрос
+// диапазона (range=3d) — именно его шлёт «Обзор»; /api/scan уходит только в
+// режиме «Все старты», куда пилот на холодном старте ещё не заходил.
+test("на холодном старте обзор считается один раз, а не дважды", async () => {
+  let deliverPrefs = (): void => { throw new Error("настройки не запрашивались") }
+  const pendingPrefs = new Promise<Response>((resolve) => {
+    deliverPrefs = () => {
+      resolve(new Response(JSON.stringify(prefs), { status: 200, headers: { "content-type": "application/json" } }))
+    }
+  })
+  const fetchMock = vi.fn((url: string) => {
+    const path = String(url).split("?")[0]
+    if (path === "/api/prefs") return pendingPrefs
+    const body =
+      path === "/api/sites" ? sites
+      : path === "/api/forecast" && String(url).includes("range=1d") ? facts
+      : path === "/api/forecast" ? overview
+      : {}
+    return Promise.resolve(new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } }))
+  })
+  vi.stubGlobal("fetch", fetchMock)
+
+  render(<App />)
+  const ranges = (): string[] => fetchMock.mock.calls
+    .map(([u]) => String(u)).filter((u) => u.startsWith("/api/forecast") && u.includes("range=3d"))
+
+  const header = screen.getByRole("banner")
+  await within(header).findByText("Гудаури")
+  await userEvent.click(screen.getByRole("tab", { name: "Обзор" }))
+  await new Promise((resolve) => { setTimeout(resolve, 30) })
+
+  // Старты пришли, настройки — ещё нет: запрос без model= не уходит.
+  expect(ranges()).toHaveLength(0)
+
+  deliverPrefs()
+  await new Promise((resolve) => { setTimeout(resolve, 30) })
+
+  expect(ranges()).toHaveLength(1)
+  expect(ranges()[0]).toContain("model=ecmwf")
+})
+
+// Третья вкладка того же правила. У «Маршрута» оно наблюдается только через
+// настоящий выбор сохранённого маршрута: без точек экран выходит рано и
+// запроса не шлёт вовсе, поэтому снятие условия именно для него оставалось
+// незамеченным дольше остальных (проверка второго круга финального ревью,
+// N6). Расчёт маршрута — мутация в эффекте, а не запрос-подписка, и без
+// условия он уходит ДВАЖДЫ: первый раз без настроек, второй — когда они
+// приезжают и меняют зависимости эффекта. Оба похода занимают единственный
+// слот пилота (api.py:one_at_a_time).
+test("на холодном старте маршрут считается один раз, а не дважды", async () => {
+  const saved = [
+    { name: "Хребет на север", points: [[42.4, 44.4, null], [42.6, 44.4, null]], saved: "2026-07-26T06:33:49+00:00" },
+  ]
+  let deliverPrefs = (): void => { throw new Error("настройки не запрашивались") }
+  const pendingPrefs = new Promise<Response>((resolve) => {
+    deliverPrefs = () => {
+      resolve(new Response(JSON.stringify(prefs), { status: 200, headers: { "content-type": "application/json" } }))
+    }
+  })
+  const fetchMock = vi.fn((url: string, _init?: RequestInit) => {
+    const path = String(url).split("?")[0]
+    if (path === "/api/prefs") return pendingPrefs
+    const body =
+      path === "/api/sites" ? sites
+      : path === "/api/routes" ? saved
+      : path === "/api/route" ? routeResult
+      : path === "/api/forecast" && String(url).includes("range=1d") ? facts
+      : path === "/api/forecast" ? overview
+      : {}
+    return Promise.resolve(new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } }))
+  })
+  vi.stubGlobal("fetch", fetchMock)
+
+  render(<App />)
+  const routePosts = (): unknown[] => fetchMock.mock.calls.filter(([u, init]) =>
+    String(u).split("?")[0] === "/api/route" && (init as RequestInit | undefined)?.method === "POST")
+
+  await userEvent.click(screen.getByRole("tab", { name: "Маршрут" }))
+  await userEvent.click(screen.getByRole("button", { name: /Сохранённые/ }))
+  await userEvent.click(await screen.findByRole("button", { name: /Хребет на север/ }))
+  await new Promise((resolve) => { setTimeout(resolve, 30) })
+
+  // Точки выбраны, настройки — ещё нет: расчёт не уходит.
+  expect(routePosts()).toHaveLength(0)
+
+  deliverPrefs()
+  await waitFor(() => { expect(routePosts()).toHaveLength(1) })
+  await new Promise((resolve) => { setTimeout(resolve, 30) })
+
+  expect(routePosts()).toHaveLength(1)
+})
