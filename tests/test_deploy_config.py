@@ -208,7 +208,14 @@ def test_deploy_script_warns_exactly_when_the_webapp_is_not_built(tmp_path):
     печататься ровно тогда, когда сборка есть, а нужному оператору не
     достаётся ничего."""
     block = tmp_path / "block.sh"
-    block.write_text(_marked_block("deploy.sh", "webapp-build check"),
+    # `set -euo pipefail` — первой строкой, потому что ровно с неё начинается
+    # сам deploy.sh: без неё песочница снисходительнее продакшена, и блок,
+    # дополненный когда-нибудь строкой вроде `command -v npm >/dev/null`,
+    # здесь пройдёт, а в настоящем скрипте оборвётся на ней же — предупреждение
+    # не напечатается вовсе, скрипт вернёт 1, и цепочка `./deploy.sh && …`
+    # порвётся. Причём именно на сервере без Node, то есть ровно там, ради
+    # кого предупреждение и написано.
+    block.write_text("set -euo pipefail\n" + _marked_block("deploy.sh", "webapp-build check"),
                      encoding="utf-8")
     workdir = tmp_path / "checkout"
     workdir.mkdir()
@@ -221,7 +228,14 @@ def test_deploy_script_warns_exactly_when_the_webapp_is_not_built(tmp_path):
     not_built = run()
     assert "make webapp-build" in not_built, not_built
 
+    # Третье состояние, а не два: каталог есть, страницы нет. Так выглядит
+    # оборвавшийся на середине `npm run build` — и без этой проверки условие,
+    # подмененное на `[ ! -d webapp/dist ]`, осталось бы зелёным, хотя пилот
+    # получил бы 404 (состояние замерено на живом контейнере в ревью задачи).
     (workdir / "webapp" / "dist").mkdir(parents=True)
+    half_built = run()
+    assert "make webapp-build" in half_built, half_built
+
     (workdir / "webapp" / "dist" / "index.html").write_text("<html>", encoding="utf-8")
     assert run().strip() == "", run()
 
