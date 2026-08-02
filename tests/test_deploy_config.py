@@ -15,6 +15,32 @@ def _read(name: str) -> str:
     return (ROOT / name).read_text(encoding="utf-8")
 
 
+def _dockerfile_instructions() -> list[str]:
+    """Инструкции Dockerfile: без комментариев и с раскрытыми переносами строк.
+
+    Поиск подстрок по всему тексту файла проверять раскладку образа не может:
+    комментарии в этом же Dockerfile объясняют, зачем нужны `npm ci` и
+    `webapp/dist`, поэтому обе подстроки остаются на месте и после удаления
+    самих инструкций.
+    """
+    out: list[str] = []
+    for raw in _read("Dockerfile").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if out and out[-1].endswith("\\"):
+            out[-1] = out[-1][:-1].rstrip() + " " + line
+        else:
+            out.append(line)
+    return out
+
+
+def _script_lines(name: str) -> list[str]:
+    """Исполняемые строки шелл-скрипта — без комментариев и пустых."""
+    return [line.strip() for line in _read(name).splitlines()
+            if line.strip() and not line.strip().startswith("#")]
+
+
 def test_caddyfile_comment_matches_the_directive_it_uses():
     """Комментарий называл handle_path, а код — handle. handle_path срезает
     префикс пути из URL; «починка» кода под комментарий отдавала бы 404 на
@@ -123,11 +149,50 @@ def test_compose_sets_api_host_to_all_interfaces_for_pgbot():
 
 def test_image_builds_the_webapp():
     """Собранное приложение попадает в образ отдельным этапом на Node. Без
-    этого контейнер поднимется и будет отдавать 404 на корне — молча."""
-    text = _read("Dockerfile")
-    assert "node:22" in text
-    assert "npm ci" in text
-    assert "webapp/dist" in text
+    этого контейнер поднимется и будет отдавать 500 на корне — молча:
+    healthcheck стучится в /api/health, где сборка не нужна, контейнер
+    объявляется healthy, caddy стартует и выпускает сертификат, а пилот
+    получает ошибку на каждом открытии приложения.
+
+    Проверяются ИНСТРУКЦИИ, а не подстроки в тексте файла: на подстроках тест
+    оставался зелёным при удалении одной только строки `COPY --from=webapp`
+    (и одной только `RUN npm ci`) — слова находились в комментариях этого же
+    Dockerfile."""
+    instructions = _dockerfile_instructions()
+    stages = [i for i in instructions if i.startswith("FROM ")]
+    assert any(i.startswith("FROM node:22") and " AS webapp" in i
+               for i in stages), instructions
+    assert any(i.startswith("RUN ") and "npm ci" in i for i in instructions), instructions
+    assert any(i.startswith("RUN ") and "npm run build" in i
+               for i in instructions), instructions
+    copied = [i for i in instructions
+              if i.startswith("COPY --from=webapp") and i.endswith("./webapp/dist")]
+    assert copied, instructions
+    # копирование должно попасть в ФИНАЛЬНЫЙ этап: строка выше последнего FROM
+    # собрала бы приложение внутрь самого сборочного этапа и наружу не вынесла.
+    assert instructions.index(copied[0]) > instructions.index(stages[-1]), instructions
+
+
+def test_deploy_script_points_at_the_webapp_build():
+    """`deploy.sh` (раскатка без Docker) обязан сказать про `make webapp-build`.
+
+    webapp/dist — артефакт сборки, в git его нет, а npm скрипт не запускает.
+    Оператор проходит все шаги, которые скрипт печатает сам, получает рабочий
+    чат и 200 на /api/health — и вечные 500 на кнопке Web App, с
+    `RuntimeError: StaticFiles directory ... does not exist` в логе и без
+    единого намёка, что не хватает сборки. В Docker-раскатке этого отказа нет:
+    там сборку делает сам Dockerfile.
+
+    Проверяются исполняемые строки, а не текст файла целиком (подсказка в
+    комментарии оператору не покажется), и отдельно — что скрипт реально
+    СМОТРИТ на каталог, а не только упоминает его в тексте подсказки: мутация,
+    подменившая условие на другой файл, оставалась зелёной, пока проверка
+    искала подстроку `webapp/dist` где угодно среди исполняемых строк — слово
+    есть и внутри echo."""
+    lines = _script_lines("deploy.sh")
+    assert any(line.startswith("if ") and "webapp/dist" in line
+               for line in lines), lines
+    assert any("webapp-build" in line for line in lines), lines
 
 
 def test_compose_no_longer_mounts_static_into_caddy():

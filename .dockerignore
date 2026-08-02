@@ -8,4 +8,14 @@ __pycache__
 deploy/pgbot.service
 README.md
 webapp/node_modules
+# dist собирается этапом webapp внутри образа, локальная сборка ему не нужна —
+# и не должна попадать: контекст с хоста мог бы оказаться старее исходников.
 webapp/dist
+# В образе не исполняется ничто из перечисленного: процесс запускает app.py.
+# .superpowers — это ~2,3 МБ рабочих материалов разработки, попадавших в слой
+# вместе с `COPY . .`.
+.superpowers
+.pytest_cache
+.vscode
+tests
+docs

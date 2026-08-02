@@ -16,6 +16,14 @@ if ! fc-list 2>/dev/null | grep -qi dejavu; then
   echo "   sudo apt-get install -y fonts-dejavu-core     # Debian/Ubuntu"
 fi
 
+echo "==> checking the mini app build (needed for the Web App button)"
+if [ ! -f webapp/dist/index.html ]; then
+  echo "!! webapp is not built. The bot chat works, /api/health answers 200, but"
+  echo "   the Web App button returns 500 on every open (api.py serves webapp/dist,"
+  echo "   which is a build artefact and is not in git). Build it:"
+  echo "   make webapp-install && make webapp-build     # needs Node 22+"
+fi
+
 if [ ! -f .env ]; then
   cp .env.example .env
   echo "==> created .env — set BOT_TOKEN in it before starting"

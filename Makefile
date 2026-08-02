@@ -5,7 +5,11 @@
 SERVER      ?=
 REMOTE_DIR  ?= paragliding-bot
 COMPOSE     ?= docker compose
-RSYNC_EXCL   = --exclude .git --exclude .venv --exclude .env --exclude __pycache__
+# node_modules — ~106 МБ, которые на сервере всё равно не используются: образ
+# ставит зависимости сам (npm ci в этапе webapp), а bare-metal-сборка идёт
+# через make webapp-install там же на месте.
+RSYNC_EXCL   = --exclude .git --exclude .venv --exclude .env --exclude __pycache__ \
+               --exclude node_modules
 
 .DEFAULT_GOAL := help
 .PHONY: help install run check test webapp-install webapp-build secrets clean \
