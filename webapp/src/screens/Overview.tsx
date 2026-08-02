@@ -28,7 +28,7 @@
 import { useState } from "react"
 import type { ForecastRange } from "../api/queries"
 import { useForecast, useScan, useSites } from "../api/queries"
-import type { ForecastOverview, OverviewRow } from "../api/types"
+import type { ForecastOverview, OverviewRow, Site } from "../api/types"
 import { colorOfCategory } from "../charts/palette"
 import { RAIN_DAY_MM } from "../domain"
 import { compass, fmtDate, fmtNum } from "../format"
@@ -142,7 +142,19 @@ function NoSites() {
 // экран называет недостающее и в сеть не ходит — та же просьба владельца, по
 // которой не считается «Прогноз» (бриф explicit-site-and-day). Спиннер здесь
 // не годится: ждать нечего, оба выбора бывают только явными.
-function NeedsChoice({ site, range }: { site: string | null; range: RangeKey | null }) {
+function NeedsChoice({ site, range, library }: {
+  site: string | null
+  range: RangeKey | null
+  // Список стартов, если он уже приехал. Пустая библиотека — не «выбор не
+  // сделан», а «выбирать не из чего»: до этой правки одна половина «Обзора»
+  // предлагала выбрать старт кнопкой в шапке, где выбирать было нечего, а
+  // вторая («Все старты») на том же экране честно говорила «Нет стартов»
+  // (ревью ветки explicit-site-and-day, M1).
+  library: Site[] | undefined
+}) {
+  if (library !== undefined && library.length === 0) {
+    return <NoSites />
+  }
   const noSite = site === null
   const noRange = range === null
   return (
@@ -346,6 +358,10 @@ export function Overview({ site, model, active = true, onOpenDay }: OverviewProp
   // и ждёт, пока пилот скажет, что смотреть (бриф explicit-site-and-day).
   const [range, setRange] = useState<RangeKey | null>(null)
   const [allSites, setAllSites] = useState(false)
+  // Подписка на тот же ключ ["sites"], что уже запросила оболочка: второго
+  // запроса не будет, а пустую библиотеку надо отличать от несделанного
+  // выбора (см. NeedsChoice).
+  const sites = useSites()
 
   return (
     <>
@@ -381,7 +397,7 @@ export function Overview({ site, model, active = true, onOpenDay }: OverviewProp
       {allSites
         ? <ScanView model={model} active={active} onOpenDay={onOpenDay} />
         : site === null || range === null
-          ? <NeedsChoice site={site} range={range} />
+          ? <NeedsChoice site={site} range={range} library={sites.data} />
           : <RangeView site={site} range={range} model={model} active={active} onOpenDay={onOpenDay} />}
     </>
   )

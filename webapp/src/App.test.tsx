@@ -91,8 +91,12 @@ test("шапка показывает понятный текст, а не ве�
   // куда ведёт эта кнопка, — и говорит, что делать дальше. Шапке второй такой
   // подписи не нужно: выбор старта живёт в шторке, туда пилот и идёт.
   await userEvent.click(within(header).getByRole("button", { name: "Старт не выбран" }))
-  expect(await screen.findByText("Нет стартов")).toBeInTheDocument()
-  expect(screen.getByText(/Добавьте старт на вкладке/)).toBeInTheDocument()
+  // Ищем ВНУТРИ шторки: «Нет стартов» теперь говорит и «Обзор» — он
+  // смонтирован всегда и на пустой библиотеке показывает то же самое (иначе
+  // одна его половина предлагала бы выбрать старт там, где выбирать нечего).
+  const sheet = await screen.findByRole("dialog")
+  expect(within(sheet).getByText("Нет стартов")).toBeInTheDocument()
+  expect(within(sheet).getByText(/Добавьте старт на вкладке/)).toBeInTheDocument()
 })
 
 // Просьба владельца (бриф explicit-site-and-day): приложение открывалось

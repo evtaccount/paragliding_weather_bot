@@ -32,6 +32,16 @@ function jsonResponse(body: unknown, status = 200): Promise<Response> {
   return Promise.resolve(new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } }))
 }
 
+// Пути ТЯЖЁЛЫХ запросов из записанных вызовов. Слот пилота на сервере занимают
+// только они (api.py:one_at_a_time); /api/sites экран спрашивает и скрытым —
+// он дешёвый, идёт по тому же ключу, что уже запросила оболочка, и нужен,
+// чтобы отличить пустую библиотеку от несделанного выбора.
+function heavy(fetchMock: { mock: { calls: unknown[][] } }): string[] {
+  return fetchMock.mock.calls
+    .map((c) => String(c[0]).split("?")[0])
+    .filter((p) => p === "/api/forecast" || p === "/api/scan")
+}
+
 // Подделка, ветвящаяся по пути запроса — /api/forecast всегда отдаёт
 // forecast_3d.json (диапазон в самом ответе бэкенд не меняет, см. комментарий
 // в Overview.tsx о том, что "date" диапазонному /api/forecast безразличен),
@@ -248,7 +258,7 @@ test("без выбранного периода обзор не шлёт зап
   render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} />, { wrapper })
   await new Promise((resolve) => { setTimeout(resolve, 20) })
 
-  expect(fetchMock).not.toHaveBeenCalled()
+  expect(heavy(fetchMock)).toHaveLength(0)
   expect(screen.getByText("Выберите период")).toBeInTheDocument()
 
   // Тот же экран с выбранным периодом запрос шлёт — без этой половины тест был
@@ -404,6 +414,22 @@ test("без стартов «Все старты» объясняет это и
   expect(fetchMock.mock.calls.filter(([u]) => String(u).startsWith("/api/scan"))).toHaveLength(0)
 })
 
+// Вторая половина того же экрана на той же пустой библиотеке. Она предлагала
+// «Выберите старт. Старт выбирается кнопкой в шапке» — там, где выбирать
+// нечего, — пока соседняя половина честно говорила «Нет стартов»: один экран
+// давал два разных ответа на один вопрос через одно нажатие (ревью ветки
+// explicit-site-and-day, M1).
+test("без стартов диапазонная половина обзора тоже говорит «Нет стартов»", async () => {
+  vi.stubGlobal("fetch", (url: string) => (
+    String(url).split("?")[0] === "/api/sites" ? jsonResponse([]) : jsonResponse(overview)
+  ))
+  render(<Overview site={null} model="ecmwf" onOpenDay={() => {}} />, { wrapper })
+
+  expect(await screen.findByText("Нет стартов")).toBeInTheDocument()
+  expect(screen.queryByText("Выберите старт и период")).toBeNull()
+  expect(screen.queryByText(/Старт выбирается кнопкой в шапке/)).toBeNull()
+})
+
 // Финальное ревью ветки, I3. Экран смонтирован всегда (все четыре живут в
 // дереве разом, App.tsx), и скрытым он занимал единственный слот пилота на
 // сервере раньше того экрана, на который пилот смотрит.
@@ -418,11 +444,40 @@ test("скрытый экран в сеть не ходит, а показанн
   )
   await pickRange()
   await new Promise((resolve) => { setTimeout(resolve, 20) })
-  expect(fetchMock).not.toHaveBeenCalled()
+  // Считаются ТЯЖЁЛЫЕ запросы: слот пилота на сервере занимают они
+  // (api.py:one_at_a_time). Список стартов экран спрашивает и скрытым — он
+  // дешёвый, идёт по тому же ключу, что уже запросила оболочка, и нужен, чтобы
+  // отличить пустую библиотеку от несделанного выбора.
+  expect(heavy(fetchMock)).toHaveLength(0)
 
   rerender(<Overview site="Гудаури" model="ecmwf" active onOpenDay={() => {}} />)
   await screen.findByRole("group", { name: "Дни диапазона" })
-  expect(fetchMock.mock.calls.map(([u]) => String(u).split("?")[0])).toEqual(["/api/forecast"])
+  expect(heavy(fetchMock)).toEqual(["/api/forecast"])
+})
+
+// Тот же сторож, но на пути «Все старты» — он ведёт к САМОМУ дорогому запросу
+// приложения (forecast.scan_week идёт за погодой по всей библиотеке), а
+// проверялся только диапазонный путь: снятие `active` у useScan оставляло весь
+// пакет зелёным (ревью ветки explicit-site-and-day, I2). Список стартов
+// приходит и на скрытой вкладке — он дешёвый и нужен самой шапке; считается
+// только скан.
+test("скрытый экран не запускает скан по всем стартам", async () => {
+  const fetchMock = vi.fn((url: string) => {
+    const path = String(url).split("?")[0]
+    return jsonResponse(path === "/api/scan" ? scan : path === "/api/sites" ? sites : overview)
+  })
+  vi.stubGlobal("fetch", fetchMock)
+  const { rerender } = render(
+    <Overview site="Гудаури" model="ecmwf" active={false} onOpenDay={() => {}} />, { wrapper },
+  )
+  await userEvent.click(screen.getByRole("button", { name: "Все старты" }))
+  await new Promise((resolve) => { setTimeout(resolve, 20) })
+  const scans = (): string[] => fetchMock.mock.calls
+    .map(([u]) => String(u).split("?")[0]).filter((p) => p === "/api/scan")
+  expect(scans()).toHaveLength(0)
+
+  rerender(<Overview site="Гудаури" model="ecmwf" active onOpenDay={() => {}} />)
+  await waitFor(() => { expect(scans()).toHaveLength(1) })
 })
 
 // scan_mixed.json несёт непустые sites[].days ВМЕСТЕ с непустыми empty/failed

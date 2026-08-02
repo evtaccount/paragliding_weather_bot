@@ -36,6 +36,11 @@ async function overflowOutside(frame: Locator, items: Locator): Promise<number> 
 // те же (см. stubApi), поэтому карта показывает ровно тот маршрут, который
 // выбрали.
 async function pickSavedRoute(page: Page): Promise<void> {
+  // День выбирается первым: приложение ничего не подставляет за пилота
+  // (бриф explicit-site-and-day), и без явного дня «Маршрут» показывает
+  // «Выберите день» вместо расчёта — раскладку тогда мерить не на чем.
+  await page.getByRole("banner").getByRole("button", { name: "День не выбран" }).click()
+  await page.getByRole("dialog").getByRole("button", { name: /сегодня/ }).click()
   await page.getByRole("tab", { name: "Маршрут" }).click()
   await page.getByRole("button", { name: "Сохранённые" }).click()
   await page.getByRole("dialog").getByRole("button", { name: "Гудаури — юг" }).click()
