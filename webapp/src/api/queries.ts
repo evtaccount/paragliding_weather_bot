@@ -95,12 +95,37 @@ export type SiteInput = {
   notes?: string
 }
 
+// Заведение и удаление старта меняют не один ответ, а четыре, и сброса
+// ["sites"] мало.
+//
+// ["scan"] — GET /api/scan ходит по ВСЕЙ библиотеке (forecast.py:scan_week
+// зовёт store.load_sites()), а его ключ (["scan", model]) про состав
+// библиотеки ничего не знает. Без сброса вкладка «Все старты» до получаса
+// (gcTime) показывает прежний список: удалённый старт остаётся в ней
+// кликабельным и открывает прогноз ЧУЖОГО старта на свою дату, а заведённый
+// не появляется вовсе — приложение даже не пытается перезапросить скан
+// (финальное ревью ветки, C3).
+//
+// ["forecast", name] и ["windGrid", name] — потому что имя старта и есть его
+// идентичность (store.find_site, /api/forecast?site=...), и оно
+// переиспользуемо: правки старта в приложении нет, поправить координаты
+// можно только «удалить и завести заново под тем же именем». Кэш по старому
+// имени описывал бы уже другую точку — прогноз для координат, которых больше
+// нет. Частичный ключ совпадает по префиксу, поэтому сбрасываются все
+// диапазоны, даты и модели этого старта.
+function invalidateSite(client: ReturnType<typeof useQueryClient>, name: string): void {
+  void client.invalidateQueries({ queryKey: ["sites"] })
+  void client.invalidateQueries({ queryKey: ["scan"] })
+  void client.invalidateQueries({ queryKey: ["forecast", name] })
+  void client.invalidateQueries({ queryKey: ["windGrid", name] })
+}
+
 export function useCreateSite(): UseMutationResult<Site, ApiError, SiteInput> {
   const client = useQueryClient()
   return useMutation({
     mutationFn: (site: SiteInput) => apiSend<Site>("POST", "/api/sites", site),
     retry: false,
-    onSuccess: () => { void client.invalidateQueries({ queryKey: ["sites"] }) },
+    onSuccess: (_data, site) => { invalidateSite(client, site.name) },
   })
 }
 
@@ -109,7 +134,7 @@ export function useDeleteSite(): UseMutationResult<null, ApiError, string> {
   return useMutation({
     mutationFn: (name: string) => apiSend<null>("DELETE", `/api/sites/${encodeURIComponent(name)}`),
     retry: false,
-    onSuccess: () => { void client.invalidateQueries({ queryKey: ["sites"] }) },
+    onSuccess: (_data, name) => { invalidateSite(client, name) },
   })
 }
 
@@ -131,10 +156,13 @@ export function useForecast(
   site: string | null, range: Exclude<ForecastRange, "1d">, date: string | null, model: string | null,
 ): UseQueryResult<ForecastOverview, ApiError>
 // `{ signal }` — из QueryFunctionContext, который TanStack Query передаёt
-// каждому queryFn сам; передаётся дальше в apiGet → fetch, чтобы отмена
-// запроса (смена старта/уход с экрана до ответа) реально освобождала слот
-// пилота, а не только переставала интересовать реакт (см. комментарий в
-// client.ts).
+// каждому queryFn сам и «взводит», когда запрос перестал быть нужным (пилот
+// сменил старт, ушёл с экрана). Он отдаётся ОЧЕРЕДИ, а не fetch: очередь
+// снимает задачу, которая ещё не начиналась, и не трогает уже начатую —
+// серверный слот на обрыв соединения не освобождается (api.py:80-96,
+// request.is_disconnected() не вызывается нигде), и отпустить очередь раньше
+// сервера значит гарантированно получить 429 на следующий запрос. Полный
+// разбор — в шапке ./queue.
 export function useForecast(
   site: string | null, range: ForecastRange, date: string | null, model: string | null,
 ): UseQueryResult<Facts | ForecastOverview, ApiError> {
@@ -142,7 +170,7 @@ export function useForecast(
     queryKey: ["forecast", site, range, date, model] as const,
     queryFn: ({ signal }) => heavy(() => apiGet<Facts | ForecastOverview>("/api/forecast", {
       site: site ?? undefined, range, date: date ?? undefined, model: model ?? undefined,
-    }, signal)),
+    }), signal),
     enabled: site !== null,
     retry: false,
     staleTime: STALE_TIME_MS,
@@ -157,7 +185,7 @@ export function useWindGrid(
     queryKey: ["windGrid", site, date, model] as const,
     queryFn: ({ signal }) => heavy(() => apiGet<WindGrid>("/api/forecast/wind-grid", {
       site: site ?? undefined, date: date ?? undefined, model: model ?? undefined,
-    }, signal)),
+    }), signal),
     // date у /api/forecast/wind-grid обязателен (api.py: `date: str`, без
     // значения по умолчанию) — запрос без даты сервер бы просто отклонил.
     enabled: site !== null && date !== null,
@@ -170,7 +198,7 @@ export function useWindGrid(
 export function useScan(model: string | null): UseQueryResult<Scan, ApiError> {
   return useQuery({
     queryKey: ["scan", model] as const,
-    queryFn: ({ signal }) => heavy(() => apiGet<Scan>("/api/scan", { model: model ?? undefined }, signal)),
+    queryFn: ({ signal }) => heavy(() => apiGet<Scan>("/api/scan", { model: model ?? undefined }), signal),
     retry: false,
     staleTime: STALE_TIME_MS,
     gcTime: GC_TIME_MS,

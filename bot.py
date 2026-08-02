@@ -241,7 +241,7 @@ def _scan_message(result: dict) -> tuple[str, InlineKeyboardMarkup | None]:
     lines = ["🔎 Лётные дни на неделю — по стартам", ""]
     rows: list[list[InlineKeyboardButton]] = []
     for s in result["sites"]:
-        head = f"🪂 {s['name']}" + (f" ({engine.card(s['aspect'])})" if s["aspect"] is not None else "")
+        head = f"🪂 {s['name']}" + (f" ({engine.card(s['aspect_deg'])})" if s["aspect_deg"] is not None else "")
         lines.append(head)
         for r in s["days"]:
             d = dt.date.fromisoformat(r["date"])

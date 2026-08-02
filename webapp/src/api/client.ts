@@ -10,12 +10,16 @@
 // поход в open-meteo или Gemini, и повтор по таймеру тихо удвоил бы расход
 // квоты.
 //
-// `signal?: AbortSignal` у apiGet/apiSend — TanStack Query передаёt его
-// каждому queryFn и вызывает `.abort()`, когда запрос больше не нужен
-// (пилот ушёл с экрана, старт сменился до ответа). Без проброса в fetch()
-// такой запрос доезжал бы до конца молча — и держал бы единственный слот
-// пилота (client: busy в queue.ts, сервер: guards.INFLIGHT) до собственного
-// естественного завершения, задерживая уже нужный следующий запрос.
+// AbortSignal в fetch отсюда не пробрасывается намеренно, хотя TanStack Query
+// и даёт его каждому queryFn. Обрыв соединения НЕ освобождает серверный слот
+// пилота: guards.INFLIGHT отпускается только в `finally` обработчика
+// (api.py:80-96), а `request.is_disconnected()` в api.py не вызывается нигде.
+// Отменённый на клиенте тяжёлый запрос всё равно досчитывается сервером и
+// всё это время занимает слот — прерывать его значит лишь выбросить уже
+// оплаченный поход в open-meteo и отпустить клиентскую очередь раньше
+// сервера, то есть отправить следующий запрос ровно в 429 (финальное ревью
+// ветки, C2). Отмена живёт на уровне очереди — она снимает задачи, которые
+// ещё не начинались (см. шапку ./queue).
 
 import { initData } from "../telegram"
 
@@ -99,9 +103,8 @@ async function handleResponse<T>(response: Response): Promise<T> {
 export async function apiGet<T>(
   path: string,
   params?: Record<string, string | undefined>,
-  signal?: AbortSignal,
 ): Promise<T> {
-  const response = await fetch(buildUrl(path, params), { headers: authHeaders(), signal })
+  const response = await fetch(buildUrl(path, params), { headers: authHeaders() })
   return handleResponse<T>(response)
 }
 
@@ -109,7 +112,6 @@ export async function apiSend<T>(
   method: "POST" | "PATCH" | "DELETE",
   path: string,
   body?: unknown,
-  signal?: AbortSignal,
 ): Promise<T> {
   const headers = authHeaders()
   let requestBody: string | undefined
@@ -117,7 +119,7 @@ export async function apiSend<T>(
     headers["Content-Type"] = "application/json"
     requestBody = JSON.stringify(body)
   }
-  const response = await fetch(path, { method, headers, body: requestBody, signal })
+  const response = await fetch(path, { method, headers, body: requestBody })
   return handleResponse<T>(response)
 }
 

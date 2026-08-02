@@ -8,7 +8,7 @@
 // Удаления маршрута тут нет намеренно: макет его не предлагает, а в чате
 // оно есть (/delroute, bot.py:1100) — тупика для пилота не возникает.
 import { useSavedRoutes } from "../api/queries"
-import { fmtPoints } from "../format"
+import { fmtPoints, fmtSavedDate } from "../format"
 import type { RoutePointRow } from "../api/queries"
 import type { SavedRoute } from "../api/types"
 import { ErrorBox } from "../ui/ErrorBox"
@@ -57,7 +57,12 @@ export function SavedRoutesSheet({ onPick }: Props) {
             onClick={() => onPick(route.name, toRows(route.points))}
           >
             <b>{route.name}</b>
-            <s>{fmtPoints(route.points.length)} · {route.saved_at}</s>
+            {/* route.saved — полный ISO-таймстамп в UTC (api/types.ts:
+                SavedRoute), поэтому дата собирается fmtSavedDate, а не
+                печатается как есть: сырое значение дало бы в строке
+                «2 точки · 2026-07-25T06:33:49+00:00», а срез до "T" —
+                вчерашнее число всем, кто сохранил маршрут вечером. */}
+            <s>{fmtPoints(route.points.length)} · {fmtSavedDate(route.saved)}</s>
           </button>
         ))}
       </div>

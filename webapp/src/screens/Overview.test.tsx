@@ -115,7 +115,7 @@ test("нажатие на день скана несёт старт ЭТОЙ с�
   const scanTwoSites = {
     sites: [
       scan.sites[0]!,
-      { name: "Казбеги", aspect: scan.sites[0]!.aspect, days: [{ ...scan.sites[0]!.days[0]!, date: secondSiteDate }] },
+      { name: "Казбеги", aspect_deg: scan.sites[0]!.aspect_deg, days: [{ ...scan.sites[0]!.days[0]!, date: secondSiteDate }] },
     ],
     empty: [],
     failed: [],
@@ -147,6 +147,23 @@ test("режим «Все старты» показывает старты и и
   expect(await screen.findByText(site.name)).toBeInTheDocument()
   const group = screen.getByRole("group", { name: site.name })
   expect(within(group).getAllByRole("button")).toHaveLength(site.days.length)
+})
+
+// Финальное ревью ветки, C1б: Scan.sites[].aspect_deg — ГРАДУСЫ
+// (forecast.py:91 кладёт site["aspect_deg"]), и печать значения как есть
+// давала шапку группы «180 · 7 лётных». В чате тот же скан печатает
+// «🪂 Гудаури (Ю)» (bot.py:244). Фикстура снята с настоящего forecast.scan_week
+// (scripts/dump_api_fixtures.py), поэтому в ней стоит именно число.
+test("в шапке группы стоит румб, а не градусы", async () => {
+  stubByPath()
+  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} />, { wrapper })
+  await screen.findByRole("group", { name: "Дни диапазона" })
+
+  await userEvent.click(screen.getByRole("button", { name: "Все старты" }))
+
+  const site = scan.sites[0]!
+  expect(site.aspect_deg).toBe(180)
+  expect(await screen.findByText(`Ю · ${site.days.length} лётных`)).toBeInTheDocument()
 })
 
 test("старты без лётных дней перечислены отдельно", async () => {

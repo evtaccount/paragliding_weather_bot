@@ -171,7 +171,7 @@ test("тап по дню ВТОРОГО старта в скане открыв�
   const scanTwoSites = {
     sites: [
       scan.sites[0]!,
-      { name: "Казбеги", aspect: scan.sites[0]!.aspect, days: [{ ...scan.sites[0]!.days[0]!, date: kazbegiDate }] },
+      { name: "Казбеги", aspect_deg: scan.sites[0]!.aspect_deg, days: [{ ...scan.sites[0]!.days[0]!, date: kazbegiDate }] },
     ],
     empty: [],
     failed: [],
@@ -221,8 +221,8 @@ test("тап по дню ВТОРОГО старта в скане открыв�
 // на первом элементе неотличима (разбор задачи 12).
 test("сохранённый маршрут, выбранный в шторке, уходит в расчёт маршрута", async () => {
   const saved = [
-    { name: "Гудаури — Коби", points: [[42.47, 44.48, "старт"], [42.53, 44.51, "Коби"]], saved_at: "2026-07-25" },
-    { name: "Хребет на север", points: [[42.4, 44.4, null], [42.6, 44.4, null], [42.8, 44.4, "разворот"]], saved_at: "2026-07-26" },
+    { name: "Гудаури — Коби", points: [[42.47, 44.48, "старт"], [42.53, 44.51, "Коби"]], saved: "2026-07-25T06:33:49+00:00" },
+    { name: "Хребет на север", points: [[42.4, 44.4, null], [42.6, 44.4, null], [42.8, 44.4, "разворот"]], saved: "2026-07-26T06:33:49+00:00" },
   ]
   const fetchMock = vi.fn((url: string, init?: RequestInit) => {
     const path = String(url).split("?")[0]

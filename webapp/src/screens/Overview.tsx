@@ -215,7 +215,11 @@ function ScanView({ model, onOpenDay }: { model: string | null; onOpenDay: (site
         <div key={s.name} className="sitegrp">
           <div className="sitegrp__h">
             <b>{s.name}</b>
-            <span className="lbl">{s.aspect ?? "—"} · {s.days.length} лётных</span>
+            {/* Scan.sites[].aspect_deg — ГРАДУСЫ (forecast.py:91), а пилот
+                читает румб: в чате тот же скан печатает «🪂 Гудаури (Ю)»
+                (bot.py:244, engine.card). Печать значения как есть давала
+                «180 · 2 лётных» — финальное ревью ветки, C1б. */}
+            <span className="lbl">{s.aspect_deg === null ? "—" : compass(s.aspect_deg)} · {s.days.length} лётных</span>
           </div>
           <div className="days" role="group" aria-label={s.name}>
             {s.days.map((row) => (

@@ -82,8 +82,13 @@ export type OverviewRow = {
   wc: number
 }
 
+// aspect_deg — ГРАДУСЫ, а не румб: forecast.py:91 кладёт сюда site["aspect_deg"]
+// как есть. Румб собирает читатель (в чате — engine.card, bot.py:244; здесь —
+// compass() из format.ts). Поле называется так же, как в store и в site любого
+// другого ответа (Site.aspect_deg, Facts.site.aspect_deg), чтобы имя `aspect`
+// во всём приложении значило ровно одно — готовую строку румба.
 export type Scan = {
-  sites: { name: string; aspect: string | null; days: OverviewRow[] }[]
+  sites: { name: string; aspect_deg: number | null; days: OverviewRow[] }[]
   empty: string[]
   failed: string[]
 }
@@ -95,7 +100,14 @@ export type Scan = {
 // В фикстуре test/fixtures/routes.json null не встретился, поэтому раньше
 // его тут не было; здесь `| null` стоит не по памяти, а по коду домена —
 // тот же разбор, что у RoutePointRow в api/queries.ts:176.
-export type SavedRoute = { name: string; points: (number | string | null)[][]; saved_at: string }
+//
+// saved (не saved_at!) — имя ключа задаёт store.py:333 (`{"points": pts,
+// "saved": r["saved_at"]}`), а api.py:list_routes раскрывает этот словарь в
+// ответ как есть. Значение — ПОЛНЫЙ ISO-таймстамп в UTC (store.py:88-89,
+// `2026-07-25T06:33:49+00:00`), а не дата: показывать его пилоту нужно
+// переведённым в местный пояс (format.ts: fmtSavedDate, тот же перевод, что
+// bot.py:1058 _local_date).
+export type SavedRoute = { name: string; points: (number | string | null)[][]; saved: string }
 
 export type Elevation = { elevation_m: number }
 

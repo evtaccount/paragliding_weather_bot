@@ -37,6 +37,25 @@ export function fmtDate(iso: string): string {
   return `${weekday}, ${date.getDate()} ${month}`
 }
 
+// Дата сохранения маршрута из значения поля SavedRoute.saved — полного
+// ISO-таймстампа в UTC (store.py:88-89 пишет `2026-07-25T06:33:49+00:00`).
+// Перевод в местный пояс обязателен и делается ровно там же, где его делает
+// чат (bot.py:1058 _local_date): store пишет UTC — однозначно и сортируемо, —
+// а пилот живёт в поясе старта, и вечером после сохранения UTC-дата это ещё
+// «вчера». Пояс берётся с устройства (new Date(...) без указания зоны) — тот
+// же источник, что у «сегодня» в шапке приложения (App.tsx: todayIso).
+//
+// Запасной путь на неразобранной строке — как в боте: показать то, что
+// пришло, до "T", а не «Invalid Date». Старая запись чужого формата у пилота
+// в базе есть, а падать подписи маршрута из-за неё не из-за чего.
+export function fmtSavedDate(iso: string): string {
+  const at = new Date(iso)
+  if (Number.isNaN(at.getTime())) return iso.split("T")[0] ?? iso
+  const month = String(at.getMonth() + 1).padStart(2, "0")
+  const day = String(at.getDate()).padStart(2, "0")
+  return `${at.getFullYear()}-${month}-${day}`
+}
+
 // м/с с одним знаком после запятой — то же соглашение, что в макете для
 // скорости ветра (`num(v, 1) + " м/с"`, см. строки 812, 905, 972, 1518).
 export function fmtWind(ms: number): string {

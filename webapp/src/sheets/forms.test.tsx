@@ -32,10 +32,14 @@ const THREE_SITES: Site[] = [
   { ...SITE, name: "Казбеги", lat: 42.66, lon: 44.64, aspect: "З", aspect_deg: 270, elevation_m: 1750 },
 ]
 
+// saved — ключ и форма настоящего GET /api/routes: ПОЛНЫЙ таймстамп в UTC
+// (store.py:333 отдаёт `saved`, store.py:88-89 пишет туда isoformat в UTC),
+// а не короткая дата. Разметка, приученная к дате, показывала пустоту
+// (финальное ревью ветки, C1а).
 const THREE_ROUTES: SavedRoute[] = [
-  { name: "Гудаури — Коби", points: [[42.47, 44.48, "старт"], [42.53, 44.51, "Коби"]], saved_at: "2026-07-25" },
-  { name: "Хребет на север", points: [[42.4, 44.4, null], [42.6, 44.4, null], [42.8, 44.4, "разворот"]], saved_at: "2026-07-26" },
-  { name: "Казбеги — треугольник", points: [[42.66, 44.64, "старт"], [42.7, 44.8, "п1"], [42.6, 44.7, "п2"]], saved_at: "2026-07-27" },
+  { name: "Гудаури — Коби", points: [[42.47, 44.48, "старт"], [42.53, 44.51, "Коби"]], saved: "2026-07-25T06:33:49+00:00" },
+  { name: "Хребет на север", points: [[42.4, 44.4, null], [42.6, 44.4, null], [42.8, 44.4, "разворот"]], saved: "2026-07-26T06:33:49+00:00" },
+  { name: "Казбеги — треугольник", points: [[42.66, 44.64, "старт"], [42.7, 44.8, "п1"], [42.6, 44.7, "п2"]], saved: "2026-07-27T20:41:02+00:00" },
 ]
 
 type Call = { url: string; method: string; body: BodyInit | null | undefined }
@@ -278,6 +282,25 @@ test("сохранённый маршрут открывается тот, ко�
   expect(points).toEqual([[42.66, 44.64, "старт"], [42.7, 44.8, "п1"], [42.6, 44.7, "п2"]])
 })
 
+// Финальное ревью ветки, C1а: подпись маршрута читала несуществующий ключ
+// `saved_at` (в фикстуре он был, в ответе сервера — нет), и после разделителя
+// у пилота было пусто. Проверяется вся строка целиком: и число точек, и дата
+// сохранения на своём месте.
+test("под именем маршрута стоят число точек и дата сохранения", async () => {
+  stubFetch((url) => (url === "/api/routes" ? json(THREE_ROUTES) : defaultReply(url)))
+  render(<SavedRoutesSheet onPick={vi.fn()} />, { wrapper })
+
+  const button = await screen.findByRole("button", { name: /Гудаури — Коби/ })
+  expect(button).toHaveTextContent(/2 точки · \d{4}-\d{2}-\d{2}$/)
+  // Дата — местная, а не срез таймстампа: ровно то, что делает чат
+  // (bot.py:1088 _local_date). Проверяется на маршруте, сохранённом в
+  // 20:41 UTC, — в поясе восточнее это уже следующий день.
+  const late = await screen.findByRole("button", { name: /Казбеги — треугольник/ })
+  const shown = new Date("2026-07-27T20:41:02+00:00")
+  const expected = `${shown.getFullYear()}-${String(shown.getMonth() + 1).padStart(2, "0")}-${String(shown.getDate()).padStart(2, "0")}`
+  expect(late).toHaveTextContent(`3 точки · ${expected}`)
+})
+
 test("маршрут без имён точек не теряет точки", async () => {
   stubFetch((url) => (url === "/api/routes" ? json(THREE_ROUTES) : defaultReply(url)))
   const onPick = vi.fn()
@@ -313,6 +336,24 @@ test("в выбиралке старта отмечен текущий стар�
   }
   // Подпись несёт то, чем старты различаются в поле: экспозицию и высоту.
   expect(within(active).getByText(/ЮВ/)).toBeInTheDocument()
+})
+
+// Site.aspect — строка В ТОМ ВИДЕ, В КАКОМ ЕЁ ЗАПИСАЛ АВТОР старта (store.py:216
+// пишет как есть): поставочный sites.json в корне репозитория несёт латинское
+// "S", а старт, заведённый из чата или из приложения, — «Ю». В одном списке
+// это давало соседние строки «S 180°» и «Ю 180°». Румб считается из градусов,
+// как в чате (engine.card), — авторская строка на экран не попадает.
+test("румб в списке стартов один и тот же, кем бы старт ни был заведён", async () => {
+  const mixed = [
+    { ...SITE, name: "Лалискури", aspect: "S", aspect_deg: 180, elevation_m: 686 },
+    { ...SITE, name: "Гудаури", aspect: "Ю", aspect_deg: 180, elevation_m: 2200 },
+  ]
+  stubFetch((url) => (url === "/api/sites" ? json(mixed) : defaultReply(url)))
+  render(<SitePickerSheet selected="Гудаури" onPick={vi.fn()} />, { wrapper })
+
+  const imported = await screen.findByRole("button", { name: /Лалискури/ })
+  expect(imported).toHaveTextContent("Ю 180° · 686 м")
+  expect(imported).not.toHaveTextContent("S")
 })
 
 // Ревью задачи 13 (N2): шторка кладётся в стек ГОТОВЫМ элементом, поэтому

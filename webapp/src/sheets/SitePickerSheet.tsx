@@ -17,7 +17,7 @@ import { useState } from "react"
 import { useDeleteSite, useSites } from "../api/queries"
 import type { Site } from "../api/types"
 import { colorOfCategory } from "../charts/palette"
-import { fmtNum } from "../format"
+import { compass, fmtNum } from "../format"
 import { defaultSiteName } from "../sites"
 import { ErrorBox } from "../ui/ErrorBox"
 import { Spinner } from "../ui/Spinner"
@@ -26,10 +26,21 @@ import { Spinner } from "../ui/Spinner"
 // смотрит склон и на какой он высоте (макет, строка 1637). Экспозиция
 // бывает не размечена (Site.aspect: string | null, engine.py:1041) —
 // тогда о ней просто не говорится, а не печатается «null».
+//
+// Румб считается из градусов, а не берётся из Site.aspect: в /api/sites это
+// поле — строка В ТОМ ВИДЕ, В КАКОМ ЕЁ ЗАПИСАЛ автор старта (store.py:216
+// пишет как есть), и поставочный sites.json несёт латинское "S", а
+// заведённый из чата или из приложения старт — «Ю» (bot.py:544,
+// AddSiteSheet.tsx:128 зовут engine.card/compass). Соседние строки списка
+// читались «S 180°» и «Ю 180°» — две системы обозначений в одном списке.
+// Одно правило на всё приложение: румб — это compass(градусы), как в чате;
+// авторская строка остаётся запасным вариантом ровно там, где градусов нет.
 export function siteSubtitle(site: Site): string {
   const parts = [`${fmtNum(site.elevation_m)} м`]
-  if (site.aspect !== null) {
-    parts.unshift(site.aspect_deg === null ? site.aspect : `${site.aspect} ${fmtNum(site.aspect_deg)}°`)
+  if (site.aspect_deg !== null) {
+    parts.unshift(`${compass(site.aspect_deg)} ${fmtNum(site.aspect_deg)}°`)
+  } else if (site.aspect !== null) {
+    parts.unshift(site.aspect)
   }
   return parts.join(" · ")
 }
@@ -114,7 +125,10 @@ export function SiteEditorSheet({ site, onOpenForecast, onDeleted }: EditorProps
         <div><span>Высота по гриду</span><b>{fmtNum(site.elevation_m)} м</b></div>
         <div>
           <span>Экспозиция</span>
-          <b>{site.aspect === null ? "не размечена" : siteSubtitle(site).split(" · ")[0]}</b>
+          {/* Условие то же, при котором siteSubtitle ставит экспозицию первой
+              частью: иначе карточка говорила бы «не размечена» о старте, у
+              которого в списке над ней написан румб. */}
+          <b>{site.aspect_deg === null && site.aspect === null ? "не размечена" : siteSubtitle(site).split(" · ")[0]}</b>
         </div>
       </div>
 

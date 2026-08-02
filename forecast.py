@@ -64,9 +64,17 @@ def known_sites():
 async def scan_week(*, model) -> dict:
     """Week overview across ALL saved sites, keeping only flyable days.
 
-    Returns {"sites": [{"name", "aspect", "days": [row, ...]}], "empty": [name...],
+    Returns {"sites": [{"name", "aspect_deg", "days": [row, ...]}], "empty": [name...],
     "failed": [name...]}. Each row is an engine.overview_rows() dict. Fetches run
     concurrently and reuse (warm) the same week cache /week uses.
+
+    Экспозиция уходит ГРАДУСАМИ и называется `aspect_deg` — тем же именем, что и
+    в store (store.py:97) и в site любого другого ответа (engine.py:1041,1104).
+    Раньше то же число звалось `aspect`, а `aspect` в остальных эндпоинтах —
+    это готовый румб («Ю»): одно имя на две разные величины стоило приложению
+    шапки «180 · 2 лётных» вместо «Ю · 2 лётных» (финальное ревью ветки, C1б).
+    Румб из градусов собирает читатель — engine.card (bot.py:244) и compass()
+    в приложении.
 
     `model` — модель пилота; вызывающий обязан разрешить её сам (store.prefs(uid))
     и передать явно. Ключ кэша тот же, что у /week, поэтому обзор и скан по одной
@@ -88,7 +96,7 @@ async def scan_week(*, model) -> dict:
             continue
         fly = [r for r in res if criteria.flyable(r["category"])]
         if fly:
-            out["sites"].append({"name": site["name"], "aspect": site.get("aspect_deg"), "days": fly})
+            out["sites"].append({"name": site["name"], "aspect_deg": site.get("aspect_deg"), "days": fly})
         else:
             out["empty"].append(site["name"])
     return out

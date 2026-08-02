@@ -109,7 +109,7 @@ async def test_wind_grid_returns_levels(client, monkeypatch):
 
 async def test_scan_returns_flyable_days(client, monkeypatch):
     async def fake(*, model):
-        return {"sites": [{"name": "Гудаури", "aspect": 180.0, "days": []}],
+        return {"sites": [{"name": "Гудаури", "aspect_deg": 180.0, "days": []}],
                 "empty": ["Лалискури"], "failed": []}
 
     monkeypatch.setattr(forecast, "scan_week", fake)

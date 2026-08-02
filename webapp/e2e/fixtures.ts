@@ -165,7 +165,11 @@ export async function stubApi(page: Page, opts: { holdRoute?: boolean } = {}): P
   const savedRoutes = [{
     name: "Гудаури — юг",
     points: routeResult.points.map((p) => [p.lat, p.lon, null]),
-    saved_at: "2026-08-01",
+    // saved (не saved_at) и полный таймстамп в UTC — так отдаёт настоящий
+    // GET /api/routes (store.py:333 + store.py:88-89, см. api/types.ts:
+    // SavedRoute). Подделка обязана повторять форму сервера, иначе сценарии
+    // проверяют разметку на данных, которых в приложении не бывает.
+    saved: "2026-08-01T18:20:11+00:00",
   }]
 
   let releaseRoute = (): void => {}
