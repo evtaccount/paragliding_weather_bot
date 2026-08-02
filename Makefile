@@ -37,7 +37,25 @@ test:               ## run python + webapp test suites
 # Сквозные сценарии в `test` не входят намеренно: им нужен настоящий браузер,
 # запущенный рядом app.py и поход в open-meteo — всего того, чего у обычного
 # прогона тестов нет. Подготовка описана в README, раздел «Сквозные сценарии».
+#
+# Проверка занятости порта стоит ДО запуска ради текста в терминале. Playwright
+# на занятом порту советует «set reuseExistingServer: true», а этот совет ровно
+# противоположен тому, зачем там false: переиспользованный предпросмотр отдаёт
+# вчерашнюю сборку, и восемь сценариев зеленеют, не увидев правки (разбор — в
+# webapp/playwright.config.ts). Разработчик читает терминал, а не комментарий в
+# конфигурации, поэтому возражение должно быть в терминале.
+# Порт продублирован из webapp/playwright.config.ts (PREVIEW_PORT).
+# lsof на машине может не оказаться — тогда проверка молча пропускается и
+# остаётся прежнее поведение, то есть сообщение самого Playwright.
+E2E_PORT ?= 4173
+
 e2e:                ## run end-to-end tests (needs a running app.py and DEV_INIT_DATA)
+	@if lsof -ti tcp:$(E2E_PORT) >/dev/null 2>&1; then \
+	  echo "порт $(E2E_PORT) занят — погасите свой 'npm run preview' и повторите."; \
+	  echo "НЕ ставьте reuseExistingServer: true (это посоветует сам Playwright):"; \
+	  echo "тогда сценарии пойдут по СТАРОЙ сборке и не увидят вашей правки."; \
+	  exit 1; \
+	fi
 	npm --prefix webapp run e2e
 
 webapp-install:     ## install webapp dependencies
