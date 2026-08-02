@@ -227,6 +227,21 @@ test("новый маршрут считается по своему окну, �
   })
 })
 
+// Ре-ревью задачи 13 (N13): число точек в шапке панели маршрута осталось без
+// склонения, хотя на кнопке шторки и в «Сохранённых» то же число уже
+// склоняется (fmtPoints). На маршруте ~200 км сервер отдаёт 21 сэмпл — панель
+// писала «21 точек» рядом с кнопкой, где написано «21 точка». Фикстура тут
+// подменяется точечно: в route.json сэмплов 5, а «5 точек» одинаково у обеих
+// реализаций и дефект не показывает.
+test("число сэмплов в шапке маршрута склоняется", async () => {
+  const many = { ...ROUTE, route: { ...ROUTE.route, sample_count: 21 } }
+  vi.stubGlobal("fetch", () => jsonResponse(many))
+  render(<Route points={POINTS} name={ROUTE.route.name} date={ROUTE.route.date} model="ecmwf" onPickRoute={() => {}} />, { wrapper })
+  await screen.findByText(ROUTE.verdict.label)
+
+  expect(screen.getByText(/^21 точка · шаг/)).toBeInTheDocument()
+})
+
 // Ревью задачи 13 (N4): в макете (prototype.html:1182-1186) широкой сделана
 // «Новый маршрут» (mk(..., true)), а «Разбор от ИИ» и «Сохранённые» делят
 // первый ряд. Раскладка .acts — grid 1fr 1fr плюс act--wide (grid-column:

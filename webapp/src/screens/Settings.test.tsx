@@ -332,25 +332,114 @@ test("после ответа сервера на экране его значе
   expect(await screen.findByText("30 км/ч")).toBeInTheDocument()
 })
 
-// Ревью задачи 13 (N9), вторая половина: два нажатия подряд шлют два PATCH на
-// один и тот же ключ, и порядок их обработки сервером ничем не задан — «+»,
-// затем «−» может оставить в store 26, когда пилот остановился на 25. Пока
-// первый запрос в пути, степпер заперт.
-test("второй шаг скорости не уходит, пока первый в полёте", async () => {
+// Ре-ревью задачи 13 (N11): после ответа PATCH настройки перезапрашивались
+// отдельным GET, а черновик снимался сразу — в окне между ответом и приходом
+// свежих настроек экран показывал ПРЕЖНЕЕ значение, и нажатие, сделанное в
+// этот момент, отправляло то же самое ещё раз. Ниже это окно и
+// воспроизводится: первый GET /api/prefs отвечает, следующий зависает.
+function stubSlowPrefsReload(): void {
+  let loaded = false
   stubFetch((url, init) => {
     const path = url.split("?")[0]
-    if (path === "/api/prefs" && init?.method === "PATCH") return new Promise<Response>(() => {})
+    if (path === "/api/prefs" && (init?.method ?? "GET") === "GET") {
+      if (loaded) return new Promise<Response>(() => {})
+      loaded = true
+      return json(prefsState)
+    }
+    return defaultReply(url, init)
+  })
+}
+
+test("два шага скорости подряд складываются, а не повторяют одно значение", async () => {
+  stubSlowPrefsReload()
+  renderSettings()
+
+  expect(await screen.findByText("25 км/ч")).toBeInTheDocument()
+  const plus = screen.getByRole("button", { name: "Увеличить маршрутную скорость" })
+  await userEvent.click(plus)
+  await userEvent.click(plus)
+
+  await waitFor(() => { expect(callsTo("/api/prefs", "PATCH")).toHaveLength(2) })
+  // Второй шаг считается от того, что пилот видит, а не от неуспевшего
+  // обновиться кэша: 25 → 26 → 27, а не 26 дважды.
+  expect(callsTo("/api/prefs", "PATCH").map(body)).toEqual([
+    { avg_route_speed_kmh: 26 },
+    { avg_route_speed_kmh: 27 },
+  ])
+  expect(await screen.findByText("27 км/ч")).toBeInTheDocument()
+})
+
+// Тот же дефект на тумблере опаснее числа: поправка на ветер меняет расчёт
+// времени прилёта на всём маршруте (route.py), а отскочивший тумблер заставлял
+// пилота нажать ещё раз — и второе нажатие отправляло то же «выключить»,
+// оставляя поправку выключенной, хотя последним действием пилот её включал.
+test("тумблер не отскакивает назад, пока свежие настройки в пути", async () => {
+  stubSlowPrefsReload()
+  renderSettings()
+
+  const toggle = await screen.findByRole("switch", { name: /Учитывать ветер/ })
+  expect(toggle).toHaveAttribute("aria-checked", "true")
+  await userEvent.click(toggle)
+
+  await waitFor(() => { expect(callsTo("/api/prefs", "PATCH")).toHaveLength(1) })
+  // Ответ PATCH уже пришёл (в нём — свежие настройки целиком), поэтому
+  // положение тумблера остаётся выключенным и без отдельного GET.
+  expect(screen.getByRole("switch", { name: /Учитывать ветер/ })).toHaveAttribute("aria-checked", "false")
+
+  // И следующее нажатие ВКЛЮЧАЕТ поправку обратно, а не выключает второй раз.
+  await userEvent.click(screen.getByRole("switch", { name: /Учитывать ветер/ }))
+  await waitFor(() => { expect(callsTo("/api/prefs", "PATCH")).toHaveLength(2) })
+  expect(callsTo("/api/prefs", "PATCH").map(body)).toEqual([
+    { wind_correction_enabled: false },
+    { wind_correction_enabled: true },
+  ])
+})
+
+// Ревью задачи 13 (N9) + ре-ревью (N11): у правок настроек два требования
+// сразу, и они тянут в разные стороны. Порядок записей — запросы идут по
+// одному, иначе сервер может обработать «+ потом −» в обратном порядке и
+// оставить в store не то, на чём пилот остановился. Отзывчивость — нажатие
+// видно сразу, и следующее считается от увиденного, а не от кэша, который
+// ещё не обновился. Здесь проверяется и то, и другое на ОДНОМ сценарии:
+// первый PATCH держится, второй зависает.
+test("шаги отправляются по одному и по порядку, а число не откатывается", async () => {
+  let releaseFirst = (): void => { throw new Error("PATCH не был вызван") }
+  let patches = 0
+  stubFetch((url, init) => {
+    const path = url.split("?")[0]
+    if (path === "/api/prefs" && init?.method === "PATCH") {
+      patches += 1
+      prefsState = { ...prefsState, ...(JSON.parse(String(init.body)) as Partial<Prefs>) }
+      const answer = json(prefsState)
+      // Первый ответ — по команде теста, второй не приходит вовсе: так видно
+      // и очередь запросов, и что показывает экран, пока она не разошлась.
+      if (patches === 1) return new Promise<Response>((resolve) => { releaseFirst = () => { resolve(answer) } })
+      return new Promise<Response>(() => {})
+    }
     return defaultReply(url, init)
   })
   renderSettings()
 
-  const plus = await screen.findByRole("button", { name: "Увеличить маршрутную скорость" })
+  expect(await screen.findByText("25 км/ч")).toBeInTheDocument()
+  const plus = screen.getByRole("button", { name: "Увеличить маршрутную скорость" })
   await userEvent.click(plus)
-  await waitFor(() => { expect(plus).toBeDisabled() })
-  await userEvent.click(screen.getByRole("button", { name: "Уменьшить маршрутную скорость" }))
+  await userEvent.click(plus)
 
+  // Два нажатия — один запрос в полёте: второй ждёт своей очереди
+  // (scope у useUpdatePrefs), а не спорит с первым за один и тот же ключ.
   expect(callsTo("/api/prefs", "PATCH")).toHaveLength(1)
-  expect(body(callsTo("/api/prefs", "PATCH")[0]!)).toEqual({ avg_route_speed_kmh: 26 })
+  expect(screen.getByText("27 км/ч")).toBeInTheDocument()
+
+  releaseFirst()
+
+  await waitFor(() => { expect(callsTo("/api/prefs", "PATCH")).toHaveLength(2) })
+  expect(callsTo("/api/prefs", "PATCH").map(body)).toEqual([
+    { avg_route_speed_kmh: 26 },
+    { avg_route_speed_kmh: 27 },
+  ])
+  // Ответ на ПЕРВЫЙ шаг (26) пришёл, второй ещё в пути — на экране обязано
+  // остаться 27: пилот нажал дважды, и число не откатывается к промежуточному.
+  expect(screen.getByText("27 км/ч")).toBeInTheDocument()
 })
 
 // Тумблер поправки на ветер иначе не покрыт ничем: он меняет расчёт времени

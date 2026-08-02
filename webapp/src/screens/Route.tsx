@@ -35,7 +35,7 @@ import type { RoutePoint, Site } from "../api/types"
 import { useSheetsContext } from "../App"
 import { BAND, TERRAIN, colorOfCategory } from "../charts/palette"
 import { RouteProfile } from "../charts/RouteProfile"
-import { compass, fmtNum } from "../format"
+import { compass, fmtNum, fmtPoints } from "../format"
 import { MapView } from "../map/MapView"
 import { NewRouteSheet } from "../sheets/NewRouteSheet"
 import { PointCardSheet, roleLabel } from "../sheets/PointCardSheet"
@@ -241,7 +241,7 @@ export function Route({ points, name, date, model, onPickRoute }: RouteProps) {
       <div className="panel">
         <div className="panel__head">
           <span className="lbl">Маршрут</span>
-          <span className="lbl">{result.route.sample_count} точек · шаг {fmtNum(result.route.sample_step_km)} км</span>
+          <span className="lbl">{fmtPoints(result.route.sample_count)} · шаг {fmtNum(result.route.sample_step_km)} км</span>
         </div>
         <div className="verdict">
           <div>

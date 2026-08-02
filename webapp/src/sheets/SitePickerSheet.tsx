@@ -14,11 +14,11 @@
 // соседнего старта — ровно этот класс дефекта был Critical задачи 10 (тап
 // по дню второго старта открывал прогноз первого).
 import { useState } from "react"
-import { siteName } from "../App"
 import { useDeleteSite, useSites } from "../api/queries"
 import type { Site } from "../api/types"
 import { colorOfCategory } from "../charts/palette"
 import { fmtNum } from "../format"
+import { defaultSiteName } from "../sites"
 import { ErrorBox } from "../ui/ErrorBox"
 import { Spinner } from "../ui/Spinner"
 
@@ -52,10 +52,10 @@ export function SitePickerSheet({ selected, onPick }: PickerProps) {
   if (sites.isPending) return <Spinner />
   if (sites.isError) return <ErrorBox error={sites.error} onRetry={() => { void sites.refetch() }} />
 
-  // Тем же правилом, что и оболочка (App.tsx: site = selectedSite ?? siteName),
-  // иначе при пустом выборе шторка не отметила бы ни одного старта, хотя
-  // приложение показывает первый.
-  const current = selected ?? siteName(sites.data)
+  // Тем же правилом, что и оболочка (sites.ts: запасной старт — первый в
+  // списке), иначе при пустом выборе шторка не отметила бы ни одного старта,
+  // хотя приложение показывает первый.
+  const current = selected ?? defaultSiteName(sites.data)
   const notes = sites.data.find((s) => s.name === current)?.notes ?? ""
 
   if (sites.data.length === 0) {

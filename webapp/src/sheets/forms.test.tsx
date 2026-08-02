@@ -336,6 +336,6 @@ test("выбиралка старта, открытая до ответа сер
   expect(await screen.findByRole("button", { name: /Казбеги/ })).toBeInTheDocument()
   // Отметка «текущий» тоже считается по пришедшему списку: явного выбора не
   // было (selected=null), значит отмечен первый старт — тот же, что показывает
-  // оболочка (App.tsx:siteName).
+  // оболочка (sites.ts:defaultSiteName).
   expect(screen.getByRole("button", { name: /Гудаури/ })).toHaveAttribute("aria-pressed", "true")
 })

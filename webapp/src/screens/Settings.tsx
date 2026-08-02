@@ -47,12 +47,20 @@ export function Settings({
   const prefs = usePrefs()
   const sites = useSites()
   const update = useUpdatePrefs()
-  // Черновики скорости и тумблера — ТОЛЬКО на время, пока PATCH в пути: до
+  // Черновики скорости и тумблера — только на время, пока PATCH в пути: до
   // ответа сервера в кэше лежит прежнее значение, и без черновика нажатие не
-  // отражалось бы на экране вовсе. Снимаются в onSettled, то есть и при
-  // успехе, и при отказе: пережив ответ, черновик перекрывал бы и заново
-  // запрошенные настройки — на экране навсегда осталось бы то, что пилот
-  // хотел, а не то, что лежит в store (ревью задачи 13, N9).
+  // отражалось бы на экране вовсе, а следующее считало бы от старого числа.
+  //
+  // Снимаются в onSettled, и это безопасно в обе стороны. Ответ PATCH сразу
+  // становится содержимым кэша (api/queries.ts: useUpdatePrefs →
+  // setQueryData), поэтому в момент снятия там УЖЕ свежее значение — окна, в
+  // котором экран показывает прежнее, нет (ревью задачи 13, круг 2, N11).
+  // А ответ на ПРОШЛОЕ нажатие черновик нового не сотрёт: колбэки, переданные
+  // в mutate(), в TanStack Query v5 живут на наблюдателе, а не на мутации, и
+  // следующий mutate() их заменяет — срабатывают только колбэки последнего
+  // вызова. Проверено мутацией: со сторожем «снимать, только если черновик
+  // всё ещё мой» и без него сценарий двух быстрых шагов ведёт себя одинаково,
+  // поэтому сторожа здесь нет — он был бы кодом, который ничего не меняет.
   const [speedDraft, setSpeedDraft] = useState<number | null>(null)
   const [windDraft, setWindDraft] = useState<boolean | null>(null)
 
@@ -63,13 +71,13 @@ export function Settings({
   const windOn = windDraft ?? prefs.data.wind_correction_enabled
   const modelLabel = prefs.data.models.find((m) => m.key === prefs.data.model_key)?.label ?? prefs.data.model_key
 
-  // Пока PATCH в пути, обе правки настроек заперты. Иначе два нажатия дают два
-  // одновременных запроса на один и тот же ключ, порядок ответов не
-  // гарантирован, и «+ потом −» может оставить в store 26, когда пилот
-  // остановился на 25 (ревью задачи 13, N9). Запрос лёгкий, ждать его — доли
-  // секунды.
-  const saving = update.isPending
-
+  // Нажатия НЕ запираются на время запроса: очередь мутаций держит их порядок
+  // (api/queries.ts: scope у useUpdatePrefs), а каждое следующее нажатие
+  // считается от черновика, то есть от числа, которое пилот видит. Пять
+  // быстрых тапов «+» дают 26, 27, 28, 29, 30, а не пять раз 26. Запрет
+  // нажатий (круг 1 ревью) стоил дороже, чем казалось: ждать приходилось не
+  // PATCH, а PATCH плюс следующий за ним GET, и тап, попавший в это окно,
+  // пропадал совсем.
   function stepSpeed(delta: number): void {
     const next = speed + delta
     setSpeedDraft(next)
@@ -124,9 +132,9 @@ export function Settings({
           subtitle="С учётом наборов в термиках, не скорость крыла"
           value={
             <div className="stepper">
-              <button type="button" aria-label="Уменьшить маршрутную скорость" disabled={saving} onClick={() => stepSpeed(-1)}>−</button>
+              <button type="button" aria-label="Уменьшить маршрутную скорость" onClick={() => stepSpeed(-1)}>−</button>
               <b>{fmtNum(speed)} км/ч</b>
-              <button type="button" aria-label="Увеличить маршрутную скорость" disabled={saving} onClick={() => stepSpeed(1)}>+</button>
+              <button type="button" aria-label="Увеличить маршрутную скорость" onClick={() => stepSpeed(1)}>+</button>
             </div>
           }
         />
@@ -135,7 +143,7 @@ export function Settings({
             role="switch" висит на декоративном кружке внутри кнопки — так
             скринридер объявляет строку обычной кнопкой, а состояние
             «включено/выключено» остаётся на элементе, который не нажимают. */}
-        <button type="button" className="row" role="switch" aria-checked={windOn} disabled={saving} onClick={toggleWind}>
+        <button type="button" className="row" role="switch" aria-checked={windOn} onClick={toggleWind}>
           <div className="row__m">
             <div className="row__t">Учитывать ветер во времени прилёта</div>
             <div className="row__s">Марш вперёд: GS = V·cos(WCA) + попутная составляющая</div>

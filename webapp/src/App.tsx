@@ -11,7 +11,7 @@ import type { ReactNode } from "react"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { usePrefs, useSites } from "./api/queries"
 import type { RoutePointRow } from "./api/queries"
-import type { Prefs, Site } from "./api/types"
+import type { Prefs } from "./api/types"
 import { fmtDate } from "./format"
 import { Forecast } from "./screens/Forecast"
 import { Overview } from "./screens/Overview"
@@ -19,6 +19,7 @@ import { Route } from "./screens/Route"
 import { Settings } from "./screens/Settings"
 import { ModelPickerSheet } from "./sheets/ModelPickerSheet"
 import { SitePickerSheet } from "./sheets/SitePickerSheet"
+import { defaultSiteName } from "./sites"
 import * as telegram from "./telegram"
 import { resolveThemeVars } from "./theme"
 import { Chip } from "./ui/Chip"
@@ -143,17 +144,6 @@ const TABS: { key: TabKey; label: string; icon: ReactNode }[] = [
 const NO_ROUTE_POINTS: RoutePointRow[] = []
 
 // ────────────────────────────────────────────────────────────── шапка
-// Возвращает null и когда список стартов ещё грузится, и когда он пуст —
-// оба случая различает разметка ниже (sites.isPending), а не эта функция:
-// ей самой достаточно знать только "есть ли имя старта".
-// Экспортируется ради выбиралки старта (sheets/SitePickerSheet.tsx): отметку
-// «текущий» она ставит по тому же правилу, по которому оболочка выбирает
-// старт, — иначе при пустом selectedSite шторка не отметила бы ни одного
-// старта, хотя приложение показывает первый.
-export function siteName(sites: Site[] | undefined): string | null {
-  return sites?.[0]?.name ?? null
-}
-
 // Подпись чипа модели — по ДЕЙСТВУЮЩЕЙ модели, а не по постоянной настройке:
 // разовый выбор (чип в шапке) меняет модель всех запросов текущего сеанса, и
 // чип обязан показывать именно её, иначе экран посчитан по одной модели, а
@@ -208,7 +198,7 @@ function ShellContent() {
   // Текущий старт — тоже состояние, а не всегда первый элемент /api/sites
   // (было так до ревью этой задачи, Critical: клик по дню ВТОРОГО старта в
   // скане «Все старты» открывал прогноз ПЕРВОГО — приложение никак не
-  // запоминало, какой старт реально выбрали, siteName(sites.data) заново
+  // запоминало, какой старт реально выбрали, defaultSiteName(sites.data) заново
   // брал sites.data[0] на каждом рендере). null означает "явного выбора
   // ещё не было" — тогда используется первый старт из списка (см. вычисление
   // site ниже). Это же состояние меняет выбиралка старта из шапки
@@ -291,7 +281,7 @@ function ShellContent() {
   // ре-рендер до ответа сервера.
   const selectionAlive =
     selectedSite !== null && (sites.data === undefined || sites.data.some((s) => s.name === selectedSite))
-  const site = selectionAlive ? selectedSite : siteName(sites.data)
+  const site = selectionAlive ? selectedSite : defaultSiteName(sites.data)
   const model = onceModel ?? prefs.data?.model_key ?? null
 
   // Тап по дню в «Обзоре» — настоящее переключение (старт и дата ИМЕННО
@@ -327,7 +317,7 @@ function ShellContent() {
   // Через проп идёт только `selected` — сырой выбор пилота, а не вычисленный
   // `site`: измениться, пока шторка открыта, он не может (все три места, где
   // он меняется, эту шторку закрывают или живут на другом экране), а запасной
-  // старт шторка выберет по тому же siteName() из живого списка.
+  // старт шторка выберет по тому же defaultSiteName() из живого списка.
   function openSitePicker(): void {
     sheets.push(<SitePickerSheet selected={selectedSite} onPick={pickSite} />, "Старт")
   }

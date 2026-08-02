@@ -50,7 +50,23 @@ export function useUpdatePrefs(): UseMutationResult<Prefs, ApiError, PrefsPatchI
   return useMutation({
     mutationFn: (patch: PrefsPatchInput) => apiSend<Prefs>("PATCH", "/api/prefs", patch),
     retry: false,
-    onSuccess: () => { void client.invalidateQueries({ queryKey: ["prefs"] }) },
+    // Правки настроек идут ПО ОДНОЙ и в порядке нажатий: TanStack держит
+    // мутации с одинаковым scope.id в очереди. Без этого два быстрых нажатия
+    // степпера дают два одновременных PATCH на один и тот же ключ, порядок
+    // их обработки сервером ничем не задан, и «+ потом −» могло оставить в
+    // store не то значение, на котором пилот остановился (ревью задачи 13,
+    // N9). Очередь на клиенте — единственный способ задать порядок: сервер
+    // /api/prefs не сериализует запросы пилота (он не под one_at_a_time,
+    // api.py:update_prefs).
+    scope: { id: "prefs" },
+    // Ответ PATCH — это уже свежие настройки целиком (api.py:update_prefs
+    // возвращает _prefs_payload(user.id) после записи), поэтому он кладётся
+    // в кэш как есть, без инвалидации и повторного GET. Инвалидация оставляла
+    // окно между ответом PATCH и приходом GET: в этом окне экран показывал
+    // ПРЕЖНЕЕ значение — число откатывалось, тумблер отскакивал обратно, и
+    // нажатие, сделанное в этот момент, отправляло то же самое значение
+    // ещё раз (ревью задачи 13, круг 2, N11).
+    onSuccess: (data) => { client.setQueryData(["prefs"], data) },
   })
 }
 
