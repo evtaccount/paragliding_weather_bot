@@ -82,30 +82,56 @@ async def test_the_closed_surface_names_the_variable_to_fill(client, allowlist):
     assert "ALLOWED_USER_IDS" in r.text
 
 
-async def test_the_chat_stays_open_on_an_empty_allowlist(allowlist):
-    """Правило чата не менялось: там пустой список по-прежнему пускает всех.
+async def test_an_empty_allowlist_closes_the_chat_too(allowlist):
+    """Пустой список закрывает ОБЕ поверхности, а не одну.
 
-    Расхождение поверхностей — решение, а не побочный эффект, и оно должно
-    быть видно из тестов: закрыв заодно чат, владелец, обновившийся ради
-    мини-приложения, остался бы и без бота.
+    Раньше чат на пустом списке пускал кого угодно — на том доводе, что до
+    него надо знать имя бота в Telegram. Довод перестал работать, когда
+    появилось приложение: библиотека стартов у них ОДНА, и пущенный в чат
+    посторонний читает, заводит и удаляет старты пилота ровно так же. Отказ по
+    умолчанию ошибается в безопасную сторону: запертый владелец правит .env и
+    перезапускает, а открытый бот находят раньше него.
     """
     import guards
     allowlist("")
 
-    passed = []
-
     async def handler(event, data):
-        passed.append(event)
-        return "ok"
+        raise AssertionError("чат пропустил постороннего при пустом списке")
+
+    refusals = []
 
     class _Stranger:
         from_user = type("U", (), {"id": 999999, "username": "stranger"})()
 
-        async def answer(self, *args, **kwargs):
-            raise AssertionError("чат ответил отказом, а должен был пропустить")
+        async def answer(self, text, *args, **kwargs):
+            refusals.append(text)
 
-    assert await guards.WhitelistMiddleware()(handler, _Stranger(), {}) == "ok"
-    assert passed
+    assert await guards.WhitelistMiddleware()(handler, _Stranger(), {}) is None
+    # Отказ называет id: посторонний пересылает его владельцу, владелец
+    # вписывает в .env — единственный путь внутрь, когда список пуст.
+    assert "999999" in refusals[0]
+
+
+async def test_the_owner_is_refused_too_when_the_list_is_empty(allowlist):
+    """Пустой список не значит «пускать своих»: своих в нём просто нет.
+
+    Проверяется отдельно от постороннего, потому что соблазн сделать исключение
+    возникает именно здесь — «ну хотя бы владельца». Исключения нет: id
+    владельца отличается от чужого только тем, что он вписан в .env.
+    """
+    import guards
+    allowlist("")
+
+    async def handler(event, data):
+        raise AssertionError("чат пропустил владельца при пустом списке")
+
+    class _Owner:
+        from_user = type("U", (), {"id": 1, "username": "owner"})()
+
+        async def answer(self, *args, **kwargs):
+            pass
+
+    assert await guards.WhitelistMiddleware()(handler, _Owner(), {}) is None
 
 
 async def test_a_403_refusal_is_logged(client, allowlist, caplog):

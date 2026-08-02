@@ -19,7 +19,13 @@ DB_PATH = os.path.join(_tmpdir, "test.db")
 # bot.py does not override existing variables.
 os.environ["DB_PATH"] = DB_PATH
 os.environ["BOT_TOKEN"] = "42:TEST"
-os.environ["ALLOWED_USER_IDS"] = ""  # open mode — whitelist passes everyone
+from tma import ALLOWED_IN_TESTS  # noqa: E402 — окружение читается при импорте bot/engine/store
+
+# Пустой список закрывает ОБЕ поверхности (guards.WhitelistMiddleware и
+# api.current_user), поэтому тесты работают с явным списком, а не в «открытом
+# режиме»: открытого режима больше нет. Тесты, которым нужен именно пустой
+# список, зовут фикстуру allowlist.
+os.environ["ALLOWED_USER_IDS"] = ALLOWED_IN_TESTS
 os.environ["COOLDOWN_SEC"] = "0"
 os.environ["GEMINI_API_KEY"] = ""
 
@@ -170,11 +176,11 @@ async def client(monkeypatch):
     Импорт api откладывается до вызова фикстуры — модуль тянет FastAPI, и
     падение импорта не должно ронять сбор тестов, которые до API не касаются.
 
-    Список допуска задаётся здесь, а не глобально в окружении выше: пустой
-    ALLOWED_USER_IDS оставляет чат открытым (так и задумано, чат этим и
-    тестируется), но HTTP-поверхность закрывает целиком — см. tma.ALLOWED_IN_TESTS
-    и test_api_auth.test_empty_allowlist_closes_the_http_surface. Тесты, которым
-    нужен другой список, зовут фикстуру allowlist уже в теле теста — она
+    Список допуска задаётся ещё раз здесь, хотя тот же список уже лежит в
+    окружении глобально: фикстура allowlist могла отработать в предыдущем
+    тесте, а monkeypatch откатывает её только по завершении теста — эта строка
+    возвращает известное состояние на вход каждому тесту эндпоинта. Тесты,
+    которым нужен другой список, зовут allowlist уже в теле теста: она
     отрабатывает позже этой строки и побеждает.
     """
     import httpx

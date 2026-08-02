@@ -87,7 +87,7 @@ def test_routes_copied_to_every_allowed_user(store, data_dir):
 
 
 def test_routes_kept_when_no_allowlist(store, data_dir):
-    """В открытом режиме раздавать общие маршруты некому — файл остаётся на месте."""
+    """С пустым списком раздавать общие маршруты некому — файл остаётся на месте."""
     p = os.path.join(data_dir, "routes.json")
     write(p, {"Мой": {"points": [[1.0, 2.0, None], [3.0, 4.0, None]]}})
     store.init()
@@ -165,7 +165,7 @@ def test_rerun_does_not_duplicate_settings_and_model(store, data_dir):
 
 
 def test_second_run_migrates_once_allowlist_configured(store, data_dir):
-    """Первый прогон в открытом режиме ничего не переносит и оставляет файлы
+    """Первый прогон с пустым списком ничего не переносит и оставляет файлы
     на месте; второй — после появления allowlist — переносит их успешно."""
     write(os.path.join(data_dir, "routes.json"),
           {"Мой": {"points": [[1.0, 2.0, None], [3.0, 4.0, None]]}})

@@ -19,9 +19,10 @@ async def test_health_says_which_db_is_open(client):
 
 
 async def test_health_does_not_leak_the_absolute_db_path(client):
-    """/api/health не требует авторизации — путь на диске сервера не отвечает
-    ни на один вопрос, для которого этот эндпоинт существует, а посторонним
-    в интернете (открытый режим) знать его незачем."""
+    """/api/health не требует авторизации — единственный такой эндпоинт (на нём
+    держится HEALTHCHECK контейнера, api.py). Путь на диске сервера не отвечает
+    ни на один вопрос, ради которого эндпоинт существует, а видит его кто
+    угодно из интернета."""
     body = (await client.get("/api/health")).json()
     assert "db" not in body
 
