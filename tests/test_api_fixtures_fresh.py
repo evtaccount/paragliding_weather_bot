@@ -79,3 +79,70 @@ def test_fixtures_match_what_the_domain_returns_now(tmp_path):
     stale = sorted(n for n in fresh if stored.get(n) != fresh[n])
     assert not stale, ("фикстуры устарели, переснимите: "
                        "python scripts/dump_api_fixtures.py — " + ", ".join(stale))
+
+
+def test_the_snapshot_does_not_depend_on_the_day_it_is_taken(tmp_path):
+    """Содержимое фикстур не зависит от того, когда их сняли.
+
+    Часть домена смотрит на сегодняшнюю дату: engine._far_ahead решает, писать
+    ли в оговорки «пересними за 1–2 суток», по сроку до дня карточки. Без
+    замороженных часов (scripts/dump_api_fixtures._StoppedClock) снимок менялся
+    бы сам собой в некоторый день, и сторож выше покраснел бы, ничего про домен
+    не сообщая, — а разработчик, переснявший фикстуры «чтобы позеленело»,
+    зафиксировал бы в них состояние своего календаря.
+
+    Проверяется наблюдаемым свойством, а не наличием заморозки: часы домена
+    подменяются НАРУЖУ скрипта на далёкое будущее, и снимок обязан совпасть
+    побайтово со снимком без подмены.
+    """
+    import datetime as dt
+    import os
+    from unittest import mock
+
+    # Скрипт на импорте НАВСЕГДА переставляет DB_PATH в окружении процесса (он
+    # рассчитан на запуск отдельным процессом), а тесты, перезагружающие store,
+    # читают переменную заново — и подхватили бы служебную базу снятия. Значение
+    # возвращается сразу после импорта: сам снимок работает на своей базе через
+    # подмену store.DB_PATH ниже.
+    db_path_before = os.environ.get("DB_PATH")
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import dump_api_fixtures as dump  # noqa: E402
+    if db_path_before is not None:
+        os.environ["DB_PATH"] = db_path_before
+
+    import engine
+
+    class _Later:
+        timezone = dt.timezone
+        datetime = dt.datetime
+
+        class date:
+            @staticmethod
+            def today():
+                return dt.date(2099, 1, 1)
+
+            @staticmethod
+            def fromisoformat(s):
+                return dt.date.fromisoformat(s)
+
+    import store
+
+    def snapshot(out: pathlib.Path, clock=None) -> None:
+        # Своя база на прогон: скрипт заводит старт настоящим store.add_site
+        # (иначе sites.json снова стал бы литералом), а второй заход в том же
+        # процессе упёрся бы в «старт уже есть».
+        with mock.patch.object(store, "DB_PATH", str(out) + ".db"):
+            if clock is None:
+                dump.main(out)
+            else:
+                with mock.patch.object(engine, "dt", clock):
+                    dump.main(out)
+
+    plain, later = tmp_path / "plain", tmp_path / "later"
+    snapshot(plain)
+    snapshot(later, _Later)
+
+    differing = sorted(p.name for p in plain.glob("*.json")
+                       if p.read_bytes() != (later / p.name).read_bytes())
+    assert not differing, (
+        "снимок зависит от календаря машины: " + ", ".join(differing))

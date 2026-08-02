@@ -106,6 +106,20 @@ def test_prompt_forbids_overriding_the_deterministic_score():
     assert "ОЦЕНКА" in text, "W* должен быть назван оценкой, а не измерением"
 
 
+def test_prompt_does_not_hardcode_the_refresh_hint():
+    """Оговорку «пересними за 1–2 суток» решает домен, а не промпт.
+
+    Она печаталась ВСЕГДА, потому что стояла в промпте текстом: пилот открывал
+    разбор на сегодня и читал совет переснять прогноз за сутки до вылета,
+    который уже наступил. Теперь строка приходит в caveats (engine.day_caveats)
+    и только когда срок позволяет — а промпт обязан её пересказывать, а не
+    держать свою копию, иначе модель напишет её и на сегодняшнем дне.
+    """
+    text = analysis._ANALYSIS
+    assert "пересними за 1–2 суток" not in text
+    assert "caveats" in text
+
+
 def test_prompt_forbids_risks_above_the_working_ceiling():
     """Без этого правила модель выносила ветер на 500 гПа (5–6 км) в риски дня."""
     text = analysis._REFERENCE

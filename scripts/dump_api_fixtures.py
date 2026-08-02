@@ -93,17 +93,27 @@ WEEK_DATES = [f"2026-07-{d:02d}" for d in range(25, 32)]
 FIXTURE_USER = webauth.TelegramUser(id=1)
 
 
+# День, которым «живёт» скрипт. Совпадает с fx.DATE — первым днём фикстурных
+# суток: так однодневные фикстуры снимаются «на сегодня», а недельные смотрят
+# вперёд, то есть ровно как их читает приложение.
+FIXTURE_TODAY = dt.date(2026, 7, 25)
+
+
 class _StoppedClock:
     """Пространство имён datetime с остановленными часами.
 
-    Подменяется в store только на время записи маршрута. Строку `saved`
-    по-прежнему собирает сам store._now (store.py:88-89 — isoformat в UTC с
-    точностью до секунды): заморожен ТОЛЬКО момент, формат остаётся доменным,
-    иначе он оказался бы записан здесь второй копией — ровно тем, из-за чего
-    приложение и приучилось к короткой дате вместо таймстампа. Замораживать
-    нужно потому, что routes.json иначе менялся бы на каждый прогон и
-    tests/test_api_fixtures_fresh.py краснел бы всегда, а не только когда
-    домен поменял форму ответа.
+    Подменяется в store на время записи маршрута и в engine на всё снятие.
+    Строку `saved` по-прежнему собирает сам store._now (store.py:88-89 —
+    isoformat в UTC с точностью до секунды): заморожен ТОЛЬКО момент, формат
+    остаётся доменным, иначе он оказался бы записан здесь второй копией — ровно
+    тем, из-за чего приложение и приучилось к короткой дате вместо таймстампа.
+
+    Замораживать нужно потому, что иначе фикстуры менялись бы на каждый прогон
+    и tests/test_api_fixtures_fresh.py краснел бы всегда, а не только когда
+    домен поменял форму ответа. У engine от часов зависит оговорка «пересними
+    за 1–2 суток» (engine._far_ahead): без заморозки facts_1d.json нёс бы её
+    ровно до 2026-07-23, а дальше молча перестал бы — и сторож фикстур
+    покраснел бы в случайный день, ничего про домен не сообщая.
     """
     timezone = dt.timezone
 
@@ -111,6 +121,15 @@ class _StoppedClock:
         @staticmethod
         def now(tz=None):
             return dt.datetime(2026, 7, 25, 6, 33, 49, tzinfo=tz)
+
+    class date:
+        @staticmethod
+        def today():
+            return FIXTURE_TODAY
+
+        @staticmethod
+        def fromisoformat(s):
+            return dt.date.fromisoformat(s)
 
 
 def _windy_day():
@@ -255,6 +274,15 @@ def _write(out: pathlib.Path, name: str, payload) -> None:
 
 
 def main(out: pathlib.Path = OUT) -> None:
+    # Часы домена стоят на всё снятие: engine._far_ahead смотрит на сегодняшнюю
+    # дату, и без этого содержимое фикстур зависело бы от дня прогона (см.
+    # _StoppedClock). Заворачивается ВЕСЬ main, а не отдельные вызовы: сканы и
+    # обзоры идут через forecast → engine теми же путями.
+    with mock.patch.object(engine, "dt", _StoppedClock):
+        _dump(out)
+
+
+def _dump(out: pathlib.Path) -> None:
     out.mkdir(parents=True, exist_ok=True)
     write = functools.partial(_write, out)
     day = fx.om_1day()
