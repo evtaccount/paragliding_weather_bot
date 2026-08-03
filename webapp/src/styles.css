@@ -210,6 +210,15 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 .sitegrp__h { display: flex; align-items: baseline; gap: 8px; padding: 0 2px 7px }
 .sitegrp__h b { font-size: 14px; font-weight: 660 }
 
+/* Упавший старт в «Все старты»: строка-кнопка, на месте которой после повтора
+   разворачивается обычная группа старта (.sitegrp__h + .days), — поэтому
+   обёртка задаёт только отступ, а не рамку. */
+.failed { margin-top: 8px }
+.retryrow { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 10px; text-align: left; background: var(--panel); border: 1px solid var(--rule); border-radius: var(--r); padding: 11px 12px; transition: background .15s }
+.retryrow:hover { background: var(--sunk) }
+.retryrow b { font-size: 13.5px; font-weight: 660; color: var(--ink) }
+.retryrow span { font-size: 11.5px; font-weight: 600; color: var(--air) }
+
 .attrib { font-size: 10.5px; color: var(--faint); text-align: center; padding: 2px 0 0 }
 
 /* ── экран «Маршрут»: карта, разрез с легендой, таблица точек, пары
