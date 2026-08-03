@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react"
+import { act, render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { beforeEach, expect, test, vi } from "vitest"
 import { StrictMode } from "react"
@@ -15,6 +15,10 @@ import scan from "../test/fixtures/scan.json"
 import sites from "../test/fixtures/sites.json"
 import prefs from "../test/fixtures/prefs.json"
 import routeResult from "../test/fixtures/route.json"
+
+function json(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } })
+}
 
 beforeEach(() => {
   const back = { show: vi.fn(), hide: vi.fn(), onClick: vi.fn(), offClick: vi.fn() }
@@ -96,7 +100,68 @@ test("шапка показывает понятный текст, а не ве�
   // одна его половина предлагала бы выбрать старт там, где выбирать нечего).
   const sheet = await screen.findByRole("dialog")
   expect(within(sheet).getByText("Нет стартов")).toBeInTheDocument()
-  expect(within(sheet).getByText(/Добавьте старт на вкладке/)).toBeInTheDocument()
+  // «Что делать дальше» — это вход в карту прямо здесь, а не отсылка на
+  // другую вкладку: старт заводится не сходя со шторки, в которой пилот его
+  // и не нашёл.
+  expect(within(sheet).getByRole("button", { name: /Отметить новый на карте/ })).toBeInTheDocument()
+})
+
+// Клик по карте ставит Leaflet своим слушателем, вне реактовой очереди —
+// без act() состояние шторки не доезжает до проверки (тот же приём, что в
+// sheets/forms.test.tsx).
+function tapMap(root: HTMLElement): void {
+  const mapEl = root.querySelector(".pgbot-map")
+  if (!mapEl) throw new Error("в шторке нет карты")
+  act(() => {
+    mapEl.dispatchEvent(new MouseEvent("click", { clientX: 10, clientY: 10, bubbles: true, cancelable: true }))
+  })
+}
+
+// Весь путь «нужного старта в списке нет» целиком, как его проходит пилот:
+// шапка → выбиралка → «Отметить новый на карте» → тап по карте → название →
+// «Добавить старт». Заведённый старт СРАЗУ становится выбранным, и обе
+// шторки закрываются: пилот открывал выбиралку, чтобы выбрать старт, и
+// возвращать его в список значило бы попросить выбрать дважды.
+//
+// Этот же тест — единственная охрана связки onTap={pickOnMap} в шторке
+// добавления: до задачи её удаление оставляло все 199 тестов зелёными.
+test("старт, отмеченный на карте из выбиралки, сразу становится выбранным", async () => {
+  const created = { ...sites[0]!, name: "Лалискури", lat: 42.51, lon: 42.32, elevation_m: 1874 }
+  // Библиотека пополняется ответом сервера: выбор в шапке действует, только
+  // пока старт есть в /api/sites (App.tsx: selectionAlive), и на застывшем
+  // пустом списке имя нового старта в шапке не удержалось бы.
+  const library: typeof sites = []
+  vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
+    const path = String(url).split("?")[0]
+    if (path === "/api/elevation") return Promise.resolve(json({ elevation_m: 1874 }))
+    if (path === "/api/sites" && init?.method === "POST") {
+      library.push(created)
+      return Promise.resolve(json(created, 201))
+    }
+    const body = path === "/api/sites" ? library : path === "/api/prefs" ? prefs : {}
+    return Promise.resolve(json(body))
+  })
+
+  render(<App />)
+  const header = screen.getByRole("banner")
+  await userEvent.click(await within(header).findByRole("button", { name: "Старт не выбран" }))
+  await userEvent.click(await screen.findByRole("button", { name: /Отметить новый на карте/ }))
+
+  // Верхняя шторка стека — та, что легла последней: у всех Sheet один и тот
+  // же aria-labelledby, поэтому по имени их не различить.
+  const addSheet = screen.getAllByRole("dialog").at(-1)!
+  tapMap(addSheet)
+  // Координаты подставил тап, высоту спросил сервер — пилот их не набирал.
+  expect(await within(addSheet).findByText("1874 м")).toBeInTheDocument()
+  expect(within(addSheet).getByLabelText(/Широта/)).not.toHaveValue("")
+
+  await userEvent.type(within(addSheet).getByLabelText(/Название/), "Лалискури")
+  await userEvent.click(within(addSheet).getByRole("button", { name: "Добавить старт" }))
+
+  // В шапке стоит имя нового старта — выбирать его отдельно не пришлось.
+  expect(await within(header).findByText("Лалискури")).toBeInTheDocument()
+  // И обе шторки закрыты: пилот вернулся к приложению, а не в список стартов.
+  await waitFor(() => { expect(screen.queryAllByRole("dialog")).toHaveLength(0) })
 })
 
 // Просьба владельца (бриф explicit-site-and-day): приложение открывалось

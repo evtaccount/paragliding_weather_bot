@@ -17,6 +17,7 @@ import { Forecast } from "./screens/Forecast"
 import { Overview } from "./screens/Overview"
 import { Route } from "./screens/Route"
 import { Settings } from "./screens/Settings"
+import { AddSiteSheet } from "./sheets/AddSiteSheet"
 import { DayPickerSheet } from "./sheets/DayPickerSheet"
 import { ModelPickerSheet } from "./sheets/ModelPickerSheet"
 import { SitePickerSheet } from "./sheets/SitePickerSheet"
@@ -329,7 +330,31 @@ function ShellContent() {
   // `site`: измениться, пока шторка открыта, он не может (все три места, где
   // он меняется, эту шторку закрывают или живут на другом экране).
   function openSitePicker(): void {
-    sheets.push(<SitePickerSheet selected={selectedSite} onPick={pickSite} />, "Старт")
+    sheets.push(
+      <SitePickerSheet selected={selectedSite} onPick={pickSite} onAddSite={openAddSiteFromPicker} />,
+      "Старт",
+    )
+  }
+
+  // Та же шторка, что и на экране настроек, поверх выбиралки: нужного старта
+  // в списке может не оказаться, и отметить его на карте пилот должен оттуда,
+  // где он его искал, а не с другой вкладки.
+  function openAddSiteFromPicker(): void {
+    sheets.push(<AddSiteSheet onCreated={pickNewSite} />, "Добавить старт")
+  }
+
+  // Заведённый из выбиралки старт сразу становится выбранным: пилот открыл
+  // выбиралку именно чтобы выбрать старт, и тот, который он только что
+  // отметил на карте, и есть его ответ — вернуть его в список значило бы
+  // попросить выбрать дважды.
+  //
+  // Два pop подряд корректны: pop обновляет стек функцией
+  // (setStack((prev) => prev.slice(0, -1))), поэтому оба применяются каждый к
+  // своему состоянию, а не к одному.
+  function pickNewSite(name: string): void {
+    setSelectedSite(name)
+    sheets.pop()
+    sheets.pop()
   }
 
   // Тот же приём, что и у выбиралки старта, по той же причине: через проп идёт
@@ -366,8 +391,8 @@ function ShellContent() {
             {/* Пока старт не выбран, кнопка так и написана — и ждать тут нечего,
                 поэтому спиннера на месте имени больше нет: выбор не выводится из
                 ответа /api/sites, он бывает только явным. Пустая библиотека
-                объясняется в самой шторке («Нет стартов. Добавьте старт на
-                вкладке „Настройки“») — она открывается и при пустом списке. */}
+                разбирается в самой шторке: она открывается и при пустом
+                списке, и там же предлагает отметить первый старт на карте. */}
             <span className="site__name">{site ?? "Старт не выбран"}</span>
           </button>
           <Chip live onClick={openModelPicker}>

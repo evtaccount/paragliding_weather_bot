@@ -336,7 +336,7 @@ test("маршрут без имён точек не теряет точки", a
 
 test("выбирается тот старт, по которому нажали", async () => {
   const onPick = vi.fn()
-  render(<SitePickerSheet selected="Гудаури" onPick={onPick} />, { wrapper })
+  render(<SitePickerSheet selected="Гудаури" onPick={onPick} onAddSite={vi.fn()} />, { wrapper })
 
   await userEvent.click(await screen.findByRole("button", { name: /Казбеги/ }))
 
@@ -345,7 +345,7 @@ test("выбирается тот старт, по которому нажали
 })
 
 test("в выбиралке старта отмечен текущий старт", async () => {
-  render(<SitePickerSheet selected="Лалискури" onPick={vi.fn()} />, { wrapper })
+  render(<SitePickerSheet selected="Лалискури" onPick={vi.fn()} onAddSite={vi.fn()} />, { wrapper })
 
   const active = await screen.findByRole("button", { name: /Лалискури/ })
   expect(active).toHaveAttribute("aria-pressed", "true")
@@ -367,7 +367,7 @@ test("румб в списке стартов один и тот же, кем б
     { ...SITE, name: "Гудаури", aspect: "Ю", aspect_deg: 180, elevation_m: 2200 },
   ]
   stubFetch((url) => (url === "/api/sites" ? json(mixed) : defaultReply(url)))
-  render(<SitePickerSheet selected="Гудаури" onPick={vi.fn()} />, { wrapper })
+  render(<SitePickerSheet selected="Гудаури" onPick={vi.fn()} onAddSite={vi.fn()} />, { wrapper })
 
   const imported = await screen.findByRole("button", { name: /Лалискури/ })
   expect(imported).toHaveTextContent("Ю 180° · 686 м")
@@ -382,7 +382,7 @@ test("румб в списке стартов один и тот же, кем б
 test("без градусов подписью старта становится авторская строка", async () => {
   const noDegrees = [{ ...SITE, name: "Лалискури", aspect: "S", aspect_deg: null, elevation_m: 686 }]
   stubFetch((url) => (url === "/api/sites" ? json(noDegrees) : defaultReply(url)))
-  render(<SitePickerSheet selected="Лалискури" onPick={vi.fn()} />, { wrapper })
+  render(<SitePickerSheet selected="Лалискури" onPick={vi.fn()} onAddSite={vi.fn()} />, { wrapper })
 
   expect(await screen.findByRole("button", { name: /Лалискури/ })).toHaveTextContent("S · 686 м")
 })
@@ -399,7 +399,7 @@ test("выбиралка старта, открытая до ответа сер
   })
   stubFetch(() => pending)
 
-  render(<SitePickerSheet selected={null} onPick={vi.fn()} />, { wrapper })
+  render(<SitePickerSheet selected={null} onPick={vi.fn()} onAddSite={vi.fn()} />, { wrapper })
   expect(screen.getByRole("status", { name: "Загрузка" })).toBeInTheDocument()
   expect(screen.queryByText("Нет стартов")).toBeNull()
 
@@ -412,6 +412,36 @@ test("выбиралка старта, открытая до ответа сер
   for (const name of ["Гудаури", "Лалискури", "Казбеги"]) {
     expect(screen.getByRole("button", { name: new RegExp(name) })).toHaveAttribute("aria-pressed", "false")
   }
+})
+
+// Нужного старта в списке может не оказаться, и раньше шторка на этом
+// кончалась тупиком («Добавьте старт на вкладке „Настройки“»). Вход в карту
+// стоит В ОБЕИХ ветках выбиралки — и когда старты есть, и когда библиотека
+// пуста: пилот открыл её, чтобы выбрать старт, и «нужного нет» одинаково
+// верно в обоих случаях.
+test("выбиралка старта предлагает отметить новый старт на карте", async () => {
+  const onAddSite = vi.fn()
+  render(<SitePickerSheet selected="Гудаури" onPick={vi.fn()} onAddSite={onAddSite} />, { wrapper })
+
+  await userEvent.click(await screen.findByRole("button", { name: /Отметить новый на карте/ }))
+
+  expect(onAddSite).toHaveBeenCalledTimes(1)
+})
+
+test("пустая библиотека предлагает ту же карту, а не другую вкладку", async () => {
+  stubFetch((url) => (url === "/api/sites" ? json([]) : defaultReply(url)))
+  const onAddSite = vi.fn()
+  render(<SitePickerSheet selected={null} onPick={vi.fn()} onAddSite={onAddSite} />, { wrapper })
+
+  // Заголовок пустой ветки остаётся дословным: по нему отличают «стартов
+  // нет» от «список ещё не пришёл» (тест про открытую до ответа сервера
+  // шторку выше).
+  expect(await screen.findByText("Нет стартов")).toBeInTheDocument()
+  expect(screen.queryByText(/на вкладке «Настройки»/)).toBeNull()
+
+  await userEvent.click(screen.getByRole("button", { name: /Отметить новый на карте/ }))
+
+  expect(onAddSite).toHaveBeenCalledTimes(1)
 })
 
 // ------------------------------------------------------------------ Выбор дня
