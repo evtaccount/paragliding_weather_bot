@@ -26,6 +26,7 @@ deploy/pgbot.service
 .superpowers/
 
 # webapp (Vite + React)
+node_modules
 webapp/node_modules
 webapp/dist
 # следы прогонов Playwright: снимки и трассы упавших сценариев (test-results,
