@@ -30,7 +30,10 @@ import { ErrorBox } from "../ui/ErrorBox"
 import { Spinner } from "../ui/Spinner"
 
 type Props = {
-  onCreated: () => void
+  // Имя заведённого старта — тому, кто открыл шторку: из выбиралки старт
+  // сразу становится выбранным (App.tsx: pickNewSite), экрану настроек имя
+  // не нужно, и лишний аргумент ему не мешает.
+  onCreated: (name: string) => void
 }
 
 // Пустой список стартов — константа модуля: MapView пересобирает маркеры при
@@ -116,7 +119,7 @@ export function AddSiteSheet({ onCreated }: Props) {
     try {
       const elevationM = knownElevation ?? (await elevationQuery.mutateAsync({ lat, lon })).elevation_m
       setElevation({ lat, lon, m: elevationM })
-      await create.mutateAsync({
+      const site = await create.mutateAsync({
         // Имя без краевых пробелов: api.create_site, в отличие от
         // api.save_route, его не подрезает — старт «Гудаури » стал бы
         // отдельным от «Гудаури» и не совпал бы с именем в кнопках чата.
@@ -131,7 +134,11 @@ export function AddSiteSheet({ onCreated }: Props) {
         aspect_deg: aspectDeg,
         notes,
       })
-      onCreated()
+      // Имя — из ОТВЕТА сервера (api.py:create_site отдаёт _public_site), а
+      // не из поля формы: под каким именем старт лёг в библиотеку, знает
+      // только store — он общий с чатом, и завязываться здесь на совпадение
+      // незачем, когда ответ уже в руках.
+      onCreated(site.name)
     } catch (e) {
       setError(e as ApiError)
     }
