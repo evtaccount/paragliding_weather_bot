@@ -12,6 +12,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { usePrefs, useSites } from "./api/queries"
 import type { RoutePointRow } from "./api/queries"
 import type { Prefs } from "./api/types"
+import { dayInWindow } from "./days"
 import { fmtDate } from "./format"
 import { Forecast } from "./screens/Forecast"
 import { Overview } from "./screens/Overview"
@@ -419,6 +420,13 @@ function ShellContent() {
     )
   }
 
+  // Соседние дни окна прогноза — null значит «шагать некуда»: день стоит на
+  // краю окна, или его в окне нет вовсе (приложение осталось открытым за
+  // полночь, и «сегодня» уже другое). Шеврон в этом случае не рисуется: за
+  // границей окна прогноза не существует, а не «кнопка не сработает».
+  const prevDay = date === null ? null : dayInWindow(date, -1)
+  const nextDay = date === null ? null : dayInWindow(date, 1)
+
   return (
     <div className="app">
       <header className="ctx">
@@ -441,13 +449,31 @@ function ShellContent() {
             {modelLabel(prefs.data, model) ?? <Spinner />}{onceModel !== null ? " · разово" : ""}
           </Chip>
         </div>
+        {/* Дата — чип, как и модель в строке выше: оба показывают, «в каком
+            состоянии сейчас приложение», и оба меняются нажатием. Раньше дата
+            была просто текстом посреди шапки, и то, что она вообще
+            нажимается, приходилось угадывать (просьба владельца).
+
+            По краям — шаг на соседний день: «а завтра?» самое частое движение
+            пилота, и открывать ради него список из четырнадцати строк незачем.
+            Шагают шевроны по тому же окну, которое показывает выбиралка
+            (days.ts: forecastDays) — своего счёта дней у шапки нет. */}
         <div className="ctx__date">
-          {/* Дата — такая же кнопка со шторкой, как имя старта рядом: это
-              второй из двух выборов, без которых прогноз не считается, и он
-              обязан быть доступен с любого экрана в один тап. */}
-          <button type="button" className="dateline" aria-haspopup="dialog" onClick={openDayPicker}>
+          {/* Слот под шеврон остаётся всегда, даже когда шагать некуда: иначе
+              на краях окна чип съезжал бы вбок. */}
+          <span className="daystep">
+            {prevDay !== null && (
+              <button type="button" aria-label="Предыдущий день" onClick={() => setDate(prevDay)}>‹</button>
+            )}
+          </span>
+          <Chip live onClick={openDayPicker}>
             {date === null ? "День не выбран" : fmtDate(date)}
-          </button>
+          </Chip>
+          <span className="daystep">
+            {nextDay !== null && (
+              <button type="button" aria-label="Следующий день" onClick={() => setDate(nextDay)}>›</button>
+            )}
+          </span>
         </div>
       </header>
 
