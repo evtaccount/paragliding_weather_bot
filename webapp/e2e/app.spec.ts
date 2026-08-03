@@ -60,10 +60,13 @@ test("приложение открывается и показывает вкл
   //
   // Само имя старта в шапке признаком этого больше не служит: пока пилот не
   // выбрал, там стоит «Старт не выбран» независимо от ответа сервера (бриф
-  // explicit-site-and-day) — поэтому список проверяется там, где он живёт.
-  await expect(page.locator(".ctx .chip--live")).toHaveText(/\S/)
+  // explicit-site-and-day), и оно даже не кнопка — выбор живёт на плашке
+  // посреди экрана. Поэтому список проверяется там, где он живёт.
+  // Именно чип ВЕРХНЕЙ строки: с тех пор как дата тоже стала чипом, ".ctx
+  // .chip--live" ловит два элемента и падает на строгости локатора.
+  await expect(page.locator(".ctx__top .chip--live")).toHaveText(/\S/)
 
-  await page.getByRole("button", { name: "Старт не выбран" }).click()
+  await page.getByRole("button", { name: /Выберите старт/ }).click()
   const sheet = page.getByRole("dialog")
   await expect(sheet.getByText("Нет стартов")).toHaveCount(0)
   await expect(sheet.locator(".pick button").first()).toHaveText(/\S/)
@@ -73,12 +76,13 @@ test("приложение открывается и показывает вкл
 // Приложение ничего не выбирает за пилота: пока старт и день не названы,
 // «Прогноз» показывает, чего не хватает, и в сеть не ходит вовсе (бриф
 // explicit-site-and-day). Сценарии, которым нужен посчитанный прогноз,
-// проходят тот же путь, что и пилот: две кнопки в шапке, две шторки.
+// проходят тот же путь, что и пилот: плашка недостающего выбора → шторка
+// старта, затем чип даты в шапке → шторка дня.
 //
 // Старт берётся первый из живой библиотеки (какой именно — сценарию всё
 // равно, данные настоящие), день — сегодняшний: он всегда есть в списке.
 async function chooseSiteAndToday(page: import("@playwright/test").Page) {
-  await page.getByRole("button", { name: "Старт не выбран" }).click()
+  await page.getByRole("button", { name: /Выберите старт/ }).click()
   await page.getByRole("dialog").locator(".pick button").first().click()
 
   await page.getByRole("button", { name: "День не выбран" }).click()

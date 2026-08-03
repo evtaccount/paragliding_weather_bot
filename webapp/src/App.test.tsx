@@ -91,12 +91,12 @@ test("шапка показывает понятный текст, а не ве�
   // документ: без сужения тест был бы зелёным и на старой ошибке (спиннер в
   // шапке навсегда), просто найдя надпись соседнего экрана.
   const header = screen.getByRole("banner")
-  expect(within(header).getByRole("button", { name: "Старт не выбран" })).toBeInTheDocument()
+  expect(within(header).getByText("Старт не выбран")).toBeInTheDocument()
 
   // Про ПУСТУЮ библиотеку (а не просто «выбора не было») говорит сама шторка,
-  // куда ведёт эта кнопка, — и говорит, что делать дальше. Шапке второй такой
+  // куда ведёт плашка, — и говорит, что делать дальше. Шапке второй такой
   // подписи не нужно: выбор старта живёт в шторке, туда пилот и идёт.
-  await userEvent.click(within(header).getByRole("button", { name: "Старт не выбран" }))
+  await userEvent.click(screen.getByRole("button", { name: /Выберите старт/ }))
   // Ищем ВНУТРИ шторки: «Нет стартов» теперь говорит и «Обзор» — он
   // смонтирован всегда и на пустой библиотеке показывает то же самое (иначе
   // одна его половина предлагала бы выбрать старт там, где выбирать нечего).
@@ -146,7 +146,9 @@ test("старт, отмеченный на карте из выбиралки, 
 
   render(<App />)
   const header = screen.getByRole("banner")
-  await userEvent.click(await within(header).findByRole("button", { name: "Старт не выбран" }))
+  // Выбиралка открывается с плашки на экране: в шапке, пока старт не выбран,
+  // стоит заголовок, а не кнопка (см. тест про плашку ниже).
+  await userEvent.click(await screen.findByRole("button", { name: /Выберите старт/ }))
   await userEvent.click(await screen.findByRole("button", { name: /Отметить новый на карте/ }))
 
   // Верхняя шторка стека — та, что легла последней: у всех Sheet один и тот
@@ -192,7 +194,9 @@ test("ответ на отменённое добавление старта н�
 
   render(<App />)
   const header = screen.getByRole("banner")
-  await userEvent.click(await within(header).findByRole("button", { name: "Старт не выбран" }))
+  // Выбиралка открывается с плашки на экране: в шапке, пока старт не выбран,
+  // стоит заголовок, а не кнопка (см. тест про плашку ниже).
+  await userEvent.click(await screen.findByRole("button", { name: /Выберите старт/ }))
   await userEvent.click(await screen.findByRole("button", { name: /Отметить новый на карте/ }))
   const addSheet = screen.getAllByRole("dialog").at(-1)!
   tapMap(addSheet)
@@ -246,7 +250,9 @@ test("заведённый старт остаётся выбранным, да�
 
   render(<App />)
   const header = screen.getByRole("banner")
-  await userEvent.click(await within(header).findByRole("button", { name: "Старт не выбран" }))
+  // Выбиралка открывается с плашки на экране: в шапке, пока старт не выбран,
+  // стоит заголовок, а не кнопка (см. тест про плашку ниже).
+  await userEvent.click(await screen.findByRole("button", { name: /Выберите старт/ }))
   await userEvent.click(await screen.findByRole("button", { name: /Отметить новый на карте/ }))
   const addSheet = screen.getAllByRole("dialog").at(-1)!
   tapMap(addSheet)
@@ -932,3 +938,39 @@ function dayForecastDates(fetchMock: { mock: { calls: unknown[][] } }): (string 
     .filter((u) => u.pathname === "/api/forecast" && u.searchParams.get("range") === "1d")
     .map((u) => u.searchParams.get("date"))
 }
+
+// ───────────────────────── выбор старта — с плашки, а не из шапки
+//
+// Просьба владельца: «Старт не выбран» в шапке — это заголовок, и то, что он
+// вдобавок нажимается, приходилось угадывать. Выбор живёт там, куда пилот
+// смотрит: на плашке посреди экрана. Имя УЖЕ выбранного старта кнопкой
+// остаётся — плашки в этом состоянии нет, и сменить старт было бы негде.
+
+test("пока старт не выбран, шапка его не выбирает — это делает плашка", async () => {
+  render(<App />)
+  const header = screen.getByRole("banner")
+
+  expect(within(header).getByText("Старт не выбран")).toBeInTheDocument()
+  expect(within(header).queryByRole("button", { name: "Старт не выбран" })).toBeNull()
+
+  await userEvent.click(screen.getByRole("button", { name: /Выберите старт/ }))
+
+  // Открылась именно выбиралка старта: на пустой библиотеке она говорит это
+  // сама и предлагает отметить первый старт на карте.
+  const sheet = await screen.findByRole("dialog")
+  expect(within(sheet).getByText("Нет стартов")).toBeInTheDocument()
+})
+
+test("выбранный старт остаётся сменяемым из шапки", async () => {
+  vi.stubGlobal("fetch", (url: string) => {
+    const path = String(url).split("?")[0]
+    return Promise.resolve(json(path === "/api/sites" ? sites : path === "/api/prefs" ? prefs : facts))
+  })
+  render(<App />)
+  await pickSite("Гудаури")
+
+  const header = screen.getByRole("banner")
+  await userEvent.click(within(header).getByRole("button", { name: "Гудаури" }))
+
+  expect(await screen.findByRole("dialog")).toBeInTheDocument()
+})

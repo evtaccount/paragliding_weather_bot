@@ -60,6 +60,9 @@ type OverviewProps = {
   // экрана), показан по определению.
   active?: boolean
   onOpenDay: (site: string, date: string) => void
+  // Открыть выбиралку старта — та же оболочкина шторка, что и у «Прогноза»
+  // (App.tsx: openSitePicker). Экран зовёт её с плашки недостающего выбора.
+  onOpenSitePicker: () => void
 }
 
 type RangeKey = Exclude<ForecastRange, "1d">
@@ -177,7 +180,7 @@ function NoSites() {
 // экран называет недостающее и в сеть не ходит — та же просьба владельца, по
 // которой не считается «Прогноз» (бриф explicit-site-and-day). Спиннер здесь
 // не годится: ждать нечего, оба выбора бывают только явными.
-function NeedsChoice({ site, range, library }: {
+function NeedsChoice({ site, range, library, onOpenSitePicker }: {
   site: string | null
   range: RangeKey | null
   // Список стартов, если он уже приехал. Пустая библиотека — не «выбор не
@@ -186,20 +189,32 @@ function NeedsChoice({ site, range, library }: {
   // вторая («Все старты») на том же экране честно говорила «Нет стартов»
   // (ревью ветки explicit-site-and-day, M1).
   library: Site[] | undefined
+  onOpenSitePicker: () => void
 }) {
   if (library !== undefined && library.length === 0) {
     return <NoSites />
   }
-  const noSite = site === null
-  const noRange = range === null
+  // Недостающий старт плашка выбирает сама — то же правило, что на «Прогнозе»
+  // (просьба владельца). Период при этом упомянут, но не выбран: он ждёт
+  // своего ряда кнопок, а шторки у него нет вовсе.
+  if (site === null) {
+    return (
+      <button type="button" className="empty empty--pick" aria-haspopup="dialog" onClick={onOpenSitePicker}>
+        <b>{range === null ? "Выберите старт и период" : "Выберите старт"}</b>
+        {range === null ? "Нажмите, чтобы выбрать старт — период выбирается кнопками выше."
+          : "Нажмите, чтобы выбрать старт."}
+      </button>
+    )
+  }
+  // Единственная плашка выбора, которая кнопкой не становится: период
+  // выбирается сегментами прямо над ней, и шторки у него нет — GET /api/scan
+  // диапазона не принимает вовсе, а три срока /api/forecast это ряд кнопок, а
+  // не список. Кнопка здесь либо вела бы в никуда, либо повторяла бы соседний
+  // ряд вторым способом сделать одно и то же.
   return (
     <div className="empty">
-      <b>{noSite && noRange ? "Выберите старт и период" : noSite ? "Выберите старт" : "Выберите период"}</b>
-      {/* Куда нажимать: старт — общий для всех экранов и живёт в шапке,
-          период — только у этого экрана и стоит прямо над списком. */}
-      {noSite && noRange ? "Старт выбирается кнопкой в шапке, период — кнопками выше."
-        : noSite ? "Старт выбирается кнопкой в шапке."
-        : "Период выбирается кнопками выше."}
+      <b>Выберите период</b>
+      Период выбирается кнопками выше.
     </div>
   )
 }
@@ -508,7 +523,7 @@ function ScanView({ model, active, onOpenDay }: {
   )
 }
 
-export function Overview({ site, model, active = true, onOpenDay }: OverviewProps) {
+export function Overview({ site, model, active = true, onOpenDay, onOpenSitePicker }: OverviewProps) {
   // Ни период, ни режим не предвыбраны: экран открывается, ничего не считая,
   // и ждёт, пока пилот скажет, что смотреть (бриф explicit-site-and-day).
   const [range, setRange] = useState<RangeKey | null>(null)
@@ -552,7 +567,7 @@ export function Overview({ site, model, active = true, onOpenDay }: OverviewProp
       {allSites
         ? <ScanView model={model} active={active} onOpenDay={onOpenDay} />
         : site === null || range === null
-          ? <NeedsChoice site={site} range={range} library={sites.data} />
+          ? <NeedsChoice site={site} range={range} library={sites.data} onOpenSitePicker={onOpenSitePicker} />
           : <RangeView site={site} range={range} model={model} active={active} onOpenDay={onOpenDay} />}
     </>
   )

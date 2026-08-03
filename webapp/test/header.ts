@@ -12,11 +12,18 @@ import userEvent from "@testing-library/user-event"
 import { fmtDate } from "../src/format"
 import { isoInDays } from "./days"
 
+// Старт выбирается с ПЛАШКИ на экране, а не из шапки: пока выбора нет, в шапке
+// стоит заголовок «Старт не выбран», и он больше не нажимается (просьба
+// владельца — выбор живёт там, куда пилот смотрит). Регулярное выражение
+// покрывает обе надписи плашки: «Выберите старт» и «Выберите старт и день».
+//
+// Поиск по всему документу, а не внутри одного экрана: плашка стоит на том,
+// который открыт, а открыт при запуске «Прогноз». Скрытые вкладки в поиск не
+// попадают — у них атрибут hidden, и getByRole их не видит.
 export async function pickSite(name: string): Promise<void> {
-  const header = screen.getByRole("banner")
+  await userEvent.click(await screen.findByRole("button", { name: /Выберите старт/ }))
   // findBy, а не getBy: до ответа /api/sites в шторке крутится индикатор, и
   // строки старта в ней ещё нет.
-  await userEvent.click(await within(header).findByRole("button", { name: "Старт не выбран" }))
   await userEvent.click(await screen.findByRole("button", { name: new RegExp(name) }))
 }
 

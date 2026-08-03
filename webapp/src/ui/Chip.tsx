@@ -10,13 +10,18 @@ type ChipProps = {
   children: ReactNode
   live?: boolean
   onClick?: () => void
+  // Открывает ли нажатие шторку. Чипы бывают и без неё (время вылета на
+  // «Маршруте» просто переключает выбор), поэтому это отдельный признак, а не
+  // следствие onClick: обещать диалог там, где его нет, — та же неправда, что
+  // и промолчать о нём там, где он есть.
+  opensSheet?: boolean
 }
 
-export function Chip({ children, live, onClick }: ChipProps) {
+export function Chip({ children, live, onClick, opensSheet }: ChipProps) {
   const className = live ? "chip chip--live" : "chip"
   if (onClick) {
     return (
-      <button type="button" className={className} onClick={onClick}>
+      <button type="button" className={className} aria-haspopup={opensSheet ? "dialog" : undefined} onClick={onClick}>
         {children}
       </button>
     )

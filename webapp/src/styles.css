@@ -137,6 +137,11 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 .empty b { display: block; color: var(--ink); font-size: 13.5px; margin-bottom: 3px }
 .empty button { margin-top: 8px; padding: 7px 12px; border: 1px solid var(--rule); border-radius: 8px; color: var(--ink); font-weight: 600 }
 .empty button:hover { border-color: var(--air) }
+/* Плашка недостающего выбора — сама кнопка: старт и день выбираются с неё, а
+   не отсылкой к шапке. Рамка остаётся пунктирной (это по-прежнему «здесь
+   пусто»), но вся плашка нажимается и подсвечивается. */
+.empty--pick { display: block; width: 100%; text-align: left }
+.empty--pick:hover { border-color: var(--air) }
 
 /* ── экран вне Telegram — своего в макете нет: прототип не открывается
    вне Telegram по определению (это его демонстрационная HTML-страница) */
