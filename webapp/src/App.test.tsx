@@ -164,6 +164,103 @@ test("старт, отмеченный на карте из выбиралки, 
   await waitFor(() => { expect(screen.queryAllByRole("dialog")).toHaveLength(0) })
 })
 
+// Ревью ветки (Important, воспроизведено): кнопка «Добавить старт» на время
+// запроса заперта (AddSiteSheet: busy), но Escape, кнопка «назад» Telegram и
+// тап по затемнению — нет, и шторки под ответом сервера может уже не быть.
+// Ответ, пришедший после отмены, ставил свой старт поверх выбранного руками и
+// снимал со стека ДВЕ шторки — те, которые пилот открыл уже после отмены.
+// Проверяется на настоящем дереве: и подмена выбора, и снятие чужой шторки
+// видны только там, где есть и шапка, и стек.
+test("ответ на отменённое добавление старта не перебивает выбор пилота и не закрывает чужие шторки", async () => {
+  const created = { ...sites[0]!, name: "Лалискури", lat: 42.51, lon: 42.32, elevation_m: 1874 }
+  // Ответ на POST придёт по команде теста — ровно в тот момент, когда шторки,
+  // отправившей запрос, уже нет.
+  let finishCreate = (): void => {}
+  let createAsked = false
+  vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
+    const path = String(url).split("?")[0]
+    if (path === "/api/elevation") return Promise.resolve(json({ elevation_m: 1874 }))
+    if (path === "/api/sites" && init?.method === "POST") {
+      createAsked = true
+      return new Promise<Response>((resolve) => { finishCreate = () => { resolve(json(created, 201)) } })
+    }
+    const body = path === "/api/sites" ? sites : path === "/api/prefs" ? prefs : {}
+    return Promise.resolve(json(body))
+  })
+
+  render(<App />)
+  const header = screen.getByRole("banner")
+  await userEvent.click(await within(header).findByRole("button", { name: "Старт не выбран" }))
+  await userEvent.click(await screen.findByRole("button", { name: /Отметить новый на карте/ }))
+  const addSheet = screen.getAllByRole("dialog").at(-1)!
+  tapMap(addSheet)
+  await within(addSheet).findByText("1874 м")
+  await userEvent.type(within(addSheet).getByLabelText(/Название/), "Лалискури")
+  await userEvent.click(within(addSheet).getByRole("button", { name: "Добавить старт" }))
+  expect(createAsked).toBe(true)
+
+  // Пилот передумал ждать: Escape снимает шторку добавления, а в выбиралке под
+  // ней он выбирает старт руками — этот выбор и есть его последнее слово.
+  await userEvent.keyboard("{Escape}")
+  await userEvent.click(await screen.findByRole("button", { name: /Гудаури/ }))
+  expect(within(header).getByText("Гудаури")).toBeInTheDocument()
+  // И открывает выбор дня — чужую шторку, до которой позднему ответу дела нет.
+  await userEvent.click(within(header).getByRole("button", { name: "День не выбран" }))
+  expect(screen.getAllByRole("dialog")).toHaveLength(1)
+
+  await act(async () => {
+    finishCreate()
+    await new Promise((resolve) => { setTimeout(resolve, 20) })
+  })
+
+  expect(within(header).getByText("Гудаури")).toBeInTheDocument()
+  expect(screen.getAllByRole("dialog")).toHaveLength(1)
+})
+
+// Ревью ветки (Important, воспроизведено): «заведённый старт сразу становится
+// выбранным» держалось на перезапросе /api/sites — выбор действует, только
+// пока имя есть в загруженном списке (App.tsx: selectionAlive), а список
+// перезапрашивался уже после ответа POST. Пока перезапрос летел, шапка писала
+// «Старт не выбран»; при отказе перезапроса (useSites: retry: false) выбор не
+// появлялся вовсе, и объяснить это было негде — обе шторки уже закрыты.
+// Отказ здесь — не экзотика, а самый жёсткий способ поймать зависимость от
+// перезапроса: подделки остальных тестов отвечают мгновенно и успешно.
+test("заведённый старт остаётся выбранным, даже если перезапрос списка отказал", async () => {
+  const created = { ...sites[0]!, name: "Лалискури", lat: 42.51, lon: 42.32, elevation_m: 1874 }
+  let listAsked = 0
+  vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
+    const path = String(url).split("?")[0]
+    if (path === "/api/elevation") return Promise.resolve(json({ elevation_m: 1874 }))
+    if (path === "/api/sites" && init?.method === "POST") return Promise.resolve(json(created, 201))
+    if (path === "/api/sites") {
+      listAsked += 1
+      // Библиотека пуста, а перезапрос после заведения отказывает: связь могла
+      // отвалиться ровно в эту секунду, и старт от этого не перестал быть
+      // заведённым — сервер ответил на POST 201.
+      return Promise.resolve(listAsked === 1 ? json([]) : json({ detail: "нет связи" }, 500))
+    }
+    return Promise.resolve(json(path === "/api/prefs" ? prefs : {}))
+  })
+
+  render(<App />)
+  const header = screen.getByRole("banner")
+  await userEvent.click(await within(header).findByRole("button", { name: "Старт не выбран" }))
+  await userEvent.click(await screen.findByRole("button", { name: /Отметить новый на карте/ }))
+  const addSheet = screen.getAllByRole("dialog").at(-1)!
+  tapMap(addSheet)
+  await within(addSheet).findByText("1874 м")
+  await userEvent.type(within(addSheet).getByLabelText(/Название/), "Лалискури")
+  await userEvent.click(within(addSheet).getByRole("button", { name: "Добавить старт" }))
+
+  expect(await within(header).findByText("Лалискури")).toBeInTheDocument()
+  // Перезапрос ушёл и отказал — а имя в шапке от этого не пропало.
+  await waitFor(() => { expect(listAsked).toBeGreaterThan(1) })
+  await new Promise((resolve) => { setTimeout(resolve, 30) })
+  expect(within(header).getByText("Лалискури")).toBeInTheDocument()
+  // И экран считает старт выбранным по-настоящему: не хватает только дня.
+  expect(screen.getByText("Выберите день")).toBeInTheDocument()
+})
+
 // Просьба владельца (бриф explicit-site-and-day): приложение открывалось
 // готовым прогнозом какого-то старта на сегодня — старт брался первым из
 // /api/sites, день подставлялся сам. Теперь ни один тяжёлый запрос не уходит,

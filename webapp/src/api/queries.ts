@@ -125,7 +125,25 @@ export function useCreateSite(): UseMutationResult<Site, ApiError, SiteInput> {
   return useMutation({
     mutationFn: (site: SiteInput) => apiSend<Site>("POST", "/api/sites", site),
     retry: false,
-    onSuccess: (_data, site) => { invalidateSite(client, site.name) },
+    onSuccess: (created, site) => {
+      // Заведённый старт кладётся в список СРАЗУ, ответом POST, и только потом
+      // список перезапрашивается. Ждать перезапроса нельзя: тот, кто завёл
+      // старт из выбиралки, тут же его и выбирает (App.tsx: pickNewSite), а
+      // выбор действует, только пока имя есть в ЗАГРУЖЕННОМ списке (App.tsx:
+      // selectionAlive). Пока перезапрос летит, шапка писала «Старт не
+      // выбран», а «Прогноз» — «Выберите старт и день», хотя пилот только что
+      // назвал старт; а отказавший перезапрос (useSites: retry: false)
+      // оставлял его невыбранным навсегда и молча — обе шторки к тому моменту
+      // закрыты, объяснить это уже негде.
+      //
+      // Тело ответа — тот же _public_site, что отдаёт и /api/sites
+      // (api.py:create_site), поэтому список остаётся однородным. Порядок
+      // здесь свой (в конец), а у сервера — по имени (store.load_sites:
+      // ORDER BY name); поправит его перезапрос — этот список ему не замена,
+      // а мост до его ответа.
+      client.setQueryData<Site[]>(["sites"], (prev) => (prev === undefined ? undefined : [...prev, created]))
+      invalidateSite(client, site.name)
+    },
   })
 }
 

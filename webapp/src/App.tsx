@@ -34,8 +34,14 @@ import { Spinner } from "./ui/Spinner"
 type SheetEntry = { id: number; title: string; node: ReactNode }
 
 type Sheets = {
-  push: (node: ReactNode, title: string) => void
+  // Возвращает номер положенной шторки: он нужен её же содержимому, чтобы
+  // спросить isTop прежде, чем что-то менять по ответу сервера (pickNewSite).
+  push: (node: ReactNode, title: string) => number
   pop: () => void
+  // «Эта шторка сейчас верхняя?» — вопрос колбэка, который лежит в стеке
+  // вместе со своей шторкой и потому судить о стеке сам не может (см.
+  // stackRef ниже).
+  isTop: (id: number) => boolean
   stack: SheetEntry[]
 }
 
@@ -50,17 +56,31 @@ export function useSheetsContext(): Sheets {
 function useSheets(): Sheets {
   const [stack, setStack] = useState<SheetEntry[]>([])
   const nextId = useRef(0)
+  // Тот же стек в ref — не копия «на всякий случай», а единственный способ
+  // ответить «моя шторка ещё верхняя?» тому, кто спрашивает по ответу сервера.
+  // Колбэки шторки застывают вместе с ней: sheets.push кладёт в стек готовый
+  // элемент, и его пропы остаются от того рендера, в котором шторку открыли
+  // (см. комментарий у openSitePicker) — вместе с `stack` того рендера.
+  // Обновляется ЗДЕСЬ ЖЕ, рядом с setStack, а не эффектом: ответ сервера
+  // может прийти раньше, чем React прогонит отложенные эффекты, и зеркало
+  // отстало бы ровно в тот момент, ради которого заведено.
+  const stackRef = useRef<SheetEntry[]>(stack)
 
   const push = useCallback((node: ReactNode, title: string) => {
     nextId.current += 1
-    setStack((prev) => [...prev, { id: nextId.current, title, node }])
+    stackRef.current = [...stackRef.current, { id: nextId.current, title, node }]
+    setStack(stackRef.current)
+    return nextId.current
   }, [])
 
   const pop = useCallback(() => {
-    setStack((prev) => prev.slice(0, -1))
+    stackRef.current = stackRef.current.slice(0, -1)
+    setStack(stackRef.current)
   }, [])
 
-  return { push, pop, stack }
+  const isTop = useCallback((id: number) => stackRef.current.at(-1)?.id === id, [])
+
+  return { push, pop, isTop, stack }
 }
 
 // Провайдер стека шторок, отдельный от Shell: экранным тестам (например
@@ -340,7 +360,15 @@ function ShellContent() {
   // в списке может не оказаться, и отметить его на карте пилот должен оттуда,
   // где он его искал, а не с другой вкладки.
   function openAddSiteFromPicker(): void {
-    sheets.push(<AddSiteSheet onCreated={pickNewSite} />, "Добавить старт")
+    // Номер шторки нужен её собственному колбэку: ответ на POST /api/sites
+    // приходит когда угодно, и pickNewSite обязан убедиться, что отвечают
+    // именно ей. Ссылка на addSheetId изнутри стрелки, объявленной до
+    // присваивания, законна: стрелку зовут только по ответу сервера, к тому
+    // времени push давно вернул номер.
+    const addSheetId = sheets.push(
+      <AddSiteSheet onCreated={(name) => pickNewSite(name, addSheetId)} />,
+      "Добавить старт",
+    )
   }
 
   // Заведённый из выбиралки старт сразу становится выбранным: пилот открыл
@@ -348,10 +376,21 @@ function ShellContent() {
   // отметил на карте, и есть его ответ — вернуть его в список значило бы
   // попросить выбрать дважды.
   //
-  // Два pop подряд корректны: pop обновляет стек функцией
-  // (setStack((prev) => prev.slice(0, -1))), поэтому оба применяются каждый к
-  // своему состоянию, а не к одному.
-  function pickNewSite(name: string): void {
+  // Но только если ответ пришёл ТОЙ ЖЕ шторке, которая его ждала. Кнопка
+  // «Добавить старт» на время запроса заперта (AddSiteSheet: busy), а вот
+  // Escape, кнопка «назад» Telegram и тап по затемнению — нет: пилот волен
+  // закрыть шторку, не дожидаясь ответа. Без проверки поздний ответ на
+  // отменённое создание перебивал старт, выбранный руками после отмены, и
+  // снимал со стека две ЧУЖИЕ шторки — например, только что открытый выбор
+  // дня. Сам старт при этом не пропадает: он уже в библиотеке и виден в
+  // выбиралке (useCreateSite кладёт его в кэш ["sites"]).
+  //
+  // Два pop снимают шторку добавления и выбиралку под ней — ровно те, что
+  // проверены isTop: выше шторки добавления в стеке не бывает ничего (сама
+  // она ничего не открывает), а под ней всегда выбиралка, из которой её и
+  // открыли.
+  function pickNewSite(name: string, addSheetId: number): void {
+    if (!sheets.isTop(addSheetId)) return
     setSelectedSite(name)
     sheets.pop()
     sheets.pop()
