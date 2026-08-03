@@ -123,6 +123,41 @@ function scanRowLine(row: OverviewRow): string {
   return `до ${fmtNum(row.wmax, 1)} порыв ${fmtNum(row.gmax, 1)} · ${compass(row.dom)} · ${reason}${precipTail(row.precip)}`
 }
 
+// Кнопка дня в форме ForecastOverview.days_daytime — общая для диапазонных
+// вкладок и для старта, перезапрошенного вручную из списка «Не удалось
+// получить»: ответ там и там один и тот же (GET /api/forecast), и строка дня
+// должна читаться одинаково.
+//
+// `showFlyTag` — подпись «лётно / не лётно» под баллом. Она уместна только на
+// диапазонных вкладках: там в списке лежат ВСЕ дни диапазона, и лётность
+// каждого — то, что пилот ищет глазами. В группе перезапрошенного старта
+// нелётных дней нет по построению (см. отбор в FailedSite ниже), и подпись под
+// каждым баллом ничего не сообщала бы — как её нет и у групп скана, где дни
+// отобраны тем же правилом.
+function OverviewDayButton({ site, day, showFlyTag, onOpenDay }: {
+  site: string
+  day: OverviewDay
+  showFlyTag: boolean
+  onOpenDay: (site: string, date: string) => void
+}) {
+  return (
+    <button type="button" className="day" onClick={() => onOpenDay(site, day.date)}>
+      <div className="day__d">{fmtDate(day.date)}</div>
+      <div className="day__m">
+        <div
+          className="day__bar"
+          style={{ background: colorOfCategory(day.assessment.category), width: `${Math.max(6, day.assessment.score ?? 0)}%` }}
+        />
+        <div className="day__f">{overviewDayLine(day)}</div>
+      </div>
+      <div className="day__s" style={{ color: colorOfCategory(day.assessment.category) }}>
+        {day.assessment.score ?? "—"}
+        {showFlyTag && <small>{flyTag(day.assessment.flyable)}</small>}
+      </div>
+    </button>
+  )
+}
+
 function bestOverviewDay(days: OverviewDay[]): OverviewDay {
   return days.reduce((best, day) => (
     (day.assessment.score ?? -Infinity) > (best.assessment.score ?? -Infinity) ? day : best
@@ -234,24 +269,114 @@ function RangeView({ site, range, model, active, onOpenDay }: {
 
       <div className="days" role="group" aria-label="Дни диапазона">
         {days.map((day) => (
-          <button key={day.date} type="button" className="day" onClick={() => onOpenDay(site, day.date)}>
-            <div className="day__d">{fmtDate(day.date)}</div>
-            <div className="day__m">
-              <div
-                className="day__bar"
-                style={{ background: colorOfCategory(day.assessment.category), width: `${Math.max(6, day.assessment.score ?? 0)}%` }}
-              />
-              <div className="day__f">{overviewDayLine(day)}</div>
-            </div>
-            <div className="day__s" style={{ color: colorOfCategory(day.assessment.category) }}>
-              {day.assessment.score ?? "—"}
-              <small>{flyTag(day.assessment.flyable)}</small>
-            </div>
-          </button>
+          <OverviewDayButton key={day.date} site={site} day={day} showFlyTag onOpenDay={onOpenDay} />
         ))}
       </div>
       <div className="attrib">Тап по дню открывает подробный прогноз — экран перерисуется, ничего не добавится в историю</div>
     </>
+  )
+}
+
+// Одна строка списка «Не удалось получить»: старт, чей недельный запрос упал
+// (forecast.py:92-96). Тап повторяет ЕГО запрос — тот самый, который скан и не
+// смог сделать: forecast.scan_week берёт недельные данные каждого старта по
+// ключу кэша (name, "week", None, model) (forecast.py:86), и по этому же ключу
+// ходит GET /api/forecast?site=X&range=week. Другой диапазон грел бы другую
+// запись и повтором того запроса не был бы.
+//
+// Перезапроса всего скана после успеха нет намеренно: данные, которых не
+// хватало, уже получены, а /api/scan занял бы единственный тяжёлый слот пилота
+// (api.py:one_at_a_time) обходом ВСЕЙ библиотеки ради того же ответа.
+//
+// Запрос живёт в отдельном компоненте на строку, потому что живёт он в хуке, а
+// хук нельзя звать в цикле по списку, длина которого приходит с сервера.
+//
+// Имя старта берётся из пропа (то есть из Scan.failed), а не из ответа
+// (overview.site.name): именем старта приложение его и опознаёт — по нему
+// ходят /api/forecast, удаление и ключи кэша (см. invalidateSite в
+// api/queries.ts), — и в колбэк дня должно уйти то же имя, которое пилот видел
+// в списке.
+function FailedSite({ name, model, onOpenDay }: {
+  name: string
+  model: string | null
+  onOpenDay: (site: string, date: string) => void
+}) {
+  // Пока false, useForecast в сеть не идёт вовсе: повтор — явное действие
+  // пилота, а не то, что экран делает за него. Иначе открытая вкладка сама
+  // отправляла бы столько тяжёлых запросов, сколько стартов упало, — а упали
+  // они, как правило, все разом и по одной причине.
+  const [retrying, setRetrying] = useState(false)
+  const forecast = useForecast(name, "week", null, model, retrying)
+
+  if (!retrying) {
+    return (
+      <div className="failed">
+        <button type="button" className="retryrow" onClick={() => { setRetrying(true) }}>
+          <b>{name}</b>
+          <span>Повторить</span>
+        </button>
+      </div>
+    )
+  }
+  if (forecast.isPending) {
+    return (
+      <div className="failed">
+        <div className="sitegrp__h"><b>{name}</b><span className="lbl">повторяем запрос</span></div>
+        <Spinner />
+      </div>
+    )
+  }
+  if (forecast.isError) {
+    return (
+      <div className="failed">
+        {/* Имя старта стоит и над отказом: упавших стартов бывает несколько
+            (снимок пилота: четыре в одной строке), а рамка отказа сама по себе
+            не говорит, чей повтор не прошёл. */}
+        <div className="sitegrp__h"><b>{name}</b></div>
+        <ErrorBox error={forecast.error} onRetry={() => { void forecast.refetch() }} />
+      </div>
+    )
+  }
+
+  const overview = forecast.data
+  // Лётные дни отбираются готовым ответом сервера (assessment.flyable —
+  // criteria.flyable, engine.assessment_facts) — той же функцией, которой
+  // домен отбирает дни в скане (forecast.py:97). /api/forecast отдаёт ВСЕ дни
+  // диапазона, и без этого отбора перезапрошенный старт стоял бы в одном
+  // списке с соседями по другому правилу. Своей копии порога у приложения нет
+  // намеренно (финальное ревью ветки, I2).
+  const fly = overview.days_daytime.filter((day) => day.assessment.flyable)
+  if (fly.length === 0) {
+    // Тот же вердикт, что домен положил бы в Scan.empty, если бы запрос не
+    // упал, — и теми же словами, что блок «Без лётных дней» ниже. Пустая
+    // группа на этом месте читалась бы как «повтор не сработал».
+    return (
+      <div className="failed">
+        <div className="empty">
+          <b>{name}</b>
+          На неделе не нашлось ни одного лётного дня.
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="failed">
+      <div className="sitegrp__h">
+        <b>{name}</b>
+        {/* Румб из градусов — как в шапке группы скана: ForecastOverview.site.
+            aspect_deg тоже ГРАДУСЫ (engine.facts_overview, engine.py:1151),
+            а пилот читает румб. */}
+        <span className="lbl">
+          {overview.site.aspect_deg === null ? "—" : compass(overview.site.aspect_deg)} · {fly.length} лётных
+        </span>
+      </div>
+      <div className="days" role="group" aria-label={name}>
+        {fly.map((day) => (
+          <OverviewDayButton key={day.date} site={name} day={day} showFlyTag={false} onOpenDay={onOpenDay} />
+        ))}
+      </div>
+    </div>
   )
 }
 
@@ -343,10 +468,20 @@ function ScanView({ model, active, onOpenDay }: {
           {data.empty.join(", ")} — на неделе не нашлось ни одного лётного дня.
         </div>
       )}
+      {/* Раньше здесь стояло перечисление через запятую и совет «открой старт
+          вручную, чтобы повторить запрос»: экран называл отказ и тут же
+          отправлял пилота решать его на другом экране, столько раз, сколько
+          стартов упало. Теперь у каждого своя строка, и повтор происходит
+          здесь же (см. FailedSite). */}
       {data.failed.length > 0 && (
-        <div className="empty">
-          <b>Не удалось получить</b>
-          {data.failed.join(", ")}. Открой старт вручную, чтобы повторить запрос.
+        <div className="sitegrp">
+          <div className="sitegrp__h">
+            <b>Не удалось получить</b>
+            <span className="lbl">тап повторит запрос</span>
+          </div>
+          {data.failed.map((name) => (
+            <FailedSite key={name} name={name} model={model} onOpenDay={onOpenDay} />
+          ))}
         </div>
       )}
     </>

@@ -511,3 +511,191 @@ test("пропавшая сеть объясняется словами, а не
   expect(await screen.findByText(/Нет связи/)).toBeInTheDocument()
   expect(screen.getByRole("button", { name: "Повторить" })).toBeInTheDocument()
 })
+
+// ──────────────────────────────── повтор запроса по упавшему старту
+//
+// Старт попадает в Scan.failed, когда его недельный запрос упал
+// (forecast.py:92-96). Экран перечислял такие старты одной строкой через
+// запятую и отправлял пилота открывать каждый вручную на другом экране — то
+// есть называл отказ и тут же уходил от него. Теперь у каждого упавшего старта
+// своя кнопка, и тап повторяет ЕГО запрос.
+//
+// Повтора всего скана при этом нет: forecast.scan_week берёт недельные данные
+// каждого старта по ключу кэша (name, "week", None, model) — forecast.py:86, —
+// по тому же ключу, что и GET /api/forecast?site=X&range=week. Одиночный
+// запрос по упавшему старту и есть повтор того самого запроса, который скан не
+// смог сделать, а не какой-то другой; спрашивать после него ещё и /api/scan
+// целиком значит занять единственный тяжёлый слот пилота (api.py:one_at_a_time)
+// обходом всей библиотеки ради уже полученного ответа.
+
+// Скан, в котором лётных дней не нашлось ни у кого, а перечисленные старты
+// упали. sites/empty пустые намеренно: тесты ниже проверяют именно блок failed,
+// и лишние группы в разметке только мешали бы адресовать нужную.
+function scanWithFailed(failed: string[]): { sites: never[]; empty: never[]; failed: string[] } {
+  return { sites: [], empty: [], failed }
+}
+
+// Пути тяжёлых запросов из записанных вызовов — по одному пути.
+function callsTo(fetchMock: { mock: { calls: unknown[][] } }, path: string): string[] {
+  return fetchMock.mock.calls.map((c) => String(c[0])).filter((u) => u.split("?")[0] === path)
+}
+
+// Подделка со своим ответом на /api/forecast: повтор упавшего старта ходит
+// именно туда, и тестам ниже нужно менять ЭТОТ ответ (нелётные дни, отказ), не
+// трогая ответ скана.
+function stubScanAndForecast(scanBody: unknown, forecastBody: unknown, forecastStatus = 200) {
+  const fetchMock = vi.fn((url: string) => {
+    const path = String(url).split("?")[0]
+    if (path === "/api/scan") return jsonResponse(scanBody)
+    if (path === "/api/sites") return jsonResponse(sites)
+    return jsonResponse(forecastBody, forecastStatus)
+  })
+  vi.stubGlobal("fetch", fetchMock)
+  return fetchMock
+}
+
+async function openAllSites(): Promise<void> {
+  await userEvent.click(screen.getByRole("button", { name: "Все старты" }))
+}
+
+// Имя упавшего старта отличается и от старта в пропе `site`, и от старта в
+// самой фикстуре ответа (forecast_3d.json — «Гудаури»): группа перезапрошенного
+// старта обязана называться тем стартом, который пилот перезапросил, а не тем,
+// что подвернулся рядом.
+const FAILED_SITE = "Казбеги"
+const OTHER_FAILED_SITE = "Местиа"
+
+test("каждый упавший старт — своя кнопка повтора", async () => {
+  stubScanAndForecast(scanWithFailed([FAILED_SITE, OTHER_FAILED_SITE]), overview)
+  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} />, { wrapper })
+  await openAllSites()
+
+  expect(await screen.findByText("Не удалось получить")).toBeInTheDocument()
+  expect(screen.getByRole("button", { name: new RegExp(`${FAILED_SITE}.*Повторить`) })).toBeInTheDocument()
+  expect(screen.getByRole("button", { name: new RegExp(`${OTHER_FAILED_SITE}.*Повторить`) })).toBeInTheDocument()
+})
+
+test("тап по упавшему старту повторяет запрос ИМЕННО этого старта", async () => {
+  const fetchMock = stubScanAndForecast(scanWithFailed([FAILED_SITE, OTHER_FAILED_SITE]), overview)
+  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} />, { wrapper })
+  await openAllSites()
+
+  await userEvent.click(await screen.findByRole("button", { name: new RegExp(FAILED_SITE) }))
+
+  await waitFor(() => { expect(callsTo(fetchMock, "/api/forecast")).toHaveLength(1) })
+  const asked = new URL(callsTo(fetchMock, "/api/forecast")[0]!, "http://localhost")
+  expect(asked.searchParams.get("site")).toBe(FAILED_SITE)
+  // Недельный запрос — тот самый, по чьему ключу кэша скан и не смог получить
+  // данные (forecast.py:86). Другой диапазон грел бы другую запись.
+  expect(asked.searchParams.get("range")).toBe("week")
+  // Соседний упавший старт не спрашивали: у каждого свой повтор.
+  expect(asked.searchParams.get("site")).not.toBe(OTHER_FAILED_SITE)
+})
+
+test("повтор упавшего старта не перезапрашивает скан целиком", async () => {
+  const fetchMock = stubScanAndForecast(scanWithFailed([FAILED_SITE]), overview)
+  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} />, { wrapper })
+  await openAllSites()
+  await screen.findByRole("button", { name: new RegExp(FAILED_SITE) })
+  const scansBefore = callsTo(fetchMock, "/api/scan").length
+
+  await userEvent.click(screen.getByRole("button", { name: new RegExp(FAILED_SITE) }))
+  await screen.findByRole("group", { name: FAILED_SITE })
+
+  expect(callsTo(fetchMock, "/api/scan")).toHaveLength(scansBefore)
+})
+
+test("успешный повтор показывает лётные дни этого старта", async () => {
+  stubScanAndForecast(scanWithFailed([FAILED_SITE]), overview)
+  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} />, { wrapper })
+  await openAllSites()
+  await userEvent.click(await screen.findByRole("button", { name: new RegExp(FAILED_SITE) }))
+
+  const group = await screen.findByRole("group", { name: FAILED_SITE })
+  expect(within(group).getAllByRole("button")).toHaveLength(overview.days_daytime.length)
+  expect(within(group).getByText(fmtDate(overview.days_daytime[0]!.date))).toBeInTheDocument()
+  // Кнопки повтора на месте старта больше нет — её заменил ответ.
+  expect(screen.queryByRole("button", { name: new RegExp(`${FAILED_SITE}.*Повторить`) })).toBeNull()
+})
+
+// Та же проверка, что уже стоит на группах скана: день, нажатый внутри группы
+// конкретного старта, открывает прогноз ЭТОГО старта. Здесь она особенно
+// нужна: под рукой сразу два чужих имени — старт в пропе `site` и старт внутри
+// самого ответа (фикстура снята с «Гудаури»).
+test("день перезапрошенного старта открывает прогноз ЭТОГО старта", async () => {
+  stubScanAndForecast(scanWithFailed([FAILED_SITE]), overview)
+  const onOpenDay = vi.fn()
+  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={onOpenDay} />, { wrapper })
+  await openAllSites()
+  await userEvent.click(await screen.findByRole("button", { name: new RegExp(FAILED_SITE) }))
+
+  const group = await screen.findByRole("group", { name: FAILED_SITE })
+  const target = overview.days_daytime[2]!
+  await userEvent.click(within(group).getByRole("button", { name: new RegExp(fmtDate(target.date)) }))
+
+  expect(onOpenDay).toHaveBeenCalledWith(FAILED_SITE, target.date)
+})
+
+// Скан кладёт в группу старта только лётные дни (forecast.py:97), а
+// /api/forecast отдаёт ВСЕ дни диапазона — иначе перезапрошенный старт стоял бы
+// в том же списке по другому правилу, чем его соседи. Правило берётся готовым
+// ответом сервера (assessment.flyable → criteria.flyable), своей копии порога у
+// приложения нет намеренно (финальное ревью ветки, I2).
+test("в группе перезапрошенного старта только лётные дни", async () => {
+  const firstNotFlyable = {
+    ...overview,
+    days_daytime: overview.days_daytime.map((day, i) => (
+      i === 0 ? { ...day, assessment: { ...day.assessment, flyable: false } } : day
+    )),
+  }
+  stubScanAndForecast(scanWithFailed([FAILED_SITE]), firstNotFlyable)
+  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} />, { wrapper })
+  await openAllSites()
+  await userEvent.click(await screen.findByRole("button", { name: new RegExp(FAILED_SITE) }))
+
+  const group = await screen.findByRole("group", { name: FAILED_SITE })
+  expect(within(group).getAllByRole("button")).toHaveLength(overview.days_daytime.length - 1)
+  expect(within(group).queryByText(fmtDate(overview.days_daytime[0]!.date))).toBeNull()
+})
+
+// Тот же вердикт, что домен положил бы в Scan.empty, если бы запрос не упал.
+// Пустая группа вместо слов читалась бы как «повтор не сработал».
+test("повтор без единого лётного дня объясняется словами", async () => {
+  const nothingFlyable = {
+    ...overview,
+    days_daytime: overview.days_daytime.map((day) => (
+      { ...day, assessment: { ...day.assessment, flyable: false } }
+    )),
+  }
+  stubScanAndForecast(scanWithFailed([FAILED_SITE]), nothingFlyable)
+  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} />, { wrapper })
+  await openAllSites()
+  await userEvent.click(await screen.findByRole("button", { name: new RegExp(FAILED_SITE) }))
+
+  expect(await screen.findByText(/ни одного лётного дня/)).toBeInTheDocument()
+  expect(screen.queryByRole("group", { name: FAILED_SITE })).toBeNull()
+})
+
+// Упавших стартов бывает несколько (снимок пилота: четыре в одной строке), и
+// рамка отказа сама по себе не говорит, чей повтор не прошёл.
+test("отказавший повтор называет старт и снова даёт повторить", async () => {
+  stubScanAndForecast(scanWithFailed([FAILED_SITE]), { detail: "" }, 502)
+  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} />, { wrapper })
+  await openAllSites()
+  await userEvent.click(await screen.findByRole("button", { name: new RegExp(FAILED_SITE) }))
+
+  expect(await screen.findByText(/open-meteo сейчас недоступна/)).toBeInTheDocument()
+  expect(screen.getByText(FAILED_SITE)).toBeInTheDocument()
+  expect(screen.getByRole("button", { name: "Повторить" })).toBeInTheDocument()
+})
+
+test("повтор одного упавшего старта не трогает соседний", async () => {
+  stubScanAndForecast(scanWithFailed([FAILED_SITE, OTHER_FAILED_SITE]), overview)
+  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} />, { wrapper })
+  await openAllSites()
+  await userEvent.click(await screen.findByRole("button", { name: new RegExp(FAILED_SITE) }))
+  await screen.findByRole("group", { name: FAILED_SITE })
+
+  expect(screen.getByRole("button", { name: new RegExp(`${OTHER_FAILED_SITE}.*Повторить`) })).toBeInTheDocument()
+  expect(screen.queryByRole("group", { name: OTHER_FAILED_SITE })).toBeNull()
+})
