@@ -37,6 +37,12 @@ type ForecastProps = {
   // занимает единственный слот сервера раньше маршрута, на который пилот
   // смотрит (финальное ревью ветки, I3).
   active?: boolean
+  // Открыть выбиралку старта / дня. Шторки складывает оболочка (App.tsx:
+  // openSitePicker, openDayPicker) — она же держит выбор пилота, — а экран
+  // только говорит, когда пора: недостающий выбор он показывает плашкой, и
+  // плашка теперь и есть кнопка.
+  onOpenSitePicker: () => void
+  onOpenDayPicker: () => void
 }
 
 // fly_window — null, когда лётное окно не открывается вовсе (см.
@@ -62,7 +68,7 @@ function thermalWindowLabel(facts: Facts): string {
   return `${sun} · световой день ${facts.daylight_hours}`
 }
 
-export function Forecast({ site, date, model, active = true }: ForecastProps) {
+export function Forecast({ site, date, model, active = true, onOpenSitePicker, onOpenDayPicker }: ForecastProps) {
   const sheets = useSheetsContext()
   // «День выбран» стоит здесь, а не внутри useForecast рядом с «старт
   // выбран»: для диапазонов (3d/week/2weeks) дата законно пустая — engine.
@@ -76,15 +82,27 @@ export function Forecast({ site, date, model, active = true }: ForecastProps) {
   // Спиннер тут не годится: ждать нечего — ни один ответ сервера этот выбор
   // не сделает, он бывает только явным.
   if (site === null || date === null) {
+    // Плашка САМА и есть недостающий выбор. Раньше она называла его и
+    // отправляла пилота искать кнопку в шапке («Старт выбирается кнопкой в
+    // шапке») — при том что стоит ровно там, куда он смотрит, и заголовок в
+    // шапке кнопкой не выглядит (просьба владельца).
+    //
+    // Когда не хватает обоих, плашка ведёт к ПЕРВОМУ — старту: шторки живут в
+    // одном стеке, и открытая второй закрыла бы первую. Выбрав старт, пилот
+    // увидит на этом же месте «Выберите день».
+    const needsSite = site === null
     return (
-      <div className="empty">
-        <b>{site === null ? (date === null ? "Выберите старт и день" : "Выберите старт") : "Выберите день"}</b>
-        {/* Куда нажимать, а не просто «выбор не сделан»: обе кнопки стоят в
-            шапке, одна над другой, и видны с любого экрана. */}
-        {site === null && date === null ? "Старт и день выбираются кнопками в шапке."
-          : site === null ? "Старт выбирается кнопкой в шапке."
-          : "День выбирается кнопкой в шапке."}
-      </div>
+      <button
+        type="button"
+        className="empty empty--pick"
+        aria-haspopup="dialog"
+        onClick={needsSite ? onOpenSitePicker : onOpenDayPicker}
+      >
+        <b>{needsSite ? (date === null ? "Выберите старт и день" : "Выберите старт") : "Выберите день"}</b>
+        {needsSite && date === null ? "Нажмите, чтобы выбрать старт — день выберется следующим шагом."
+          : needsSite ? "Нажмите, чтобы выбрать старт."
+          : "Нажмите, чтобы выбрать день."}
+      </button>
     )
   }
   if (forecast.isPending) {

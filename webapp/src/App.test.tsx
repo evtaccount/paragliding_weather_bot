@@ -9,6 +9,8 @@ import { fmtDate } from "./format"
 // шторкой. Тесты, которым нужен посчитанный прогноз, проходят этот путь
 // целиком, как пилот, а не подставляют состояние в обход.
 import { pickDay, pickSite } from "../test/header"
+import { isoInDays } from "../test/days"
+import { RANGE_DAYS_2WEEKS } from "./domain"
 import facts from "../test/fixtures/facts_1d.json"
 import overview from "../test/fixtures/forecast_3d.json"
 import scan from "../test/fixtures/scan.json"
@@ -89,12 +91,12 @@ test("шапка показывает понятный текст, а не ве�
   // документ: без сужения тест был бы зелёным и на старой ошибке (спиннер в
   // шапке навсегда), просто найдя надпись соседнего экрана.
   const header = screen.getByRole("banner")
-  expect(within(header).getByRole("button", { name: "Старт не выбран" })).toBeInTheDocument()
+  expect(within(header).getByText("Старт не выбран")).toBeInTheDocument()
 
   // Про ПУСТУЮ библиотеку (а не просто «выбора не было») говорит сама шторка,
-  // куда ведёт эта кнопка, — и говорит, что делать дальше. Шапке второй такой
+  // куда ведёт плашка, — и говорит, что делать дальше. Шапке второй такой
   // подписи не нужно: выбор старта живёт в шторке, туда пилот и идёт.
-  await userEvent.click(within(header).getByRole("button", { name: "Старт не выбран" }))
+  await userEvent.click(screen.getByRole("button", { name: /Выберите старт/ }))
   // Ищем ВНУТРИ шторки: «Нет стартов» теперь говорит и «Обзор» — он
   // смонтирован всегда и на пустой библиотеке показывает то же самое (иначе
   // одна его половина предлагала бы выбрать старт там, где выбирать нечего).
@@ -144,7 +146,9 @@ test("старт, отмеченный на карте из выбиралки, 
 
   render(<App />)
   const header = screen.getByRole("banner")
-  await userEvent.click(await within(header).findByRole("button", { name: "Старт не выбран" }))
+  // Выбиралка открывается с плашки на экране: в шапке, пока старт не выбран,
+  // стоит заголовок, а не кнопка (см. тест про плашку ниже).
+  await userEvent.click(await screen.findByRole("button", { name: /Выберите старт/ }))
   await userEvent.click(await screen.findByRole("button", { name: /Отметить новый на карте/ }))
 
   // Верхняя шторка стека — та, что легла последней: у всех Sheet один и тот
@@ -190,7 +194,9 @@ test("ответ на отменённое добавление старта н�
 
   render(<App />)
   const header = screen.getByRole("banner")
-  await userEvent.click(await within(header).findByRole("button", { name: "Старт не выбран" }))
+  // Выбиралка открывается с плашки на экране: в шапке, пока старт не выбран,
+  // стоит заголовок, а не кнопка (см. тест про плашку ниже).
+  await userEvent.click(await screen.findByRole("button", { name: /Выберите старт/ }))
   await userEvent.click(await screen.findByRole("button", { name: /Отметить новый на карте/ }))
   const addSheet = screen.getAllByRole("dialog").at(-1)!
   tapMap(addSheet)
@@ -244,7 +250,9 @@ test("заведённый старт остаётся выбранным, да�
 
   render(<App />)
   const header = screen.getByRole("banner")
-  await userEvent.click(await within(header).findByRole("button", { name: "Старт не выбран" }))
+  // Выбиралка открывается с плашки на экране: в шапке, пока старт не выбран,
+  // стоит заголовок, а не кнопка (см. тест про плашку ниже).
+  await userEvent.click(await screen.findByRole("button", { name: /Выберите старт/ }))
   await userEvent.click(await screen.findByRole("button", { name: /Отметить новый на карте/ }))
   const addSheet = screen.getAllByRole("dialog").at(-1)!
   tapMap(addSheet)
@@ -837,4 +845,132 @@ test("маршрут, выбранный без дня, не считается"
     String(u).split("?")[0] === "/api/route" && (init as RequestInit | undefined)?.method === "POST")
   expect(routePosts).toHaveLength(0)
   expect(screen.getByText("Выберите день")).toBeInTheDocument()
+})
+
+// ───────────────────────────────── шаг по дням шевронами в шапке
+//
+// Выбранный день меняется не только шторкой: соседние дни — самое частое
+// движение пилота («а завтра?»), и ради него открывать список из четырнадцати
+// строк незачем. Шевроны шагают по тому же окну, которое показывает выбиралка
+// (src/days.ts: forecastDays) — иначе пилот дошагал бы до дня, которого в
+// списке нет.
+
+const PREV_DAY = "Предыдущий день"
+const NEXT_DAY = "Следующий день"
+
+test("шеврон вперёд переводит на следующий день", async () => {
+  render(<App />)
+  const header = screen.getByRole("banner")
+  await pickDay(3)
+
+  await userEvent.click(within(header).getByRole("button", { name: NEXT_DAY }))
+
+  expect(within(header).getByText(fmtDate(isoInDays(4)))).toBeInTheDocument()
+})
+
+test("шеврон назад переводит на предыдущий день", async () => {
+  render(<App />)
+  const header = screen.getByRole("banner")
+  await pickDay(3)
+
+  await userEvent.click(within(header).getByRole("button", { name: PREV_DAY }))
+
+  expect(within(header).getByText(fmtDate(isoInDays(2)))).toBeInTheDocument()
+})
+
+// Границы окна — не «кнопка не сработает», а «кнопки нет»: за ними прогноза не
+// существует вовсе (engine.build_url просит ровно forecast_days=RANGE_DAYS[rng]).
+test("на сегодняшнем дне шеврона назад нет", async () => {
+  render(<App />)
+  const header = screen.getByRole("banner")
+  await pickDay(0)
+
+  expect(within(header).queryByRole("button", { name: PREV_DAY })).toBeNull()
+  // Вперёд с сегодняшнего дня — есть куда: без этой половины тест был бы
+  // зелёным и на шапке, потерявшей оба шеврона разом.
+  expect(within(header).getByRole("button", { name: NEXT_DAY })).toBeInTheDocument()
+})
+
+test("на последнем дне окна шеврона вперёд нет", async () => {
+  render(<App />)
+  const header = screen.getByRole("banner")
+  await pickDay(RANGE_DAYS_2WEEKS - 1)
+
+  expect(within(header).queryByRole("button", { name: NEXT_DAY })).toBeNull()
+  expect(within(header).getByRole("button", { name: PREV_DAY })).toBeInTheDocument()
+})
+
+// Пока день не выбран, шагать не от чего: шеврон в этом состоянии обещал бы
+// движение по списку, в котором пилот ещё не стоит.
+test("пока день не выбран, шевронов нет", () => {
+  render(<App />)
+  const header = screen.getByRole("banner")
+
+  expect(within(header).queryByRole("button", { name: PREV_DAY })).toBeNull()
+  expect(within(header).queryByRole("button", { name: NEXT_DAY })).toBeNull()
+  expect(within(header).getByRole("button", { name: "День не выбран" })).toBeInTheDocument()
+})
+
+// Шаг шевроном — такой же выбор дня, как строка в шторке: прогноз обязан
+// пересчитаться на новый день, а не остаться на прежнем.
+test("шаг шевроном пересчитывает прогноз на новый день", async () => {
+  const fetchMock = vi.fn((url: string) => {
+    const path = String(url).split("?")[0]
+    const body = path === "/api/sites" ? sites : path === "/api/prefs" ? prefs : facts
+    return Promise.resolve(json(body))
+  })
+  vi.stubGlobal("fetch", fetchMock)
+  render(<App />)
+  await pickSite("Гудаури")
+  await pickDay(0)
+  await waitFor(() => { expect(dayForecastDates(fetchMock)).toContain(isoInDays(0)) })
+
+  await userEvent.click(within(screen.getByRole("banner")).getByRole("button", { name: NEXT_DAY }))
+
+  await waitFor(() => { expect(dayForecastDates(fetchMock)).toContain(isoInDays(1)) })
+})
+
+// Даты дневных запросов прогноза — только они меняются от шага по дням
+// (диапазонному /api/forecast дата безразлична, см. шапку Overview.tsx).
+function dayForecastDates(fetchMock: { mock: { calls: unknown[][] } }): (string | null)[] {
+  return fetchMock.mock.calls
+    .map((c) => new URL(String(c[0]), "http://localhost"))
+    .filter((u) => u.pathname === "/api/forecast" && u.searchParams.get("range") === "1d")
+    .map((u) => u.searchParams.get("date"))
+}
+
+// ───────────────────────── выбор старта — с плашки, а не из шапки
+//
+// Просьба владельца: «Старт не выбран» в шапке — это заголовок, и то, что он
+// вдобавок нажимается, приходилось угадывать. Выбор живёт там, куда пилот
+// смотрит: на плашке посреди экрана. Имя УЖЕ выбранного старта кнопкой
+// остаётся — плашки в этом состоянии нет, и сменить старт было бы негде.
+
+test("пока старт не выбран, шапка его не выбирает — это делает плашка", async () => {
+  render(<App />)
+  const header = screen.getByRole("banner")
+
+  expect(within(header).getByText("Старт не выбран")).toBeInTheDocument()
+  expect(within(header).queryByRole("button", { name: "Старт не выбран" })).toBeNull()
+
+  await userEvent.click(screen.getByRole("button", { name: /Выберите старт/ }))
+
+  // Открылась именно выбиралка старта: на пустой библиотеке она говорит это
+  // сама и предлагает отметить первый старт на карте.
+  const sheet = await screen.findByRole("dialog")
+  expect(within(sheet).getByText("Нет стартов")).toBeInTheDocument()
+})
+
+test("выбранный старт остаётся сменяемым из шапки", async () => {
+  vi.stubGlobal("fetch", (url: string) => {
+    const path = String(url).split("?")[0]
+    return Promise.resolve(json(path === "/api/sites" ? sites : path === "/api/prefs" ? prefs : facts))
+  })
+  render(<App />)
+  await pickSite("Гудаури")
+
+  const header = screen.getByRole("banner")
+  await userEvent.click(within(header).getByRole("button", { name: "Гудаури" }))
+
+  expect(await screen.findByRole("dialog")).toBeInTheDocument()
 })

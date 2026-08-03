@@ -61,6 +61,9 @@ type RouteProps = {
   // Выбранный маршрут уходит наверх, а не остаётся здесь: точки хранит
   // оболочка (App.tsx), иначе они пропадали бы при переключении вкладки.
   onPickRoute: (points: RoutePointRow[], name: string | null) => void
+  // Открыть выбиралку дня — та же оболочкина шторка, что и у «Прогноза»
+  // (App.tsx: openDayPicker). Экран зовёт её с плашки недостающего дня.
+  onOpenDayPicker: () => void
 }
 
 // FEASIBILITY_RU (../domain, копия route.py под сверкой
@@ -165,7 +168,7 @@ function RouteSourceButtons(
   )
 }
 
-export function Route({ points, name, date, model, active = true, onPickRoute }: RouteProps) {
+export function Route({ points, name, date, model, active = true, onPickRoute, onOpenDayPicker }: RouteProps) {
   const sheets = useSheetsContext()
   // Выбранное чипом время вылета хранится ВМЕСТЕ с маршрутом И ДАТОЙ, для
   // которых его выбрали, и действует, только пока показывают ровно их.
@@ -265,16 +268,18 @@ export function Route({ points, name, date, model, active = true, onPickRoute }:
     )
   }
   // Маршрут задан, а дня нет: та же формулировка и та же подсказка, что на
-  // «Прогнозе» (screens/Forecast.tsx) — кнопка одна и та же, и два разных
-  // текста про неё читались бы как два разных действия. Кнопки источников
-  // маршрута остаются: пилот может поменять маршрут, не выбирая дня.
+  // «Прогнозе» (screens/Forecast.tsx) — выбор один и тот же, и два разных
+  // текста про него читались бы как два разных действия. Плашка и здесь сама
+  // открывает выбиралку, а не отсылает к шапке: оставить её текстом значило бы
+  // дать два разных действия под одной надписью. Кнопки источников маршрута
+  // остаются: пилот может поменять маршрут, не выбирая дня.
   if (date === null) {
     return (
       <>
-        <div className="empty">
+        <button type="button" className="empty empty--pick" aria-haspopup="dialog" onClick={onOpenDayPicker}>
           <b>Выберите день</b>
-          День выбирается кнопкой в шапке.
-        </div>
+          Нажмите, чтобы выбрать день.
+        </button>
         <div className="acts"><RouteSourceButtons onPickRoute={onPickRoute} /></div>
       </>
     )

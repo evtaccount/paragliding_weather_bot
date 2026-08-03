@@ -80,8 +80,15 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 .site__name { font-size: 17px; font-weight: 680; letter-spacing: -.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
 .chip { font-family: var(--f-data); font-size: 11px; padding: 4px 8px; border-radius: 7px; border: 1px solid var(--rule); color: var(--muted); white-space: nowrap; flex: none }
 .chip--live { border-color: var(--air); color: var(--air-deep); background: var(--air-wash) }
-.ctx__date { display: flex; align-items: center; gap: 2px }
-.dateline { flex: 1; text-align: center; font-family: var(--f-data); font-size: 12.5px; letter-spacing: .02em; color: var(--ink) }
+.ctx__date { display: flex; align-items: center; justify-content: center; gap: 6px }
+/* Слот шеврона фиксированной ширины: на краях окна кнопки внутри нет, а место
+   остаётся — иначе чип даты съезжал бы вбок на первом и последнем дне. */
+.daystep { width: 30px; display: flex; justify-content: center }
+.daystep button { font-size: 18px; line-height: 1; padding: 3px 7px; color: var(--muted) }
+.daystep button:hover { color: var(--ink) }
+/* Дата крупнее прочих чипов: это не ярлык при чём-то, а один из двух выборов,
+   на которых держится весь экран. */
+.ctx__date .chip { font-size: 12.5px; padding: 5px 10px; letter-spacing: .02em }
 
 /* ── тело: единственная область, которая прокручивается (129-133) ───── */
 .body { overflow-y: auto; overflow-x: hidden; background: var(--sunk); -webkit-overflow-scrolling: touch }
@@ -130,6 +137,11 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 .empty b { display: block; color: var(--ink); font-size: 13.5px; margin-bottom: 3px }
 .empty button { margin-top: 8px; padding: 7px 12px; border: 1px solid var(--rule); border-radius: 8px; color: var(--ink); font-weight: 600 }
 .empty button:hover { border-color: var(--air) }
+/* Плашка недостающего выбора — сама кнопка: старт и день выбираются с неё, а
+   не отсылкой к шапке. Рамка остаётся пунктирной (это по-прежнему «здесь
+   пусто»), но вся плашка нажимается и подсвечивается. */
+.empty--pick { display: block; width: 100%; text-align: left }
+.empty--pick:hover { border-color: var(--air) }
 
 /* ── экран вне Telegram — своего в макете нет: прототип не открывается
    вне Telegram по определению (это его демонстрационная HTML-страница) */

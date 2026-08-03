@@ -12,6 +12,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { usePrefs, useSites } from "./api/queries"
 import type { RoutePointRow } from "./api/queries"
 import type { Prefs } from "./api/types"
+import { dayInWindow } from "./days"
 import { fmtDate } from "./format"
 import { Forecast } from "./screens/Forecast"
 import { Overview } from "./screens/Overview"
@@ -419,21 +420,36 @@ function ShellContent() {
     )
   }
 
+  // Соседние дни окна прогноза — null значит «шагать некуда»: день стоит на
+  // краю окна, или его в окне нет вовсе (приложение осталось открытым за
+  // полночь, и «сегодня» уже другое). Шеврон в этом случае не рисуется: за
+  // границей окна прогноза не существует, а не «кнопка не сработает».
+  const prevDay = date === null ? null : dayInWindow(date, -1)
+  const nextDay = date === null ? null : dayInWindow(date, 1)
+
   return (
     <div className="app">
       <header className="ctx">
         <div className="ctx__top">
-          {/* Имя старта и чип модели — кнопки, как в макете (prototype.html:
-              417-423, aria-haspopup="dialog"): это два самых частых действия
-              пилота, и обоим нужен один тап из любого экрана. */}
-          <button type="button" className="site" aria-haspopup="dialog" onClick={openSitePicker}>
-            {/* Пока старт не выбран, кнопка так и написана — и ждать тут нечего,
-                поэтому спиннера на месте имени больше нет: выбор не выводится из
-                ответа /api/sites, он бывает только явным. Пустая библиотека
-                разбирается в самой шторке: она открывается и при пустом
-                списке, и там же предлагает отметить первый старт на карте. */}
-            <span className="site__name">{site ?? "Старт не выбран"}</span>
-          </button>
+          {/* Имя ВЫБРАННОГО старта — кнопка, как в макете (prototype.html:
+              417-423, aria-haspopup="dialog"): менять старт нужно из любого
+              экрана в один тап, а плашки в этом состоянии уже нет.
+
+              Пока старт не выбран, здесь остаётся заголовок, и нажимать его
+              незачем: выбор живёт на плашке посреди экрана, куда пилот и
+              смотрит (просьба владельца). «Старт не выбран» кнопкой не
+              выглядело, и то, что оно нажимается, приходилось угадывать.
+
+              Спиннера на месте имени нет ни в том, ни в другом состоянии:
+              выбор не выводится из ответа /api/sites, он бывает только явным,
+              и ждать тут нечего. */}
+          {site === null ? (
+            <span className="site"><span className="site__name">Старт не выбран</span></span>
+          ) : (
+            <button type="button" className="site" aria-haspopup="dialog" onClick={openSitePicker}>
+              <span className="site__name">{site}</span>
+            </button>
+          )}
           <Chip live onClick={openModelPicker}>
             {/* «· разово» отличает разовый выбор от постоянной настройки: без
                 пометки пилот не отличит «сегодня смотрю по GFS» от «у меня
@@ -441,22 +457,46 @@ function ShellContent() {
             {modelLabel(prefs.data, model) ?? <Spinner />}{onceModel !== null ? " · разово" : ""}
           </Chip>
         </div>
+        {/* Дата — чип, как и модель в строке выше: оба показывают, «в каком
+            состоянии сейчас приложение», и оба меняются нажатием. Раньше дата
+            была просто текстом посреди шапки, и то, что она вообще
+            нажимается, приходилось угадывать (просьба владельца).
+
+            По краям — шаг на соседний день: «а завтра?» самое частое движение
+            пилота, и открывать ради него список из четырнадцати строк незачем.
+            Шагают шевроны по тому же окну, которое показывает выбиралка
+            (days.ts: forecastDays) — своего счёта дней у шапки нет. */}
         <div className="ctx__date">
-          {/* Дата — такая же кнопка со шторкой, как имя старта рядом: это
-              второй из двух выборов, без которых прогноз не считается, и он
-              обязан быть доступен с любого экрана в один тап. */}
-          <button type="button" className="dateline" aria-haspopup="dialog" onClick={openDayPicker}>
+          {/* Слот под шеврон остаётся всегда, даже когда шагать некуда: иначе
+              на краях окна чип съезжал бы вбок. */}
+          <span className="daystep">
+            {prevDay !== null && (
+              <button type="button" aria-label="Предыдущий день" onClick={() => setDate(prevDay)}>‹</button>
+            )}
+          </span>
+          <Chip live opensSheet onClick={openDayPicker}>
             {date === null ? "День не выбран" : fmtDate(date)}
-          </button>
+          </Chip>
+          <span className="daystep">
+            {nextDay !== null && (
+              <button type="button" aria-label="Следующий день" onClick={() => setDate(nextDay)}>›</button>
+            )}
+          </span>
         </div>
       </header>
 
       <main className="body" ref={bodyRef}>
         <section className="view" hidden={tab !== "day"} aria-label="Прогноз на день">
-          <Forecast site={site} date={date} model={model} active={screenActive("day")} />
+          <Forecast
+            site={site} date={date} model={model} active={screenActive("day")}
+            onOpenSitePicker={openSitePicker} onOpenDayPicker={openDayPicker}
+          />
         </section>
         <section className="view" hidden={tab !== "over"} aria-label="Обзор">
-          <Overview site={site} model={model} active={screenActive("over")} onOpenDay={openDay} />
+          <Overview
+            site={site} model={model} active={screenActive("over")}
+            onOpenDay={openDay} onOpenSitePicker={openSitePicker}
+          />
         </section>
         <section className="view" hidden={tab !== "route"} aria-label="Маршрут">
           <Route
@@ -466,6 +506,7 @@ function ShellContent() {
             model={model}
             active={screenActive("route")}
             onPickRoute={(points, name) => { setRoutePoints(points); setRouteName(name); sheets.pop() }}
+            onOpenDayPicker={openDayPicker}
           />
         </section>
         <section className="view" hidden={tab !== "set"} aria-label="Настройки">

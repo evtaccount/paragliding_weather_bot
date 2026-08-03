@@ -12,8 +12,8 @@
 // данных — в отличие от SitePickerSheet, которой список стартов приходится
 // читать самой (шторка кладётся в стек готовым элементом, и проп со списком
 // застыл бы на момент нажатия, ревью задачи 13 N2).
-import { RANGE_DAYS_2WEEKS } from "../domain"
-import { fmtDate, isoDate } from "../format"
+import { forecastDays } from "../days"
+import { fmtDate } from "../format"
 
 type DayPickerProps = {
   // Сырой выбор пилота: null — явного выбора ещё не было, и не отмечен ни
@@ -22,22 +22,10 @@ type DayPickerProps = {
   onPick: (date: string) => void
 }
 
-// Ближайшие дни, начиная с сегодняшнего. Сколько именно — решает домен
-// (engine.RANGE_DAYS["2weeks"], копия в ../domain под сверкой
-// tests/test_webapp_sync.py): это самый дальний день, на который прогноз
-// вообще считается.
-//
-// Дата берётся по местному поясу устройства (isoDate, ../format), а сдвиг —
-// через setDate: переход через конец месяца и переводы часов он берёт на себя
-// сам, в отличие от арифметики по миллисекундам.
-function nextDays(): string[] {
-  const today = new Date()
-  return Array.from({ length: RANGE_DAYS_2WEEKS }, (_, offset) => {
-    const day = new Date(today)
-    day.setDate(today.getDate() + offset)
-    return isoDate(day)
-  })
-}
+// Список дней — общее окно прогноза (../days: forecastDays), то же самое, по
+// которому шагают шевроны в шапке. Своего счёта «сегодня … +13» у шторки нет
+// намеренно: разойдясь с шевронами, она молча предлагала бы другой набор дней,
+// чем тот, по которому пилот до неё дошагал.
 
 // «сегодня» и «завтра» — то же, чем эти два дня называет чат (bot.py:
 // /day и /tomorrow): в них пилот попадает чаще всего, и дату для них
@@ -53,7 +41,7 @@ function dayLabel(iso: string, offset: number): string {
 export function DayPickerSheet({ selected, onPick }: DayPickerProps) {
   return (
     <div className="pick">
-      {nextDays().map((iso, offset) => (
+      {forecastDays().map((iso, offset) => (
         <button
           key={iso}
           type="button"

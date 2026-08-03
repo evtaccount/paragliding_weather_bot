@@ -43,7 +43,7 @@ beforeEach(() => {
 
 test("показывает вердикт дня и лётное окно", async () => {
   vi.stubGlobal("fetch", () => jsonResponse(F))
-  render(<Forecast site="Гудаури" date="2026-07-25" model="ecmwf" />, { wrapper })
+  render(<Forecast site="Гудаури" date="2026-07-25" model="ecmwf" onOpenSitePicker={() => {}} onOpenDayPicker={() => {}} />, { wrapper })
   expect(await screen.findByText(F.assessment.label_ru)).toBeInTheDocument()
   expect(screen.getByText("07:00 – 17:00")).toBeInTheDocument()
 })
@@ -60,13 +60,13 @@ test("пока грузится — показывает индикатор, а 
   vi.stubGlobal("fetch", (_url: string, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
     init?.signal?.addEventListener("abort", () => reject(new DOMException("отменено", "AbortError")))
   }))
-  render(<Forecast site="Гудаури" date="2026-07-25" model="ecmwf" />, { wrapper })
+  render(<Forecast site="Гудаури" date="2026-07-25" model="ecmwf" onOpenSitePicker={() => {}} onOpenDayPicker={() => {}} />, { wrapper })
   expect(screen.getByRole("status", { name: "Загрузка" })).toBeInTheDocument()
 })
 
 test("на 502 показывает ошибку и кнопку повтора", async () => {
   vi.stubGlobal("fetch", () => jsonResponse({ detail: "" }, 502))
-  render(<Forecast site="Гудаури" date="2026-07-25" model="ecmwf" />, { wrapper })
+  render(<Forecast site="Гудаури" date="2026-07-25" model="ecmwf" onOpenSitePicker={() => {}} onOpenDayPicker={() => {}} />, { wrapper })
   expect(await screen.findByText(/open-meteo сейчас недоступна/)).toBeInTheDocument()
   expect(screen.getByRole("button", { name: "Повторить" })).toBeInTheDocument()
 })
@@ -81,7 +81,7 @@ test("кнопка «Ветер по высотам» открывает што�
     const path = url.split("?")[0]
     return jsonResponse(path === "/api/forecast/wind-grid" ? windGrid : F)
   })
-  render(<Forecast site="Гудаури" date="2026-07-25" model="ecmwf" />, { wrapper })
+  render(<Forecast site="Гудаури" date="2026-07-25" model="ecmwf" onOpenSitePicker={() => {}} onOpenDayPicker={() => {}} />, { wrapper })
   await screen.findByText(F.assessment.label_ru)
   await userEvent.click(screen.getByRole("button", { name: /Ветер по высотам/ }))
   expect(await screen.findByRole("dialog", { name: "Ветер по высотам" })).toBeInTheDocument()
@@ -89,7 +89,7 @@ test("кнопка «Ветер по высотам» открывает што�
 
 test("кнопка «Разбор от ИИ» открывает шторку", async () => {
   vi.stubGlobal("fetch", () => jsonResponse(F))
-  render(<Forecast site="Гудаури" date="2026-07-25" model="ecmwf" />, { wrapper })
+  render(<Forecast site="Гудаури" date="2026-07-25" model="ecmwf" onOpenSitePicker={() => {}} onOpenDayPicker={() => {}} />, { wrapper })
   await screen.findByText(F.assessment.label_ru)
   await userEvent.click(screen.getByRole("button", { name: /Разбор от ИИ/ }))
   expect(await screen.findByRole("dialog", { name: "Разбор от ИИ" })).toBeInTheDocument()
@@ -100,7 +100,7 @@ test("кнопка «Разбор от ИИ» открывает шторку", 
 // стоит проверить так же тщательно, как вердикт.
 test("кнопка «Метеограмма» открывает шторку с графиком", async () => {
   vi.stubGlobal("fetch", () => jsonResponse(F))
-  render(<Forecast site="Гудаури" date="2026-07-25" model="ecmwf" />, { wrapper })
+  render(<Forecast site="Гудаури" date="2026-07-25" model="ecmwf" onOpenSitePicker={() => {}} onOpenDayPicker={() => {}} />, { wrapper })
   await screen.findByText(F.assessment.label_ru)
   await userEvent.click(screen.getByRole("button", { name: /Метеограмма/ }))
   const dialog = await screen.findByRole("dialog", { name: "Метеограмма" })
@@ -110,14 +110,14 @@ test("кнопка «Метеограмма» открывает шторку с
 // Сверх пяти тестов брифа: три особые фикстуры не должны ронять экран.
 test("без потолка — не выдумывает высоту", async () => {
   vi.stubGlobal("fetch", () => jsonResponse(NO_CEILING))
-  render(<Forecast site="Плато" date="2026-07-25" model="ecmwf" />, { wrapper })
+  render(<Forecast site="Плато" date="2026-07-25" model="ecmwf" onOpenSitePicker={() => {}} onOpenDayPicker={() => {}} />, { wrapper })
   expect(await screen.findByText(NO_CEILING.assessment.label_ru)).toBeInTheDocument()
   expect(screen.getByText(/потолок неизвестен/i)).toBeInTheDocument()
 })
 
 test("без окна термички — не падает и объясняет, что окна нет", async () => {
   vi.stubGlobal("fetch", () => jsonResponse(NO_WINDOW))
-  render(<Forecast site="Гудаури-Север" date="2026-12-15" model="ecmwf" />, { wrapper })
+  render(<Forecast site="Гудаури-Север" date="2026-12-15" model="ecmwf" onOpenSitePicker={() => {}} onOpenDayPicker={() => {}} />, { wrapper })
   expect(await screen.findByText(NO_WINDOW.assessment.label_ru)).toBeInTheDocument()
   expect(screen.getByText(/окно не определено/)).toBeInTheDocument()
   expect(screen.getByText(/термическое окно не открывается/)).toBeInTheDocument()
@@ -130,7 +130,7 @@ test("без окна термички — не падает и объясняе
 // screen.getByXxx в тесте, который сам по себе ничего не гарантирует.
 test("порядок на экране: вердикт → полоса часов → столб воздуха → строка ограничения → оговорки → кнопки", async () => {
   vi.stubGlobal("fetch", () => jsonResponse(F))
-  render(<Forecast site="Гудаури" date="2026-07-25" model="ecmwf" />, { wrapper })
+  render(<Forecast site="Гудаури" date="2026-07-25" model="ecmwf" onOpenSitePicker={() => {}} onOpenDayPicker={() => {}} />, { wrapper })
   await screen.findByText(F.assessment.label_ru)
 
   const verdict = screen.getByText(F.assessment.label_ru)
@@ -150,7 +150,7 @@ test("порядок на экране: вердикт → полоса часо
 
 test("с предупреждениями — показывает оговорки о вето", async () => {
   vi.stubGlobal("fetch", () => jsonResponse(WINDY))
-  render(<Forecast site="Гудаури" date="2026-07-25" model="ecmwf" />, { wrapper })
+  render(<Forecast site="Гудаури" date="2026-07-25" model="ecmwf" onOpenSitePicker={() => {}} onOpenDayPicker={() => {}} />, { wrapper })
   expect(await screen.findByText(WINDY.assessment.label_ru)).toBeInTheDocument()
   expect(screen.getByText(/вето внутри окна/)).toBeInTheDocument()
 })
@@ -163,7 +163,7 @@ test("с предупреждениями — показывает оговор�
 test("подпись столба воздуха называет модель потолка из ответа, а не зашитую словом", async () => {
   const byIcon = { ...F, site: { ...F.site, ceiling_model: "ICON" } }
   vi.stubGlobal("fetch", () => jsonResponse(byIcon))
-  render(<Forecast site="Гудаури" date="2026-07-25" model="ecmwf" />, { wrapper })
+  render(<Forecast site="Гудаури" date="2026-07-25" model="ecmwf" onOpenSitePicker={() => {}} onOpenDayPicker={() => {}} />, { wrapper })
   await screen.findByText(F.assessment.label_ru)
   expect(screen.getByText(/всегда считается по ICON/)).toBeInTheDocument()
   expect(screen.queryByText(/по GFS/)).not.toBeInTheDocument()
@@ -177,7 +177,7 @@ test("подпись столба воздуха называет модель �
 // запроса и знать их не может.
 test("кнопка ветра по высотам не обещает числа, которых не знает", async () => {
   vi.stubGlobal("fetch", () => jsonResponse(F))
-  render(<Forecast site="Гудаури" date="2026-07-25" model="ecmwf" />, { wrapper })
+  render(<Forecast site="Гудаури" date="2026-07-25" model="ecmwf" onOpenSitePicker={() => {}} onOpenDayPicker={() => {}} />, { wrapper })
   await screen.findByText(F.assessment.label_ru)
   const button = screen.getByRole("button", { name: /Ветер по высотам/ })
   expect(button.textContent).not.toMatch(/\d/)
@@ -189,7 +189,7 @@ test("шторка ветра по высотам называет свой на
     const path = url.split("?")[0]
     return jsonResponse(path === "/api/forecast/wind-grid" ? windGrid : F)
   })
-  render(<Forecast site="Гудаури" date="2026-07-25" model="ecmwf" />, { wrapper })
+  render(<Forecast site="Гудаури" date="2026-07-25" model="ecmwf" onOpenSitePicker={() => {}} onOpenDayPicker={() => {}} />, { wrapper })
   await screen.findByText(F.assessment.label_ru)
   await userEvent.click(screen.getByRole("button", { name: /Ветер по высотам/ }))
 
@@ -205,11 +205,65 @@ test("скрытый экран прогноза в сеть не ходит, а
   const fetchMock = vi.fn(() => jsonResponse(F))
   vi.stubGlobal("fetch", fetchMock)
   const { rerender } = render(
-    <Forecast site="Гудаури" date="2026-07-25" model="ecmwf" active={false} />, { wrapper },
+    <Forecast site="Гудаури" date="2026-07-25" model="ecmwf" active={false} onOpenSitePicker={() => {}} onOpenDayPicker={() => {}} />, { wrapper },
   )
   await new Promise((resolve) => { setTimeout(resolve, 20) })
   expect(fetchMock).not.toHaveBeenCalled()
 
-  rerender(<Forecast site="Гудаури" date="2026-07-25" model="ecmwf" active />)
+  rerender(<Forecast site="Гудаури" date="2026-07-25" model="ecmwf" active onOpenSitePicker={() => {}} onOpenDayPicker={() => {}} />)
   expect(await screen.findByText(F.assessment.label_ru)).toBeInTheDocument()
+})
+
+// ───────────────────────────── плашка недостающего выбора — кнопка
+//
+// Плашка называла недостающий выбор и отправляла пилота искать кнопку в шапке
+// («Старт выбирается кнопкой в шапке»), хотя стоит она ровно там, куда он
+// смотрит. Теперь она сама и есть эта кнопка (просьба владельца).
+
+test("плашка «Выберите старт» открывает выбиралку старта", async () => {
+  vi.stubGlobal("fetch", () => jsonResponse(F))
+  const onOpenSitePicker = vi.fn()
+  render(
+    <Forecast site={null} date="2026-07-25" model="ecmwf"
+      onOpenSitePicker={onOpenSitePicker} onOpenDayPicker={vi.fn()} />,
+    { wrapper },
+  )
+
+  await userEvent.click(screen.getByRole("button", { name: /Выберите старт/ }))
+
+  expect(onOpenSitePicker).toHaveBeenCalledTimes(1)
+})
+
+test("плашка «Выберите день» открывает выбиралку дня", async () => {
+  vi.stubGlobal("fetch", () => jsonResponse(F))
+  const onOpenDayPicker = vi.fn()
+  render(
+    <Forecast site="Гудаури" date={null} model="ecmwf"
+      onOpenSitePicker={vi.fn()} onOpenDayPicker={onOpenDayPicker} />,
+    { wrapper },
+  )
+
+  await userEvent.click(screen.getByRole("button", { name: /Выберите день/ }))
+
+  expect(onOpenDayPicker).toHaveBeenCalledTimes(1)
+})
+
+// Не выбрано ни то, ни другое: плашка ведёт к ПЕРВОМУ недостающему выбору —
+// старту. Выбрав его, пилот увидит на том же месте «Выберите день», и второй
+// тап доведёт до прогноза. Открывать обе шторки разом некуда: они кладутся
+// в один стек, и верхняя закрыла бы нижнюю.
+test("плашка «Выберите старт и день» ведёт к выбору старта", async () => {
+  vi.stubGlobal("fetch", () => jsonResponse(F))
+  const onOpenSitePicker = vi.fn()
+  const onOpenDayPicker = vi.fn()
+  render(
+    <Forecast site={null} date={null} model="ecmwf"
+      onOpenSitePicker={onOpenSitePicker} onOpenDayPicker={onOpenDayPicker} />,
+    { wrapper },
+  )
+
+  await userEvent.click(screen.getByRole("button", { name: /Выберите старт и день/ }))
+
+  expect(onOpenSitePicker).toHaveBeenCalledTimes(1)
+  expect(onOpenDayPicker).not.toHaveBeenCalled()
 })

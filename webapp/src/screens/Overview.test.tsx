@@ -71,7 +71,7 @@ beforeEach(() => {
 
 test("строка на каждый день диапазона", async () => {
   stubByPath()
-  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} />, { wrapper })
+  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} onOpenSitePicker={() => {}} />, { wrapper })
   await pickRange()
   const list = await screen.findByRole("group", { name: "Дни диапазона" })
   expect(within(list).getAllByRole("button")).toHaveLength(overview.days_daytime.length)
@@ -86,7 +86,7 @@ test("переключение диапазона меняет запрос", as
     return jsonResponse(path === "/api/scan" ? scan : overview)
   })
   vi.stubGlobal("fetch", fetchMock)
-  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} />, { wrapper })
+  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} onOpenSitePicker={() => {}} />, { wrapper })
   await pickRange()
   await screen.findByRole("group", { name: "Дни диапазона" })
 
@@ -100,7 +100,7 @@ test("переключение диапазона меняет запрос", as
 
 test("в строке видна причина ограничения, а не описание погоды", async () => {
   stubByPath()
-  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} />, { wrapper })
+  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} onOpenSitePicker={() => {}} />, { wrapper })
   await pickRange()
   const list = await screen.findByRole("group", { name: "Дни диапазона" })
 
@@ -116,7 +116,7 @@ test("в строке видна причина ограничения, а не 
 test("нажатие на день открывает прогноз этого дня", async () => {
   stubByPath()
   const onOpenDay = vi.fn()
-  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={onOpenDay} />, { wrapper })
+  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={onOpenDay} onOpenSitePicker={() => {}} />, { wrapper })
   await pickRange()
   const list = await screen.findByRole("group", { name: "Дни диапазона" })
 
@@ -152,7 +152,7 @@ test("нажатие на день скана несёт старт ЭТОЙ с�
   // важно, что он ДРУГОЙ, чем старт второй группы (Казбеги): если бы
   // компонент молча подставлял проп site вместо s.name, тест поймал бы это
   // явно, а не совпадением значений.
-  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={onOpenDay} />, { wrapper })
+  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={onOpenDay} onOpenSitePicker={() => {}} />, { wrapper })
   await userEvent.click(screen.getByRole("button", { name: "Все старты" }))
 
   const kazbegiGroup = await screen.findByRole("group", { name: "Казбеги" })
@@ -163,7 +163,7 @@ test("нажатие на день скана несёт старт ЭТОЙ с�
 
 test("режим «Все старты» показывает старты и их дни", async () => {
   stubByPath()
-  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} />, { wrapper })
+  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} onOpenSitePicker={() => {}} />, { wrapper })
   await userEvent.click(screen.getByRole("button", { name: "Все старты" }))
 
   const site = scan.sites[0]!
@@ -179,7 +179,7 @@ test("режим «Все старты» показывает старты и и
 // (scripts/dump_api_fixtures.py), поэтому в ней стоит именно число.
 test("в шапке группы стоит румб, а не градусы", async () => {
   stubByPath()
-  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} />, { wrapper })
+  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} onOpenSitePicker={() => {}} />, { wrapper })
   await userEvent.click(screen.getByRole("button", { name: "Все старты" }))
 
   const site = scan.sites[0]!
@@ -189,7 +189,7 @@ test("в шапке группы стоит румб, а не градусы", a
 
 test("старты без лётных дней перечислены отдельно", async () => {
   stubByPath(scanMixed)
-  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} />, { wrapper })
+  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} onOpenSitePicker={() => {}} />, { wrapper })
   await userEvent.click(screen.getByRole("button", { name: "Все старты" }))
 
   expect(await screen.findByText(new RegExp(scanMixed.empty[0]!))).toBeInTheDocument()
@@ -205,7 +205,7 @@ test("старты без лётных дней перечислены отде�
 
 test("на обзоре изначально не нажат ни один период", async () => {
   stubByPath()
-  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} />, { wrapper })
+  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} onOpenSitePicker={() => {}} />, { wrapper })
 
   const periods = screen.getByRole("group", { name: "Диапазон обзора" })
   const buttons = within(periods).getAllByRole("button")
@@ -220,7 +220,7 @@ test("на обзоре изначально не нажат ни один пе�
 
 test("«Все старты» не лежит среди периодов", () => {
   stubByPath()
-  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} />, { wrapper })
+  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} onOpenSitePicker={() => {}} />, { wrapper })
 
   const periods = screen.getByRole("group", { name: "Диапазон обзора" })
   expect(within(periods).getAllByRole("button").map((b) => b.textContent)).toEqual(["3 дня", "Неделя", "2 недели"])
@@ -237,7 +237,7 @@ test("«Все старты» считает скан и не требует п�
     return jsonResponse(overview)
   })
   vi.stubGlobal("fetch", fetchMock)
-  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} />, { wrapper })
+  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} onOpenSitePicker={() => {}} />, { wrapper })
 
   await userEvent.click(screen.getByRole("button", { name: "Все старты" }))
 
@@ -255,7 +255,7 @@ test("«Все старты» считает скан и не требует п�
 test("без выбранного периода обзор не шлёт запрос", async () => {
   const fetchMock = vi.fn((_url: string) => jsonResponse(overview))
   vi.stubGlobal("fetch", fetchMock)
-  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} />, { wrapper })
+  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} onOpenSitePicker={() => {}} />, { wrapper })
   await new Promise((resolve) => { setTimeout(resolve, 20) })
 
   expect(heavy(fetchMock)).toHaveLength(0)
@@ -275,14 +275,14 @@ test("пока грузится — показывает индикатор, а 
   vi.stubGlobal("fetch", (_url: string, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
     init?.signal?.addEventListener("abort", () => reject(new DOMException("отменено", "AbortError")))
   }))
-  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} />, { wrapper })
+  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} onOpenSitePicker={() => {}} />, { wrapper })
   await pickRange()
   expect(screen.getByRole("status", { name: "Загрузка" })).toBeInTheDocument()
 })
 
 test("на 502 показывает ошибку и кнопку повтора", async () => {
   vi.stubGlobal("fetch", () => jsonResponse({ detail: "" }, 502))
-  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} />, { wrapper })
+  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} onOpenSitePicker={() => {}} />, { wrapper })
   await pickRange()
   expect(await screen.findByText(/open-meteo сейчас недоступна/)).toBeInTheDocument()
   expect(screen.getByRole("button", { name: "Повторить" })).toBeInTheDocument()
@@ -297,7 +297,7 @@ test("скан на ошибку тоже показывает кнопку по
     if (path === "/api/sites") return jsonResponse(sites)
     return jsonResponse(overview)
   })
-  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} />, { wrapper })
+  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} onOpenSitePicker={() => {}} />, { wrapper })
   await userEvent.click(screen.getByRole("button", { name: "Все старты" }))
   expect(await screen.findByText(/open-meteo сейчас недоступна/)).toBeInTheDocument()
   expect(screen.getByRole("button", { name: "Повторить" })).toBeInTheDocument()
@@ -310,7 +310,7 @@ test("скан на ошибку тоже показывает кнопку по
 // непроверенным.
 test("без выбранного старта — понятный текст, а не вечная загрузка", async () => {
   vi.stubGlobal("fetch", () => jsonResponse(overview))
-  render(<Overview site={null} model="ecmwf" onOpenDay={() => {}} />, { wrapper })
+  render(<Overview site={null} model="ecmwf" onOpenDay={() => {}} onOpenSitePicker={() => {}} />, { wrapper })
   await pickRange()
   expect(screen.getByText("Выберите старт")).toBeInTheDocument()
 })
@@ -333,7 +333,7 @@ test("«лётно» под баллом — по ответу сервера, �
     )),
   }
   vi.stubGlobal("fetch", () => jsonResponse(marginalFirstDay))
-  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} />, { wrapper })
+  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} onOpenSitePicker={() => {}} />, { wrapper })
   await pickRange()
   const list = await screen.findByRole("group", { name: "Дни диапазона" })
 
@@ -358,7 +358,7 @@ test("в строке «Все старты» стоит погода, а не �
     })),
   }
   stubByPath(noLimit)
-  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} />, { wrapper })
+  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} onOpenSitePicker={() => {}} />, { wrapper })
   await userEvent.click(screen.getByRole("button", { name: "Все старты" }))
 
   const row = noLimit.sites[0]!.days[0]!
@@ -383,7 +383,7 @@ test("в строке «Все старты» виден дождь", async () =
     })),
   }
   stubByPath(rainy)
-  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} />, { wrapper })
+  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} onOpenSitePicker={() => {}} />, { wrapper })
   await userEvent.click(screen.getByRole("button", { name: "Все старты" }))
 
   const group = await screen.findByRole("group", { name: rainy.sites[0]!.name })
@@ -407,7 +407,7 @@ test("без стартов «Все старты» объясняет это и
     String(url).split("?")[0] === "/api/sites" ? jsonResponse([]) : jsonResponse(overview)
   ))
   vi.stubGlobal("fetch", fetchMock)
-  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} />, { wrapper })
+  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} onOpenSitePicker={() => {}} />, { wrapper })
   await userEvent.click(screen.getByRole("button", { name: "Все старты" }))
 
   expect(await screen.findByText("Нет стартов")).toBeInTheDocument()
@@ -423,7 +423,7 @@ test("без стартов диапазонная половина обзора
   vi.stubGlobal("fetch", (url: string) => (
     String(url).split("?")[0] === "/api/sites" ? jsonResponse([]) : jsonResponse(overview)
   ))
-  render(<Overview site={null} model="ecmwf" onOpenDay={() => {}} />, { wrapper })
+  render(<Overview site={null} model="ecmwf" onOpenDay={() => {}} onOpenSitePicker={() => {}} />, { wrapper })
 
   expect(await screen.findByText("Нет стартов")).toBeInTheDocument()
   expect(screen.queryByText("Выберите старт и период")).toBeNull()
@@ -440,7 +440,7 @@ test("скрытый экран в сеть не ходит, а показанн
   })
   vi.stubGlobal("fetch", fetchMock)
   const { rerender } = render(
-    <Overview site="Гудаури" model="ecmwf" active={false} onOpenDay={() => {}} />, { wrapper },
+    <Overview site="Гудаури" model="ecmwf" active={false} onOpenDay={() => {}} onOpenSitePicker={() => {}} />, { wrapper },
   )
   await pickRange()
   await new Promise((resolve) => { setTimeout(resolve, 20) })
@@ -450,7 +450,7 @@ test("скрытый экран в сеть не ходит, а показанн
   // отличить пустую библиотеку от несделанного выбора.
   expect(heavy(fetchMock)).toHaveLength(0)
 
-  rerender(<Overview site="Гудаури" model="ecmwf" active onOpenDay={() => {}} />)
+  rerender(<Overview site="Гудаури" model="ecmwf" active onOpenDay={() => {}} onOpenSitePicker={() => {}} />)
   await screen.findByRole("group", { name: "Дни диапазона" })
   expect(heavy(fetchMock)).toEqual(["/api/forecast"])
 })
@@ -468,7 +468,7 @@ test("скрытый экран не запускает скан по всем �
   })
   vi.stubGlobal("fetch", fetchMock)
   const { rerender } = render(
-    <Overview site="Гудаури" model="ecmwf" active={false} onOpenDay={() => {}} />, { wrapper },
+    <Overview site="Гудаури" model="ecmwf" active={false} onOpenDay={() => {}} onOpenSitePicker={() => {}} />, { wrapper },
   )
   await userEvent.click(screen.getByRole("button", { name: "Все старты" }))
   await new Promise((resolve) => { setTimeout(resolve, 20) })
@@ -476,7 +476,7 @@ test("скрытый экран не запускает скан по всем �
     .map(([u]) => String(u).split("?")[0]).filter((p) => p === "/api/scan")
   expect(scans()).toHaveLength(0)
 
-  rerender(<Overview site="Гудаури" model="ecmwf" active onOpenDay={() => {}} />)
+  rerender(<Overview site="Гудаури" model="ecmwf" active onOpenDay={() => {}} onOpenSitePicker={() => {}} />)
   await waitFor(() => { expect(scans()).toHaveLength(1) })
 })
 
@@ -485,7 +485,7 @@ test("скрытый экран не запускает скан по всем �
 // лётными днями и старты без них показаны одновременно, каждый в своём месте.
 test("скан со стартами и без лётных дней одновременно не теряет ни одного старта", async () => {
   stubByPath(scanMixed)
-  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} />, { wrapper })
+  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} onOpenSitePicker={() => {}} />, { wrapper })
   await userEvent.click(screen.getByRole("button", { name: "Все старты" }))
 
   const site = scanMixed.sites[0]!
@@ -505,7 +505,7 @@ test("скан со стартами и без лётных дней однов�
 // и именно это обещание расходилось с тем, что до экрана доезжает.
 test("пропавшая сеть объясняется словами, а не пустой рамкой", async () => {
   vi.stubGlobal("fetch", () => Promise.reject(new TypeError("Failed to fetch")))
-  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} />, { wrapper })
+  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} onOpenSitePicker={() => {}} />, { wrapper })
   await pickRange()
 
   expect(await screen.findByText(/Нет связи/)).toBeInTheDocument()
@@ -567,7 +567,7 @@ const OTHER_FAILED_SITE = "Местиа"
 
 test("каждый упавший старт — своя кнопка повтора", async () => {
   stubScanAndForecast(scanWithFailed([FAILED_SITE, OTHER_FAILED_SITE]), overview)
-  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} />, { wrapper })
+  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} onOpenSitePicker={() => {}} />, { wrapper })
   await openAllSites()
 
   expect(await screen.findByText("Не удалось получить")).toBeInTheDocument()
@@ -577,7 +577,7 @@ test("каждый упавший старт — своя кнопка повт�
 
 test("тап по упавшему старту повторяет запрос ИМЕННО этого старта", async () => {
   const fetchMock = stubScanAndForecast(scanWithFailed([FAILED_SITE, OTHER_FAILED_SITE]), overview)
-  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} />, { wrapper })
+  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} onOpenSitePicker={() => {}} />, { wrapper })
   await openAllSites()
 
   await userEvent.click(await screen.findByRole("button", { name: new RegExp(FAILED_SITE) }))
@@ -594,7 +594,7 @@ test("тап по упавшему старту повторяет запрос 
 
 test("повтор упавшего старта не перезапрашивает скан целиком", async () => {
   const fetchMock = stubScanAndForecast(scanWithFailed([FAILED_SITE]), overview)
-  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} />, { wrapper })
+  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} onOpenSitePicker={() => {}} />, { wrapper })
   await openAllSites()
   await screen.findByRole("button", { name: new RegExp(FAILED_SITE) })
   const scansBefore = callsTo(fetchMock, "/api/scan").length
@@ -607,7 +607,7 @@ test("повтор упавшего старта не перезапрашива
 
 test("успешный повтор показывает лётные дни этого старта", async () => {
   stubScanAndForecast(scanWithFailed([FAILED_SITE]), overview)
-  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} />, { wrapper })
+  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} onOpenSitePicker={() => {}} />, { wrapper })
   await openAllSites()
   await userEvent.click(await screen.findByRole("button", { name: new RegExp(FAILED_SITE) }))
 
@@ -625,7 +625,7 @@ test("успешный повтор показывает лётные дни э�
 test("день перезапрошенного старта открывает прогноз ЭТОГО старта", async () => {
   stubScanAndForecast(scanWithFailed([FAILED_SITE]), overview)
   const onOpenDay = vi.fn()
-  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={onOpenDay} />, { wrapper })
+  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={onOpenDay} onOpenSitePicker={() => {}} />, { wrapper })
   await openAllSites()
   await userEvent.click(await screen.findByRole("button", { name: new RegExp(FAILED_SITE) }))
 
@@ -649,7 +649,7 @@ test("в группе перезапрошенного старта только
     )),
   }
   stubScanAndForecast(scanWithFailed([FAILED_SITE]), firstNotFlyable)
-  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} />, { wrapper })
+  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} onOpenSitePicker={() => {}} />, { wrapper })
   await openAllSites()
   await userEvent.click(await screen.findByRole("button", { name: new RegExp(FAILED_SITE) }))
 
@@ -668,7 +668,7 @@ test("повтор без единого лётного дня объясняе�
     )),
   }
   stubScanAndForecast(scanWithFailed([FAILED_SITE]), nothingFlyable)
-  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} />, { wrapper })
+  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} onOpenSitePicker={() => {}} />, { wrapper })
   await openAllSites()
   await userEvent.click(await screen.findByRole("button", { name: new RegExp(FAILED_SITE) }))
 
@@ -680,7 +680,7 @@ test("повтор без единого лётного дня объясняе�
 // рамка отказа сама по себе не говорит, чей повтор не прошёл.
 test("отказавший повтор называет старт и снова даёт повторить", async () => {
   stubScanAndForecast(scanWithFailed([FAILED_SITE]), { detail: "" }, 502)
-  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} />, { wrapper })
+  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} onOpenSitePicker={() => {}} />, { wrapper })
   await openAllSites()
   await userEvent.click(await screen.findByRole("button", { name: new RegExp(FAILED_SITE) }))
 
@@ -697,7 +697,7 @@ test("отказавший повтор называет старт и снов�
 // строка спрашивает не «нажимали ли здесь повтор», а «есть ли уже ответ».
 test("полученный повтором ответ переживает выключение и включение «Все старты»", async () => {
   const fetchMock = stubScanAndForecast(scanWithFailed([FAILED_SITE]), overview)
-  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} />, { wrapper })
+  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} onOpenSitePicker={() => {}} />, { wrapper })
   await openAllSites()
   await userEvent.click(await screen.findByRole("button", { name: new RegExp(FAILED_SITE) }))
   await screen.findByRole("group", { name: FAILED_SITE })
@@ -715,7 +715,7 @@ test("полученный повтором ответ переживает вы
 // кончился его повтор, а не предложение начать сначала.
 test("отказавший повтор переживает выключение и включение «Все старты»", async () => {
   stubScanAndForecast(scanWithFailed([FAILED_SITE]), { detail: "" }, 502)
-  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} />, { wrapper })
+  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} onOpenSitePicker={() => {}} />, { wrapper })
   await openAllSites()
   await userEvent.click(await screen.findByRole("button", { name: new RegExp(FAILED_SITE) }))
   await screen.findByText(/open-meteo сейчас недоступна/)
@@ -729,11 +729,51 @@ test("отказавший повтор переживает выключени�
 
 test("повтор одного упавшего старта не трогает соседний", async () => {
   stubScanAndForecast(scanWithFailed([FAILED_SITE, OTHER_FAILED_SITE]), overview)
-  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} />, { wrapper })
+  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} onOpenSitePicker={() => {}} />, { wrapper })
   await openAllSites()
   await userEvent.click(await screen.findByRole("button", { name: new RegExp(FAILED_SITE) }))
   await screen.findByRole("group", { name: FAILED_SITE })
 
   expect(screen.getByRole("button", { name: new RegExp(`${OTHER_FAILED_SITE}.*Повторить`) })).toBeInTheDocument()
   expect(screen.queryByRole("group", { name: OTHER_FAILED_SITE })).toBeNull()
+})
+
+// ───────────────────────────── плашка недостающего выбора — кнопка
+//
+// То же правило, что на «Прогнозе»: плашка, называющая недостающий старт, сама
+// его и выбирает, а не отсылает к кнопке в шапке (просьба владельца).
+
+test("плашка «Выберите старт» на обзоре открывает выбиралку старта", async () => {
+  stubByPath()
+  const onOpenSitePicker = vi.fn()
+  render(<Overview site={null} model="ecmwf" onOpenDay={() => {}} onOpenSitePicker={onOpenSitePicker} />, { wrapper })
+  await pickRange()
+
+  await userEvent.click(screen.getByRole("button", { name: /Выберите старт/ }))
+
+  expect(onOpenSitePicker).toHaveBeenCalledTimes(1)
+})
+
+test("плашка «Выберите старт и период» ведёт к выбору старта", async () => {
+  stubByPath()
+  const onOpenSitePicker = vi.fn()
+  render(<Overview site={null} model="ecmwf" onOpenDay={() => {}} onOpenSitePicker={onOpenSitePicker} />, { wrapper })
+
+  await userEvent.click(screen.getByRole("button", { name: /Выберите старт и период/ }))
+
+  expect(onOpenSitePicker).toHaveBeenCalledTimes(1)
+})
+
+// Единственная плашка выбора, которая кнопкой НЕ становится: период выбирается
+// сегментами прямо над ней, шторки у него нет вовсе (GET /api/scan диапазона
+// не принимает, а три срока /api/forecast — это ряд кнопок, а не список).
+// Кнопка здесь вела бы в никуда или дублировала бы соседний ряд.
+test("плашка «Выберите период» кнопкой не становится", async () => {
+  stubByPath()
+  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} onOpenSitePicker={vi.fn()} />, { wrapper })
+
+  const plate = screen.getByText("Выберите период")
+  expect(plate.closest("button")).toBeNull()
+  // Ряд периодов при этом на месте — плашка показывает именно на него.
+  expect(screen.getByRole("group", { name: "Диапазон обзора" })).toBeInTheDocument()
 })
