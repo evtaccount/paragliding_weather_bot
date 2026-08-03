@@ -301,30 +301,29 @@ function FailedSite({ name, model, onOpenDay }: {
   model: string | null
   onOpenDay: (site: string, date: string) => void
 }) {
-  // Пока false, useForecast в сеть не идёт вовсе: повтор — явное действие
-  // пилота, а не то, что экран делает за него. Иначе открытая вкладка сама
-  // отправляла бы столько тяжёлых запросов, сколько стартов упало, — а упали
-  // они, как правило, все разом и по одной причине.
+  // `retrying` — «повтор нажали в этой отрисовке», и только. Что показывать,
+  // решает не оно, а сам запрос (ниже): «Все старты» — переключатель, и его
+  // выключение размонтирует ScanView вместе со строками, обнуляя это
+  // состояние. Пока строка помнила только его, выключить и включить вкладку
+  // значило потерять уже полученный ответ и снова увидеть «Повторить» на месте
+  // дней — при том что ответ никуда не девался: он лежит в кэше по ключу
+  // ["forecast", name, "week", null, model] и переживает размонтирование
+  // строки.
+  //
+  // Отсюда и роль `retrying` — он только ВКЛЮЧАЕТ запрос. Пока ответа нет и
+  // повтор не нажат, запрос отключён и в сеть не идёт вовсе: повтор — явное
+  // действие пилота, а не то, что экран делает за него (иначе открытая вкладка
+  // сама отправляла бы столько тяжёлых запросов, сколько стартов упало, — а
+  // упали они, как правило, все разом и по одной причине). Отключённый запрос
+  // при этом продолжает отдавать то, что уже лежит в кэше, и сам его не
+  // перезапрашивает — то есть возврат на вкладку показывает прежний ответ, не
+  // тратя слот пилота на сервере (api.py:one_at_a_time).
   const [retrying, setRetrying] = useState(false)
   const forecast = useForecast(name, "week", null, model, retrying)
 
-  if (!retrying) {
-    return (
-      <div className="failed">
-        <button type="button" className="retryrow" onClick={() => { setRetrying(true) }}>
-          <b>{name}</b>
-          <span>Повторить</span>
-        </button>
-      </div>
-    )
-  }
-  if (forecast.isPending) {
-    return (
-      <div className="failed">
-        <div className="sitegrp__h"><b>{name}</b><span className="lbl">повторяем запрос</span></div>
-        <Spinner />
-      </div>
-    )
+  const answer = forecast.data
+  if (answer !== undefined) {
+    return <div className="failed"><RetriedSite name={name} overview={answer} onOpenDay={onOpenDay} /></div>
   }
   if (forecast.isError) {
     return (
@@ -337,8 +336,31 @@ function FailedSite({ name, model, onOpenDay }: {
       </div>
     )
   }
+  if (retrying) {
+    return (
+      <div className="failed">
+        <div className="sitegrp__h"><b>{name}</b><span className="lbl">повторяем запрос</span></div>
+        <Spinner />
+      </div>
+    )
+  }
+  return (
+    <div className="failed">
+      <button type="button" className="retryrow" onClick={() => { setRetrying(true) }}>
+        <b>{name}</b>
+        <span>Повторить</span>
+      </button>
+    </div>
+  )
+}
 
-  const overview = forecast.data
+// Ответ на повтор: старт встаёт в список тем же, чем стоят его соседи по
+// скану, — шапкой «имя · румб · N лётных» и лётными днями.
+function RetriedSite({ name, overview, onOpenDay }: {
+  name: string
+  overview: ForecastOverview
+  onOpenDay: (site: string, date: string) => void
+}) {
   // Лётные дни отбираются готовым ответом сервера (assessment.flyable —
   // criteria.flyable, engine.assessment_facts) — той же функцией, которой
   // домен отбирает дни в скане (forecast.py:97). /api/forecast отдаёт ВСЕ дни
@@ -351,17 +373,15 @@ function FailedSite({ name, model, onOpenDay }: {
     // упал, — и теми же словами, что блок «Без лётных дней» ниже. Пустая
     // группа на этом месте читалась бы как «повтор не сработал».
     return (
-      <div className="failed">
-        <div className="empty">
-          <b>{name}</b>
-          На неделе не нашлось ни одного лётного дня.
-        </div>
+      <div className="empty">
+        <b>{name}</b>
+        На неделе не нашлось ни одного лётного дня.
       </div>
     )
   }
 
   return (
-    <div className="failed">
+    <>
       <div className="sitegrp__h">
         <b>{name}</b>
         {/* Румб из градусов — как в шапке группы скана: ForecastOverview.site.
@@ -376,7 +396,7 @@ function FailedSite({ name, model, onOpenDay }: {
           <OverviewDayButton key={day.date} site={name} day={day} showFlyTag={false} onOpenDay={onOpenDay} />
         ))}
       </div>
-    </div>
+    </>
   )
 }
 

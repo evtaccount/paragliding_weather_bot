@@ -689,6 +689,44 @@ test("отказавший повтор называет старт и снов�
   expect(screen.getByRole("button", { name: "Повторить" })).toBeInTheDocument()
 })
 
+// «Все старты» — переключатель, и выключение размонтирует ScanView вместе со
+// строками упавших стартов. Пока строка помнила только собственное «повтор
+// нажали», это стирало уже полученный ответ: пилот возвращался на вкладку и
+// снова видел «Повторить» на месте дней. Сам ответ при этом никуда не девался —
+// он лежит в кэше по ключу ["forecast", name, "week", null, model], — поэтому
+// строка спрашивает не «нажимали ли здесь повтор», а «есть ли уже ответ».
+test("полученный повтором ответ переживает выключение и включение «Все старты»", async () => {
+  const fetchMock = stubScanAndForecast(scanWithFailed([FAILED_SITE]), overview)
+  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} />, { wrapper })
+  await openAllSites()
+  await userEvent.click(await screen.findByRole("button", { name: new RegExp(FAILED_SITE) }))
+  await screen.findByRole("group", { name: FAILED_SITE })
+
+  await openAllSites()
+  await openAllSites()
+
+  expect(await screen.findByRole("group", { name: FAILED_SITE })).toBeInTheDocument()
+  // Ответ взят из кэша, а не выпрошен заново: повторный тяжёлый запрос за теми
+  // же данными занял бы единственный слот пилота (api.py:one_at_a_time).
+  expect(callsTo(fetchMock, "/api/forecast")).toHaveLength(1)
+})
+
+// Та же память, но на отказе: вернувшись на вкладку, пилот должен видеть, чем
+// кончился его повтор, а не предложение начать сначала.
+test("отказавший повтор переживает выключение и включение «Все старты»", async () => {
+  stubScanAndForecast(scanWithFailed([FAILED_SITE]), { detail: "" }, 502)
+  render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} />, { wrapper })
+  await openAllSites()
+  await userEvent.click(await screen.findByRole("button", { name: new RegExp(FAILED_SITE) }))
+  await screen.findByText(/open-meteo сейчас недоступна/)
+
+  await openAllSites()
+  await openAllSites()
+
+  expect(await screen.findByText(/open-meteo сейчас недоступна/)).toBeInTheDocument()
+  expect(screen.getByRole("button", { name: "Повторить" })).toBeInTheDocument()
+})
+
 test("повтор одного упавшего старта не трогает соседний", async () => {
   stubScanAndForecast(scanWithFailed([FAILED_SITE, OTHER_FAILED_SITE]), overview)
   render(<Overview site="Гудаури" model="ecmwf" onOpenDay={() => {}} />, { wrapper })
